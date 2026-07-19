@@ -149,8 +149,14 @@ them.
    **Landed:** `platform-windows/src/winargv.rs` (pure `&[u16]` core,
    tested on both CI legs + Miri) with a `CommandLineToArgvW` round-trip
    oracle incl. an exhaustive adversarial-alphabet sweep on the Windows
-   leg (`tests/winargv_oracle.rs`). The §9.5 argv-echo fuzz job and the
-   rush handback remain open.
+   leg (`tests/winargv_oracle.rs`).
+   **§9.5 fuzz job landed:** `fuzz/` (own workspace) fuzzes arbitrary
+   argv through the builder and an *independent model* of the MSVCRT
+   splitting rules (differential — builder and parser cannot share a
+   bug); the Windows oracle anchors the model to the real OS, and the
+   model's deterministic tests replicate the oracle table. Nightly
+   schedule in `.github/workflows/fuzz.yml`. Only the rush handback
+   remains from this step.
 2. **Spawn + groups** behind the `Spawner` trait: Unix (D1) and Windows
    suspended-spawn/jobs (D2), with `behavior/process.md` grown to match
    and D8's divergence entries recorded.
