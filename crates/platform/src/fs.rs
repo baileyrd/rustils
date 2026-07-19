@@ -33,11 +33,19 @@ pub struct OpenOptions {
 
 impl OpenOptions {
     pub fn read() -> Self {
-        Self { read: true, ..Self::default() }
+        Self {
+            read: true,
+            ..Self::default()
+        }
     }
 
     pub fn create_truncate() -> Self {
-        Self { write: true, create: true, truncate: true, ..Self::default() }
+        Self {
+            write: true,
+            create: true,
+            truncate: true,
+            ..Self::default()
+        }
     }
 }
 

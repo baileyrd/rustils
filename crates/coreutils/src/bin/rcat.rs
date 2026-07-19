@@ -13,7 +13,10 @@ fn main() -> std::process::ExitCode {
     {
         use std::path::Path;
         let p = Path::new(&path);
-        let parent = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let parent = p
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
         let Some(name) = p.file_name() else {
             eprintln!("rcat: not a file path: {}", p.display());
             return std::process::ExitCode::from(2);

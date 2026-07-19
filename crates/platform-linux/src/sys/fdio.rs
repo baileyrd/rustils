@@ -38,9 +38,8 @@ fn os_err(op: &'static str, path: &OsStr) -> PlatformError {
 }
 
 fn to_cstring(path: &OsStr, op: &'static str) -> Result<CString> {
-    CString::new(path.as_bytes()).map_err(|_| {
-        PlatformError::new(ErrorKind::InvalidInput, OsCode::None, op).with_path(path)
-    })
+    CString::new(path.as_bytes())
+        .map_err(|_| PlatformError::new(ErrorKind::InvalidInput, OsCode::None, op).with_path(path))
 }
 
 /// `openat(dirfd, rel, flags, mode)` returning an owned fd.
@@ -106,10 +105,10 @@ pub fn unlinkat(dirfd: RawFd, rel: &OsStr, remove_dir: bool) -> Result<()> {
 /// `fstatat` returning (file type, size).
 pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
     let c_rel = to_cstring(rel, "fstatat")?;
-    let mut st: c::stat = // SAFETY: `stat` is a plain-old-data struct for
-        // which the all-zeroes bit pattern is a valid (if meaningless)
-        // value; the kernel overwrites it on success.
-        unsafe { std::mem::zeroed() };
+    // SAFETY: `stat` is a plain-old-data struct for which the all-zeroes
+    // bit pattern is a valid (if meaningless) value; the kernel overwrites
+    // it on success.
+    let mut st: c::stat = unsafe { std::mem::zeroed() };
     // SAFETY: valid path pointer and out-pointer to a properly sized
     // `stat` struct, both outliving the call; valid dirfd.
     let r = unsafe { c::fstatat(dirfd, c_rel.as_ptr(), &mut st, c::AT_SYMLINK_NOFOLLOW) };

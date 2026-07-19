@@ -28,7 +28,9 @@ mod tests {
 
     #[test]
     fn ls_sorts_and_types() {
-        let root = MockDir::root().with_file("b.txt", "x").with_file("a.txt", "y");
+        let root = MockDir::root()
+            .with_file("b.txt", "x")
+            .with_file("a.txt", "y");
         root.create_dir(OsStr::new("z-dir")).expect("mkdir");
         let entries = ls(&root).expect("ls");
         let rendered: Vec<_> = entries.iter().map(render).collect();

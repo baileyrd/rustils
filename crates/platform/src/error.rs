@@ -63,7 +63,12 @@ fn path_display(path: &Option<PathBuf>) -> String {
 impl PlatformError {
     /// Construct an error with no path context.
     pub fn new(kind: ErrorKind, os: OsCode, op: &'static str) -> Self {
-        Self { kind, os, op, path: None }
+        Self {
+            kind,
+            os,
+            op,
+            path: None,
+        }
     }
 
     /// Attach path context.

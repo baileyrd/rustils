@@ -32,15 +32,22 @@ pub struct MockDir {
 impl MockDir {
     /// A new, empty root directory.
     pub fn root() -> Self {
-        Self { node: Arc::new(Mutex::new(Node::Dir(BTreeMap::new()))) }
+        Self {
+            node: Arc::new(Mutex::new(Node::Dir(BTreeMap::new()))),
+        }
     }
 
     /// Convenience for seeding test fixtures.
     pub fn with_file(self, name: impl Into<OsString>, contents: impl Into<Vec<u8>>) -> Self {
         {
             let mut n = self.node.lock().expect("mock lock");
-            let Node::Dir(entries) = &mut *n else { unreachable!("root is a dir") };
-            entries.insert(name.into(), Arc::new(Mutex::new(Node::File(contents.into()))));
+            let Node::Dir(entries) = &mut *n else {
+                unreachable!("root is a dir")
+            };
+            entries.insert(
+                name.into(),
+                Arc::new(Mutex::new(Node::File(contents.into()))),
+            );
         }
         self
     }
@@ -68,11 +75,19 @@ pub struct MockFile {
 impl File for MockFile {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         if !self.readable {
-            return Err(PlatformError::new(ErrorKind::PermissionDenied, OsCode::None, "read"));
+            return Err(PlatformError::new(
+                ErrorKind::PermissionDenied,
+                OsCode::None,
+                "read",
+            ));
         }
         let n = self.node.lock().expect("mock lock");
         let Node::File(data) = &*n else {
-            return Err(PlatformError::new(ErrorKind::IsADirectory, OsCode::None, "read"));
+            return Err(PlatformError::new(
+                ErrorKind::IsADirectory,
+                OsCode::None,
+                "read",
+            ));
         };
         let remaining = &data[self.pos.min(data.len())..];
         let count = remaining.len().min(buf.len());
@@ -83,11 +98,19 @@ impl File for MockFile {
 
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         if !self.writable {
-            return Err(PlatformError::new(ErrorKind::PermissionDenied, OsCode::None, "write"));
+            return Err(PlatformError::new(
+                ErrorKind::PermissionDenied,
+                OsCode::None,
+                "write",
+            ));
         }
         let mut n = self.node.lock().expect("mock lock");
         let Node::File(data) = &mut *n else {
-            return Err(PlatformError::new(ErrorKind::IsADirectory, OsCode::None, "write"));
+            return Err(PlatformError::new(
+                ErrorKind::IsADirectory,
+                OsCode::None,
+                "write",
+            ));
         };
         data.extend_from_slice(buf);
         Ok(buf.len())
@@ -153,7 +176,10 @@ impl Dir for MockDir {
         if entries.contains_key(rel) {
             return Err(err(ErrorKind::AlreadyExists, "create_dir", rel));
         }
-        entries.insert(rel.to_os_string(), Arc::new(Mutex::new(Node::Dir(BTreeMap::new()))));
+        entries.insert(
+            rel.to_os_string(),
+            Arc::new(Mutex::new(Node::Dir(BTreeMap::new()))),
+        );
         Ok(())
     }
 
@@ -161,8 +187,14 @@ impl Dir for MockDir {
         let node = self.child(rel, "metadata")?;
         let n = node.lock().expect("mock lock");
         Ok(match &*n {
-            Node::File(data) => Metadata { file_type: FileType::File, len: data.len() as u64 },
-            Node::Dir(_) => Metadata { file_type: FileType::Dir, len: 0 },
+            Node::File(data) => Metadata {
+                file_type: FileType::File,
+                len: data.len() as u64,
+            },
+            Node::Dir(_) => Metadata {
+                file_type: FileType::Dir,
+                len: 0,
+            },
             Node::Unreachable => unreachable!(),
         })
     }
@@ -170,7 +202,11 @@ impl Dir for MockDir {
     fn read_dir(&self) -> Result<Vec<DirEntry>> {
         let n = self.node.lock().expect("mock lock");
         let Node::Dir(entries) = &*n else {
-            return Err(PlatformError::new(ErrorKind::NotADirectory, OsCode::None, "read_dir"));
+            return Err(PlatformError::new(
+                ErrorKind::NotADirectory,
+                OsCode::None,
+                "read_dir",
+            ));
         };
         Ok(entries
             .iter()
@@ -180,7 +216,10 @@ impl Dir for MockDir {
                     Node::Dir(_) => FileType::Dir,
                     Node::Unreachable => unreachable!(),
                 };
-                DirEntry { name: name.clone(), file_type }
+                DirEntry {
+                    name: name.clone(),
+                    file_type,
+                }
             })
             .collect())
     }
@@ -231,7 +270,9 @@ mod tests {
             .expect("create");
         f.write(b"hello").expect("write");
 
-        let mut f = root.open(OsStr::new("a.txt"), &OpenOptions::read()).expect("open");
+        let mut f = root
+            .open(OsStr::new("a.txt"), &OpenOptions::read())
+            .expect("open");
         let mut buf = [0u8; 16];
         let n = f.read(&mut buf).expect("read");
         assert_eq!(&buf[..n], b"hello");
@@ -242,7 +283,8 @@ mod tests {
         let root = MockDir::root();
         root.create_dir(OsStr::new("sub")).expect("mkdir");
         let sub = root.open_dir(OsStr::new("sub")).expect("open_dir");
-        sub.open(OsStr::new("f"), &OpenOptions::create_truncate()).expect("create");
+        sub.open(OsStr::new("f"), &OpenOptions::create_truncate())
+            .expect("create");
         // Visible through a second capability to the same node:
         let sub2 = root.open_dir(OsStr::new("sub")).expect("open_dir");
         assert_eq!(sub2.read_dir().expect("read_dir").len(), 1);
@@ -256,7 +298,8 @@ mod tests {
             use std::os::unix::ffi::OsStrExt;
             let root = MockDir::root();
             let name = OsStr::from_bytes(b"caf\xe9"); // Latin-1 é — invalid UTF-8
-            root.open(name, &OpenOptions::create_truncate()).expect("create");
+            root.open(name, &OpenOptions::create_truncate())
+                .expect("create");
             assert!(root.metadata(name).is_ok());
         }
     }
@@ -266,7 +309,8 @@ mod tests {
         let root = MockDir::root();
         root.create_dir(OsStr::new("d")).expect("mkdir");
         let d = root.open_dir(OsStr::new("d")).expect("open");
-        d.open(OsStr::new("f"), &OpenOptions::create_truncate()).expect("create");
+        d.open(OsStr::new("f"), &OpenOptions::create_truncate())
+            .expect("create");
         let e = root.remove_dir(OsStr::new("d")).expect_err("must refuse");
         assert_eq!(e.kind, ErrorKind::DirectoryNotEmpty);
     }
