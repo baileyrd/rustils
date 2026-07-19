@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::fs::{Dir, DirEntry, File, FileType, Metadata, OpenOptions};
+use platform::fs::{AccessMode, Dir, DirEntry, File, FileType, Metadata, OpenOptions};
 
 #[derive(Debug, Default)]
 enum Node {
@@ -212,6 +212,20 @@ impl Dir for MockDir {
             },
             Node::Unreachable => unreachable!(),
         })
+    }
+
+    fn access(&self, rel: &OsStr, mode: AccessMode) -> Result<()> {
+        // An empty mode is a vacuous yes, even for a name that doesn't
+        // exist — matching both real backends' contract (existence is
+        // metadata's job, not this one's).
+        if !(mode.read || mode.write || mode.execute) {
+            return Ok(());
+        }
+        // No permission model to probe (every mock entry is equally
+        // accessible to everyone) — existence is the only thing this
+        // can honestly answer, same limitation `open` already has for
+        // symlink-following (never implemented; see `Node::Symlink`).
+        self.child(rel, "access").map(drop)
     }
 
     fn read_dir(&self) -> Result<Vec<DirEntry>> {
@@ -455,6 +469,30 @@ mod tests {
             .expect_err("must refuse");
         assert_eq!(e.kind, ErrorKind::NotADirectory);
         root.remove_file(OsStr::new("dlink")).expect("rm dlink");
+    }
+
+    #[test]
+    fn access_checks_existence_only_no_permission_model() {
+        let root = MockDir::root().with_file("f.txt", "hi");
+        root.access(OsStr::new("f.txt"), AccessMode::read())
+            .expect("exists, mock grants everything");
+        root.access(
+            OsStr::new("f.txt"),
+            AccessMode {
+                read: true,
+                write: true,
+                execute: true,
+            },
+        )
+        .expect("mock has no permission model to deny any of these");
+        let e = root
+            .access(OsStr::new("missing"), AccessMode::read())
+            .expect_err("must fail: missing");
+        assert_eq!(e.kind, ErrorKind::NotFound);
+        // An empty mode is a vacuous yes, even for a name that doesn't
+        // exist.
+        root.access(OsStr::new("also-missing"), AccessMode::default())
+            .expect("empty mode never fails");
     }
 
     #[test]

@@ -5,8 +5,8 @@
 //! replacement inventory honest: this file *is* the checklist.
 
 pub use libc::{
-    c_char, c_int, close, dirent, fdopendir, fstatat, fsync, kill, mkdirat, nfds_t, openat, pid_t,
-    pipe2, poll, pollfd, posix_spawn, posix_spawn_file_actions_addchdir_np,
+    c_char, c_int, close, dirent, faccessat, fdopendir, fstatat, fsync, kill, mkdirat, nfds_t,
+    openat, pid_t, pipe2, poll, pollfd, posix_spawn, posix_spawn_file_actions_addchdir_np,
     posix_spawn_file_actions_adddup2, posix_spawn_file_actions_addopen,
     posix_spawn_file_actions_destroy, posix_spawn_file_actions_init, posix_spawn_file_actions_t,
     posix_spawnattr_destroy, posix_spawnattr_init, posix_spawnattr_setflags,
@@ -14,9 +14,10 @@ pub use libc::{
     stat, symlinkat, syscall, tcgetattr, tcsetattr, termios, unlinkat, waitpid, winsize, write,
     SYS_pidfd_open, SYS_renameat2, AT_FDCWD, AT_REMOVEDIR, AT_SYMLINK_NOFOLLOW, DIR, DT_DIR,
     DT_LNK, DT_REG, O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC,
-    O_WRONLY, POLLIN, POSIX_SPAWN_SETPGROUP, RENAME_NOREPLACE, SIGHUP, SIGINT, SIGKILL, SIGTERM,
-    SIG_ERR, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG,
-    TCSADRAIN, TIOCGWINSZ, WEXITSTATUS, WIFEXITED, WIFSIGNALED, WNOHANG, WTERMSIG,
+    O_WRONLY, POLLIN, POSIX_SPAWN_SETPGROUP, RENAME_NOREPLACE, R_OK, SIGHUP, SIGINT, SIGKILL,
+    SIGTERM, SIG_ERR, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO, S_IFDIR, S_IFLNK, S_IFMT,
+    S_IFREG, TCSADRAIN, TIOCGWINSZ, WEXITSTATUS, WIFEXITED, WIFSIGNALED, WNOHANG, WTERMSIG, W_OK,
+    X_OK,
 };
 
 // D11 Fs second wave: renameat2 has no libc wrapper on the glibc x86_64
@@ -24,6 +25,12 @@ pub use libc::{
 // SYS_renameat2 + the raw syscall escape hatch. symlinkat/readlinkat
 // (symlink slice) are ordinary POSIX libc wrapper functions, unlike
 // renameat2 — no escape hatch needed for either configuration.
+// faccessat (faccessat slice) is the same: an ordinary wrapper, called
+// with flags=0 (real, not effective, uid/gid) in both configurations —
+// rusty_libc's own `faccessat` has no flags parameter at all (only the
+// bare-syscall real-id check), so this keeps the two configurations
+// answering the identical question rather than glibc's userspace-only
+// `AT_EACCESS` emulation quietly diverging from Track P.
 
 // The terminal cluster (extraction map D9). `cfmakeraw` and `isatty` are
 // libc *library* routines, not syscalls: cfmakeraw is the canonical

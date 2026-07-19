@@ -88,3 +88,28 @@ implementation convenience.
   `tests/parity.rs` `assert_fs_behavior` (`dirlink`).
 - **Accepted**: 2026-07-19, with the symlink slice (D11, convergence
   roadmap).
+
+## 005 — no execute-permission bit for a regular file on Windows
+
+- **Linux**: `Dir::access`'s `execute` bit is a real, independently
+  settable permission (`faccessat`'s `X_OK`); a plain data file created
+  with the default mode (`0o666`, no execute for anyone) refuses it with
+  `PermissionDenied`, regardless of who owns it or what umask was in
+  effect (umask only removes bits, and there were none to begin with).
+- **Windows**: there is no execute-permission bit on a regular file's
+  ACL for `access` to check — execute is a property of file type/
+  extension (`.exe`, `.bat`, …), not an access-control entry consumer
+  code inspects. `execute` is therefore granted unconditionally once the
+  entry is confirmed to exist, the same behavior every practical Windows
+  `access()`/`_waccess` implementation gives.
+- **OS limitation**: Windows security descriptors have no ACE type
+  corresponding to POSIX's execute bit; NTFS execute-ability is
+  determined by the loader at execution time (PE header, extension
+  associations), not by a bit `access` could query in advance.
+- **Pinning tests**: `linux_access_denies_execute_on_a_plain_file` /
+  `windows_access_grants_execute_unconditionally` in each backend's
+  `tests/parity.rs` — deliberately dedicated, backend-only tests rather
+  than a shared assertion, since the two backends' correct behaviors are
+  opposites for the identical setup.
+- **Accepted**: 2026-07-19, with the faccessat slice (D11, convergence
+  roadmap).

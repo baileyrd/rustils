@@ -50,6 +50,39 @@ impl OpenOptions {
     }
 }
 
+/// Access-mode bits for [`Dir::access`] — mirrors POSIX `faccessat`'s
+/// `R_OK`/`W_OK`/`X_OK`. `F_OK` (existence) has no field here: it's
+/// already [`Dir::metadata`]'s job.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AccessMode {
+    pub read: bool,
+    pub write: bool,
+    pub execute: bool,
+}
+
+impl AccessMode {
+    pub fn read() -> Self {
+        Self {
+            read: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn write() -> Self {
+        Self {
+            write: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn execute() -> Self {
+        Self {
+            execute: true,
+            ..Self::default()
+        }
+    }
+}
+
 /// Metadata for a filesystem entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Metadata {
@@ -107,6 +140,30 @@ pub trait Dir {
 
     /// Metadata for the entry at `rel`.
     fn metadata(&self, rel: &OsStr) -> Result<Metadata>;
+
+    /// Probe whether every bit set in `mode` is permitted for `rel`
+    /// (POSIX `faccessat(2)`, real — not effective — uid/gid: the plain
+    /// syscall's check, not the glibc-only `AT_EACCESS` emulation, kept
+    /// consistent with what Track P's `rusty_libc::fs::faccessat` can
+    /// support; see `fn access` in each backend's `sys/` module for the
+    /// rationale). `Err(PermissionDenied)` if any requested bit is
+    /// refused; other failures (e.g. `NotFound`) surface as themselves.
+    /// Existence alone is [`Dir::metadata`]'s job, not this one's — an
+    /// empty `mode` is a vacuous "yes."
+    ///
+    /// Follows a terminal symlink, like `open` and unlike `metadata`.
+    ///
+    /// Windows divergence (`docs/divergences.md` #005): no single
+    /// syscall answers this, and regular files have no execute-
+    /// permission bit at all (execute is a property of file type, not
+    /// an ACL check any consumer code inspects) — `mode.execute` is
+    /// therefore always granted once the entry is confirmed to exist,
+    /// the same behavior every practical Windows `access()`/`_waccess`
+    /// implementation gives. `read`/`write` are answered by a trial
+    /// open with the matching access mask, immediately closed — the
+    /// actual operation this probe predicts, not a separate ACL query
+    /// that could disagree with it.
+    fn access(&self, rel: &OsStr, mode: AccessMode) -> Result<()>;
 
     /// List this directory's entries.
     ///

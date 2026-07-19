@@ -56,14 +56,28 @@ convenience.
 - Windows requires declaring file-vs-directory at symlink-creation time,
   with a consumer-visible effect on which removal call applies —
   `docs/divergences.md` #004, not asserted as uniform behavior here.
-
-## Not in this slice (D11, recorded, deferred)
-
-`faccessat`-style permission probing is real D11 donor material but
-deferred out of this slice: it needs its own design pass on what a
-cross-platform permission predicate even means (Windows ACLs have no
-POSIX mode-bit analog), rather than being bolted onto the
-rename/atomic-write/symlink work.
+- `access` (`faccessat(2)`, D11's faccessat slice): probes whether every
+  bit set in `AccessMode` (`read`/`write`/`execute`) is permitted for
+  `rel`, `Err(PermissionDenied)` if any requested bit is refused. An
+  empty `mode` is a vacuous `Ok(())` — including for a name that doesn't
+  exist, since existence is `metadata`'s job, not this one's; both
+  backends special-case this explicitly rather than letting an
+  all-`false` mode fall through to a real probe (on Linux, `mode == 0`
+  is `faccessat`'s own `F_OK`, a different check than "vacuous yes"; the
+  bug of *not* special-casing it was caught by the parity suite itself
+  before this landed). Follows a terminal symlink, like `open` and
+  unlike `metadata`. Uses **real**, not effective, uid/gid on Linux —
+  the plain `faccessat` syscall's own semantics, not glibc's userspace-
+  only `AT_EACCESS` emulation, kept consistent with what Track P's
+  `rusty_libc::fs::faccessat` can support (no flags parameter at all).
+  On Windows, `read`/`write` are answered by a trial open with the
+  matching access mask, immediately closed — the actual operation this
+  probe predicts, not a separate ACL query.
+- Windows has no execute-permission bit at all for a regular file —
+  `execute` is granted unconditionally once existence is confirmed —
+  `docs/divergences.md` #005, pinned by dedicated backend-only tests
+  rather than a shared assertion (the two backends' correct answers are
+  opposites for the identical setup).
 
 ## Deliberately unspecified
 

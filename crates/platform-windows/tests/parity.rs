@@ -10,7 +10,7 @@
 use std::ffi::OsStr;
 
 use platform::error::ErrorKind;
-use platform::fs::{Dir, FileType, OpenOptions};
+use platform::fs::{AccessMode, Dir, FileType, OpenOptions};
 
 /// The shared assertions. Grows with `docs/behavior/fs.md`.
 fn assert_fs_behavior(root: &dyn Dir) {
@@ -204,6 +204,38 @@ fn assert_fs_behavior(root: &dyn Dir) {
     }
     root.remove_dir(OsStr::new("realdir")).expect("rm realdir");
 
+    // access (faccessat slice): read/write on a file we own, execute
+    // (search) on a directory we own — the one case execute permission
+    // is genuinely testable identically on both backends. A regular
+    // file's execute bit is the Windows divergence
+    // (docs/divergences.md #005): pinned by dedicated backend-only
+    // tests, not asserted here.
+    root.access(OsStr::new("atomic.txt"), AccessMode::read())
+        .expect("can read what we own");
+    root.access(
+        OsStr::new("atomic.txt"),
+        AccessMode {
+            read: true,
+            write: true,
+            execute: false,
+        },
+    )
+    .expect("can read+write what we own");
+    root.create_dir(OsStr::new("accessdir"))
+        .expect("mkdir accessdir");
+    root.access(OsStr::new("accessdir"), AccessMode::execute())
+        .expect("can search a directory we own");
+    root.remove_dir(OsStr::new("accessdir"))
+        .expect("rm accessdir");
+    let e = root
+        .access(OsStr::new("missing"), AccessMode::read())
+        .expect_err("must fail: missing");
+    assert_eq!(e.kind, ErrorKind::NotFound);
+    // An empty mode is a vacuous yes, even for a name that doesn't
+    // exist — existence is metadata's job, not this one's.
+    root.access(OsStr::new("also-missing"), AccessMode::default())
+        .expect("empty mode never fails, even for a name that doesn't exist");
+
     let names: Vec<_> = root
         .read_dir()
         .expect("read_dir")
@@ -229,6 +261,24 @@ fn windows_backend_conforms() {
     std::fs::create_dir_all(&tmp).expect("mk tempdir");
     let root = platform_windows::WindowsDir::open_ambient(&tmp).expect("open ambient");
     assert_fs_behavior(&root);
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// Divergence #005 (docs/divergences.md), Windows side: a plain data
+/// file has no execute-permission bit for `access` to check at all
+/// (execute is a property of file type/extension, not an ACL bit) — it
+/// is granted unconditionally once existence is confirmed. Linux's own
+/// pinning test (`linux_access_denies_execute_on_a_plain_file`) asserts
+/// the opposite for the identical setup.
+#[test]
+fn windows_access_grants_execute_unconditionally() {
+    let tmp = std::env::temp_dir().join(format!("rustils-access-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mk tempdir");
+    let root = platform_windows::WindowsDir::open_ambient(&tmp).expect("open ambient");
+    root.open(OsStr::new("f"), &OpenOptions::create_truncate())
+        .expect("create f");
+    root.access(OsStr::new("f"), AccessMode::execute())
+        .expect("Windows has no execute bit to deny on a plain data file");
     std::fs::remove_dir_all(&tmp).ok();
 }
 
