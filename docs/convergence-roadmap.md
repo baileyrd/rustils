@@ -213,14 +213,30 @@ actual code in hand to unify against.
 
 ## Phase 4 — Track P completion
 
-**Two parts, different repos.**
+**Landed 2026-07-19, both parts.**
 
-- **Lands in rusty_libc:** add `getdents64` and `pidfd_open` — both
-  currently missing, both blocking a Track P slice here (`read_dir`
-  still on libc; `poll_pids` still calls the raw `c::syscall` escape
-  hatch for pidfd_open in both configurations).
-- **Lands here**, once upstreamed: adopt both under `track-p`, closing
-  the last two gaps in platform-linux's raw-syscall coverage.
+- **rusty_libc** ([PR #19](https://github.com/baileyrd/rusty_libc/pull/19)):
+  `fs::getdents64`/`dirents` (a caller-owned-buffer syscall wrapper plus a
+  zero-allocation parsing iterator over the kernel's own `d_reclen`
+  chain) and `process::pidfd_open` + `wait::P_PIDFD` (the `waitid`
+  pairing needed to actually use it), verified end to end there by a
+  real fork + `pidfd_open` + `poll` + `waitid(P_PIDFD, ...)` test.
+- **Here**: the rev pin bumped to that merge; `platform-linux::sys::fdio::read_dir`
+  now has a `track-p` arm calling `getdents64`/`dirents` directly
+  (`fdopendir`/`readdir`'s `DIR*` stream is glibc userspace buffering
+  with no raw-syscall equivalent of its own — bypassed entirely rather
+  than reimplemented), and `sys::spawn::poll_pids`'s pidfd-opening step
+  is now a track-p-split `pidfd_open` helper — the raw `c::syscall`
+  escape hatch is gone under `track-p` (still there, unavoidably, in the
+  non-track-p arm: no libc wrapper for this syscall exists at this
+  workspace's MSRV). Live-verified via strace under `--features
+  track-p`: a real `read_dir` fires `getdents64` and correctly
+  classifies file-vs-directory entries; a real two-child `wait_any`
+  fires `pidfd_open` for each pid and picks the first to finish.
+
+This closes platform-linux's raw-syscall coverage — no remaining gaps
+between what `track-p` claims to cover and what it actually routes
+through rusty_libc.
 
 ## Phase 5 — Net surface (D16)
 

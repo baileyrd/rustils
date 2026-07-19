@@ -114,6 +114,17 @@ PATH-resolution half of that donor item turned out to already exist as
 `Spawner::resolve`; what's left is ecosystem-side (rush adopting it),
 out of scope here.
 
+Phase 4 (Track P completion) closed platform-linux's last two
+raw-syscall gaps: `rusty_libc` gained `getdents64`/`dirents` and
+`pidfd_open`/`P_PIDFD` (`rusty_libc` PR #19), and here, `read_dir`'s
+`track-p` arm now calls `getdents64` directly instead of glibc's
+`fdopendir`/`readdir` `DIR*` stream (which has no raw-syscall
+equivalent of its own to reimplement), and `poll_pids`'s pidfd-opening
+step lost its raw `c::syscall` escape hatch under `track-p` — it's a
+real wrapper call now, live-verified via strace (a real `read_dir`
+firing `getdents64`, a real two-child `wait_any` firing `pidfd_open`
+for each pid).
+
 ## License
 
 MIT — matching the sibling crates (`rush`, `rusty_win32`, `rusty_libc`,
