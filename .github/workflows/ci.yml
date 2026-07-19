@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        toolchain: [stable, "1.75"] # 1.75 = MSRV; bump per RFC v2 policy
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+
+  unsafe-scope:
+    # RFC v2 §6: unsafe is confined to backend sys/ module trees. This job
+    # fails if `unsafe` appears anywhere else. Grep-based on purpose —
+    # simple enough to trust, strict enough to catch drift.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: unsafe outside sys/ fails the build
+        run: |
+          violations=$(grep -rn "unsafe" crates/*/src --include='*.rs' \
+            | grep -v "/sys/" \
+            | grep -v "forbid(unsafe_code)" \
+            | grep -v "deny(unsafe_code)" \
+            | grep -v "unsafe_code = " \
+            || true)
+          if [ -n "$violations" ]; then
+            echo "unsafe found outside sys/ module trees:"; echo "$violations"; exit 1
+          fi
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check

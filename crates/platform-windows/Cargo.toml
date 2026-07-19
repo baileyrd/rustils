@@ -1,0 +1,15 @@
+[package]
+name = "platform-windows"
+description = "Windows backend: windows-sys floor (RFC v2 §2 D-1); typed handles and safe wrappers above it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+platform.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[lints]
+workspace = true

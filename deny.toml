@@ -1,0 +1,15 @@
+# cargo-deny configuration — dependency policy enforcement (RFC v2 §4.2)
+
+[licenses]
+allow = ["MIT", "Apache-2.0", "Unicode-DFS-2016", "Unicode-3.0"]
+
+[bans]
+multiple-versions = "warn"
+# ADR-004 (rush) / RFC v2 §5: the core is synchronous; no async runtime may enter the tree.
+deny = [
+    { name = "tokio" },
+    { name = "async-std" },
+]
+
+[advisories]
+yanked = "deny"

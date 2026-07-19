@@ -1,0 +1,18 @@
+[package]
+name = "platform-linux"
+description = "Linux backend: libc floor now (RFC v2 §2 D-2); raw-syscall Track P later, feature-gated."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+platform.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+platform-mock.workspace = true
+
+[lints]
+workspace = true
