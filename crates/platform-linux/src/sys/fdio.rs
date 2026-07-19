@@ -3,7 +3,9 @@
 
 #![allow(unsafe_code)] // the one place in this crate it is permitted
 
-use std::ffi::{CStr, CString, OsStr, OsString};
+#[cfg(not(feature = "track-p"))]
+use std::ffi::CStr;
+use std::ffi::{CString, OsStr, OsString};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
@@ -476,6 +478,11 @@ pub fn fsync(fd: &OwnedFd) -> Result<()> {
 
 /// Enumerate a directory via `fdopendir`/`readdir`, consuming an fd opened
 /// with `O_DIRECTORY`. Returns (name, file type) pairs, excluding `.`/`..`.
+///
+/// glibc-only: `readdir`'s `DIR*` stream has no raw-syscall equivalent of
+/// its own (it's userspace buffering over `getdents64`) — the track-p arm
+/// below bypasses it entirely instead of reimplementing it.
+#[cfg(not(feature = "track-p"))]
 pub fn read_dir(dirfd: OwnedFd) -> Result<Vec<(OsString, FileType)>> {
     use std::os::fd::IntoRawFd;
     // SAFETY: `into_raw_fd` transfers ownership of a valid directory fd to
@@ -518,5 +525,42 @@ pub fn read_dir(dirfd: OwnedFd) -> Result<Vec<(OsString, FileType)>> {
     }
     // SAFETY: `dir` is a valid open stream not used after this call.
     unsafe { libc::closedir(dir) };
+    Ok(out)
+}
+
+/// Enumerate a directory via raw `getdents64`, consuming an fd opened
+/// with `O_DIRECTORY`. Returns (name, file type) pairs, excluding
+/// `.`/`..`. Track P: this — not the `fdopendir`/`readdir` `DIR*` stream
+/// above, which is glibc userspace buffering with no raw-syscall
+/// equivalent of its own — closes the last gap the convergence roadmap's
+/// Phase 4 named (`rusty_libc::fs::getdents64`/`dirents`).
+///
+/// Unlike the non-track-p arm, `dirfd` needs no ownership hand-off:
+/// `getdents64` operates directly on the fd we already own, so it just
+/// closes normally when `dirfd` drops at the end of this function.
+#[cfg(feature = "track-p")]
+pub fn read_dir(dirfd: OwnedFd) -> Result<Vec<(OsString, FileType)>> {
+    use rusty_libc::fs as rfs;
+    let fd = dirfd.as_raw_fd();
+    let mut out = Vec::new();
+    let mut buf = [0u8; 32 * 1024];
+    loop {
+        let n = rfs::getdents64(fd, &mut buf).map_err(|e| trackp_err("getdents64", e))?;
+        if n == 0 {
+            break;
+        }
+        for entry in rfs::dirents(&buf[..n]) {
+            if entry.d_name == b"." || entry.d_name == b".." {
+                continue;
+            }
+            let ft = match entry.d_type {
+                rfs::DT_REG => FileType::File,
+                rfs::DT_DIR => FileType::Dir,
+                rfs::DT_LNK => FileType::Symlink,
+                _ => FileType::Other,
+            };
+            out.push((OsString::from_vec(entry.d_name.to_vec()), ft));
+        }
+    }
     Ok(out)
 }

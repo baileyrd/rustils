@@ -413,6 +413,13 @@ them.
    in `sys::proc::wait_many` (≤64: one true blocking wait; beyond:
    64-chunk zero-timeout sweeps on a 10ms tick). Parity sweeps 70
    children on both legs — past the Windows cap by construction.
+   **Track P closed the raw-syscall gap (Phase 4, 2026-07-19):**
+   `poll_pids`'s pidfd-opening step is a track-p-split helper now — the
+   `track-p` arm calls `rusty_libc::process::pidfd_open` directly (a
+   real wrapper as of rusty_libc PR #19), so the raw `c::syscall`
+   escape hatch only remains in the non-track-p arm, where it's still
+   unavoidable (no libc wrapper for this syscall at this workspace's
+   MSRV either way).
    **D6 signal source landed, completing R3**: `platform::events::
    SignalSource` (single-slot, coalescing, take-at-safe-points — the
    donor's `PENDING_SIGNAL` shape verbatim in spirit), with

@@ -289,6 +289,53 @@ pub fn spawn(
     Ok((pid, parent_ends))
 }
 
+/// `pidfd_open(pid, 0)`, wrapped as an owned fd. `ENOSYS` (pre-5.3 kernel)
+/// surfaces as `Unsupported` — [`poll_pids`]'s caller falls back to the
+/// portable poll loop rather than treating it as a hard failure.
+///
+/// There is no libc wrapper for `pidfd_open` at this repo's MSRV
+/// baseline, hence the raw syscall in the non-track-p arm — the same
+/// situation `renameat2` was in before the symlink slice (see
+/// `libc_surface`'s doc comment). Track P closed this specific gap: this
+/// was the last raw-`syscall()` escape hatch left in the crate once
+/// `rusty_libc::process::pidfd_open` landed.
+#[cfg(not(feature = "track-p"))]
+fn pidfd_open(pid: c::pid_t) -> Result<OwnedFd> {
+    // SAFETY: pidfd_open takes (pid, flags) and returns an fd or -1; no
+    // pointer arguments.
+    let fd = unsafe { c::syscall(c::SYS_pidfd_open, pid, 0u32) };
+    if fd < 0 {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        if code == libc::ENOSYS {
+            return Err(PlatformError::new(
+                ErrorKind::Unsupported,
+                OsCode::Errno(code),
+                "pidfd_open",
+            ));
+        }
+        return Err(errno_err("pidfd_open", code, OsStr::new("")));
+    }
+    // SAFETY: `fd` is a freshly returned, valid, otherwise-unowned
+    // descriptor; wrapped exactly once.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as c::c_int) })
+}
+
+/// `pidfd_open(pid, 0)` — Track P: `rusty_libc::process::pidfd_open`.
+#[cfg(feature = "track-p")]
+fn pidfd_open(pid: c::pid_t) -> Result<OwnedFd> {
+    match rusty_libc::process::pidfd_open(pid, 0) {
+        // SAFETY: `fd` is a freshly returned, valid, otherwise-unowned
+        // descriptor; wrapped exactly once.
+        Ok(fd) => Ok(unsafe { OwnedFd::from_raw_fd(fd) }),
+        Err(e) if e.code() == libc::ENOSYS => Err(PlatformError::new(
+            ErrorKind::Unsupported,
+            OsCode::Errno(e.code()),
+            "pidfd_open",
+        )),
+        Err(e) => Err(errno_err("pidfd_open", e.code(), OsStr::new(""))),
+    }
+}
+
 /// Multiplexed wait over pidfds (RFC v2 §5.6 reactor internals, R3):
 /// `pidfd_open` each pid, `poll` the set with `timeout` (`None` =
 /// forever), and return `Some(position)` of a readable pidfd (= that
@@ -298,24 +345,7 @@ pub fn spawn(
 pub fn poll_pids(pids: &[c::pid_t], timeout: Option<std::time::Duration>) -> Result<Option<usize>> {
     let mut pidfds: Vec<OwnedFd> = Vec::with_capacity(pids.len());
     for &pid in pids {
-        // SAFETY: pidfd_open takes (pid, flags) and returns an fd or -1;
-        // no pointer arguments. There is no libc wrapper at this repo's
-        // MSRV baseline, hence the raw syscall.
-        let fd = unsafe { c::syscall(c::SYS_pidfd_open, pid, 0u32) };
-        if fd < 0 {
-            let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            if code == libc::ENOSYS {
-                return Err(PlatformError::new(
-                    ErrorKind::Unsupported,
-                    OsCode::Errno(code),
-                    "pidfd_open",
-                ));
-            }
-            return Err(errno_err("pidfd_open", code, OsStr::new("")));
-        }
-        // SAFETY: `fd` is a freshly returned, valid, otherwise-unowned
-        // descriptor; wrapped exactly once.
-        pidfds.push(unsafe { OwnedFd::from_raw_fd(fd as c::c_int) });
+        pidfds.push(pidfd_open(pid)?);
     }
 
     use std::os::fd::AsRawFd;
