@@ -46,11 +46,15 @@ cargo build && ./target/debug/rcat some-file
 
 Release **R0/R1 (partial)** per the RFC roadmap: workspace, error model,
 capability-fs trait surface, mock backend, Linux `Dir` over the `openat`
-family, parity suite seed, reference consumer, CI (fmt, clippy `-D
-warnings`, tests on ubuntu+windows × stable+MSRV, unsafe-scope gate,
-cargo-deny). The Windows `Dir` implementation and the process backends are
-next; the reactor/pty/quoting mechanisms arrive via the rush hoist (RFC §7)
-and are deliberately not designed here first.
+family, Windows `Dir` over `NtCreateFile` handle-relative opens (the
+ntdll admission rationale lives in `platform-windows/src/ffi/nt_surface.rs`),
+parity suite on both OS legs, reference consumer wired to both native
+backends, CI (fmt, clippy `-D warnings`, tests on ubuntu+windows ×
+stable+MSRV, mingw cross-compile pre-check, unsafe-scope gate,
+cargo-deny). The process backends are next; the reactor/pty/quoting
+mechanisms arrive via the rush hoist (RFC §7, donor recorded in
+[`docs/r2-hoist-donor.md`](docs/r2-hoist-donor.md)) and are deliberately
+not designed here first.
 
 ## License
 

@@ -4,6 +4,7 @@ description = "Linux backend: libc floor now (RFC v2 §2 D-2); raw-syscall Track
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 platform.workspace = true

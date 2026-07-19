@@ -4,6 +4,7 @@ description = "Reference consumer and M1 exercise ground (RFC v2 §3). Not a uut
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 platform.workspace = true
@@ -13,6 +14,9 @@ platform-mock.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 platform-linux.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+platform-windows.workspace = true
 
 [[bin]]
 name = "rcat"

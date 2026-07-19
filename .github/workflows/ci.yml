@@ -43,6 +43,7 @@ jobs:
             | grep -v "forbid(unsafe_code)" \
             | grep -v "deny(unsafe_code)" \
             | grep -v "unsafe_code = " \
+            | grep -v ':[[:space:]]*//' \
             || true)
           if [ -n "$violations" ]; then
             echo "unsafe found outside sys/ module trees:"; echo "$violations"; exit 1
@@ -57,3 +58,21 @@ jobs:
         with:
           tool: cargo-deny
       - run: cargo deny check
+
+  # Fast Windows feedback without waiting on a windows-latest runner: a
+  # cross-compile check from Linux catches most platform-windows compile
+  # errors in minutes. The windows-latest matrix leg above remains the real
+  # gate — this is a pre-check, not a replacement. (Practice borrowed from
+  # rusty_win32, the R2 hoist donor — see docs/r2-hoist-donor.md.)
+  cross-compile-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+          components: clippy
+      - name: cargo check (windows target, all targets)
+        run: cargo check --workspace --target x86_64-pc-windows-gnu --all-targets
+      - name: cargo clippy (windows target, warnings are errors)
+        run: cargo clippy --workspace --target x86_64-pc-windows-gnu --all-targets -- -D warnings
