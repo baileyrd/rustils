@@ -51,6 +51,10 @@ fn to_cstring(path: &OsStr, op: &'static str) -> Result<CString> {
 }
 
 /// `openat(dirfd, rel, flags, mode)` returning an owned fd.
+///
+/// `flags` are `O_*` values; on Linux the libc crate's and the kernel's
+/// values are the same numbers, so both backends accept them unchanged.
+#[cfg(not(feature = "track-p"))]
 pub fn openat(dirfd: RawFd, rel: &OsStr, flags: i32, mode: u32) -> Result<OwnedFd> {
     let c_rel = to_cstring(rel, "openat")?;
     // SAFETY: `c_rel` is a valid NUL-terminated string that outlives the
@@ -60,6 +64,17 @@ pub fn openat(dirfd: RawFd, rel: &OsStr, flags: i32, mode: u32) -> Result<OwnedF
     if fd < 0 {
         return Err(os_err("openat", rel));
     }
+    // SAFETY: `fd` is a freshly returned, valid, otherwise-unowned
+    // descriptor; wrapping it exactly once transfers ownership.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// `openat(dirfd, rel, flags, mode)` — Track P: raw `SYS_openat`.
+#[cfg(feature = "track-p")]
+pub fn openat(dirfd: RawFd, rel: &OsStr, flags: i32, mode: u32) -> Result<OwnedFd> {
+    let c_rel = to_cstring(rel, "openat")?;
+    let fd = rusty_libc::fd::openat(dirfd, &c_rel, flags | rusty_libc::fd::O_CLOEXEC, mode)
+        .map_err(|e| trackp_err("openat", e).with_path(rel))?;
     // SAFETY: `fd` is a freshly returned, valid, otherwise-unowned
     // descriptor; wrapping it exactly once transfers ownership.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
@@ -104,6 +119,7 @@ pub fn write(fd: &OwnedFd, buf: &[u8]) -> Result<usize> {
 }
 
 /// `mkdirat(dirfd, rel, 0o777)` (mode filtered by umask, as usual).
+#[cfg(not(feature = "track-p"))]
 pub fn mkdirat(dirfd: RawFd, rel: &OsStr) -> Result<()> {
     let c_rel = to_cstring(rel, "mkdirat")?;
     // SAFETY: valid NUL-terminated path outliving the call; valid dirfd.
@@ -114,7 +130,16 @@ pub fn mkdirat(dirfd: RawFd, rel: &OsStr) -> Result<()> {
     Ok(())
 }
 
+/// `mkdirat(dirfd, rel, 0o777)` — Track P: raw `SYS_mkdirat`.
+#[cfg(feature = "track-p")]
+pub fn mkdirat(dirfd: RawFd, rel: &OsStr) -> Result<()> {
+    let c_rel = to_cstring(rel, "mkdirat")?;
+    rusty_libc::fs::mkdirat(dirfd, &c_rel, 0o777)
+        .map_err(|e| trackp_err("mkdirat", e).with_path(rel))
+}
+
 /// `unlinkat(dirfd, rel, flags)`.
+#[cfg(not(feature = "track-p"))]
 pub fn unlinkat(dirfd: RawFd, rel: &OsStr, remove_dir: bool) -> Result<()> {
     let c_rel = to_cstring(rel, "unlinkat")?;
     let flags = if remove_dir { c::AT_REMOVEDIR } else { 0 };
@@ -126,7 +151,21 @@ pub fn unlinkat(dirfd: RawFd, rel: &OsStr, remove_dir: bool) -> Result<()> {
     Ok(())
 }
 
+/// `unlinkat(dirfd, rel, flags)` — Track P: raw `SYS_unlinkat`.
+#[cfg(feature = "track-p")]
+pub fn unlinkat(dirfd: RawFd, rel: &OsStr, remove_dir: bool) -> Result<()> {
+    let c_rel = to_cstring(rel, "unlinkat")?;
+    let flags = if remove_dir {
+        rusty_libc::fs::AT_REMOVEDIR
+    } else {
+        0
+    };
+    rusty_libc::fs::unlinkat(dirfd, &c_rel, flags)
+        .map_err(|e| trackp_err("unlinkat", e).with_path(rel))
+}
+
 /// `fstatat` returning (file type, size).
+#[cfg(not(feature = "track-p"))]
 pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
     let c_rel = to_cstring(rel, "fstatat")?;
     // SAFETY: `stat` is a plain-old-data struct for which the all-zeroes
@@ -146,6 +185,30 @@ pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
         _ => FileType::Other,
     };
     Ok((ft, st.st_size as u64))
+}
+
+/// Metadata via raw `SYS_statx` — Track P. There is no raw `fstatat` worth
+/// wanting: `statx` is the kernel's own extended-stat interface, the buffer
+/// layout is kernel-defined (no glibc `struct stat` translation shim), and
+/// the mode/size fields live at const-asserted offsets in rusty_libc.
+#[cfg(feature = "track-p")]
+pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
+    use rusty_libc::fs as rfs;
+    let c_rel = to_cstring(rel, "statx")?;
+    let st = rfs::statx(
+        dirfd,
+        &c_rel,
+        rfs::AT_SYMLINK_NOFOLLOW,
+        rfs::STATX_BASIC_STATS,
+    )
+    .map_err(|e| trackp_err("statx", e).with_path(rel))?;
+    let ft = match st.file_type() {
+        rfs::S_IFREG => FileType::File,
+        rfs::S_IFDIR => FileType::Dir,
+        rfs::S_IFLNK => FileType::Symlink,
+        _ => FileType::Other,
+    };
+    Ok((ft, st.stx_size))
 }
 
 /// Enumerate a directory via `fdopendir`/`readdir`, consuming an fd opened
