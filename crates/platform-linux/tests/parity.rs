@@ -18,7 +18,9 @@ fn assert_fs_behavior(root: &dyn Dir) {
         .expect("create");
     f.write(b"one \xff two").expect("write");
     drop(f);
-    let mut f = root.open(OsStr::new("a.bin"), &OpenOptions::read()).expect("open");
+    let mut f = root
+        .open(OsStr::new("a.bin"), &OpenOptions::read())
+        .expect("open");
     let mut buf = [0u8; 64];
     let n = f.read(&mut buf).expect("read");
     assert_eq!(&buf[..n], b"one \xff two");
@@ -37,7 +39,11 @@ fn assert_fs_behavior(root: &dyn Dir) {
     let e = root
         .open(
             OsStr::new("a.bin"),
-            &OpenOptions { write: true, create_new: true, ..Default::default() },
+            &OpenOptions {
+                write: true,
+                create_new: true,
+                ..Default::default()
+            },
         )
         .err()
         .expect("create_new over existing must fail");
@@ -47,10 +53,18 @@ fn assert_fs_behavior(root: &dyn Dir) {
     // non-empty removal, then remove bottom-up
     root.create_dir(OsStr::new("d")).expect("mkdir");
     let d = root.open_dir(OsStr::new("d")).expect("open_dir");
-    d.open(OsStr::new("inner"), &OpenOptions::create_truncate()).expect("create");
-    let names: Vec<_> = d.read_dir().expect("read_dir").into_iter().map(|e| e.name).collect();
+    d.open(OsStr::new("inner"), &OpenOptions::create_truncate())
+        .expect("create");
+    let names: Vec<_> = d
+        .read_dir()
+        .expect("read_dir")
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
     assert!(names.contains(&OsStr::new("inner").to_os_string()));
-    let e = root.remove_dir(OsStr::new("d")).expect_err("non-empty removal must fail");
+    let e = root
+        .remove_dir(OsStr::new("d"))
+        .expect_err("non-empty removal must fail");
     assert_eq!(e.kind, ErrorKind::DirectoryNotEmpty);
     d.remove_file(OsStr::new("inner")).expect("rm inner");
     root.remove_dir(OsStr::new("d")).expect("rmdir");

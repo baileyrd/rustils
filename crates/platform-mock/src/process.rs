@@ -56,15 +56,16 @@ impl Spawner for MockSpawner {
             PlatformError::new(ErrorKind::NotFound, OsCode::None, "spawn")
                 .with_path(cmd.program.clone())
         })?;
-        Ok(Box::new(MockChild { status: script.status }))
+        Ok(Box::new(MockChild {
+            status: script.status,
+        }))
     }
 
     fn resolve(&self, program: &OsStr) -> Result<OsString> {
         if self.scripts.contains_key(program) {
             Ok(program.to_os_string())
         } else {
-            Err(PlatformError::new(ErrorKind::NotFound, OsCode::None, "resolve")
-                .with_path(program))
+            Err(PlatformError::new(ErrorKind::NotFound, OsCode::None, "resolve").with_path(program))
         }
     }
 }
@@ -76,9 +77,7 @@ mod tests {
     #[test]
     fn scripted_child_reports_decoded_status() {
         let spawner = MockSpawner::new().script("true", ExitStatus::Code(0));
-        let child = spawner
-            .spawn(&Command::new("true", "/"))
-            .expect("spawn");
+        let child = spawner.spawn(&Command::new("true", "/")).expect("spawn");
         assert!(child.wait().expect("wait").success());
     }
 
