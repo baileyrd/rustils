@@ -11,7 +11,7 @@ use std::ffi::{CString, OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{EnvSpec, ExitStatus, Stdio};
+use platform::process::{EnvSpec, ExitStatus, GroupSpec, Stdio};
 
 use crate::ffi::libc_surface as c;
 
@@ -88,9 +88,42 @@ impl Drop for FileActions {
     }
 }
 
+/// RAII for `posix_spawnattr_t`, mirroring [`FileActions`].
+struct SpawnAttr(c::posix_spawnattr_t);
+
+impl SpawnAttr {
+    fn new() -> Result<Self> {
+        // SAFETY: `attr` is a valid out-pointer; init writes it before
+        // any use, and the value is destroyed exactly once by Drop.
+        let (r, attr) = unsafe {
+            let mut attr: c::posix_spawnattr_t = std::mem::zeroed();
+            let r = c::posix_spawnattr_init(&mut attr);
+            (r, attr)
+        };
+        if r != 0 {
+            return Err(errno_err("posix_spawnattr_init", r, OsStr::new("")));
+        }
+        Ok(Self(attr))
+    }
+}
+
+impl Drop for SpawnAttr {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` was successfully initialized at construction
+        // and is destroyed exactly once here.
+        unsafe {
+            c::posix_spawnattr_destroy(&mut self.0);
+        }
+    }
+}
+
 /// Spawn `path` (an already-resolved program path) with `argv0` + `args`,
 /// working directory `cwd`, environment per `env`, and the given stdio
-/// wiring. Returns the child pid.
+/// wiring. `GroupSpec::NewGroup` makes the child a fresh process-group
+/// leader before it executes (`POSIX_SPAWN_SETPGROUP` with pgroup 0 — the
+/// race-free at-spawn placement; extraction map D1's double-`setpgid`
+/// lesson is subsumed by the kernel doing it during spawn). Returns the
+/// child pid.
 pub fn spawn(
     path: &OsStr,
     argv0: &OsStr,
@@ -98,6 +131,7 @@ pub fn spawn(
     cwd: &OsStr,
     env: &EnvSpec,
     stdio: [Stdio; 3],
+    group: GroupSpec,
 ) -> Result<c::pid_t> {
     // Every allocation happens here, before the spawn call (B-1/B-2 fix
     // standard): owned CStrings outlive the raw pointer arrays built from
@@ -144,18 +178,35 @@ pub fn spawn(
         }
     }
 
+    let mut attr = SpawnAttr::new()?;
+    if group == GroupSpec::NewGroup {
+        // SAFETY: `attr.0` is initialized; setflags/setpgroup have no
+        // pointer arguments beyond it.
+        let r = unsafe {
+            let r = c::posix_spawnattr_setflags(&mut attr.0, c::POSIX_SPAWN_SETPGROUP as _);
+            if r == 0 {
+                c::posix_spawnattr_setpgroup(&mut attr.0, 0)
+            } else {
+                r
+            }
+        };
+        if r != 0 {
+            return Err(errno_err("posix_spawnattr_setpgroup", r, OsStr::new("")));
+        }
+    }
+
     let mut pid: c::pid_t = 0;
     // SAFETY: every pointer argument references an owned value that
     // outlives this call (`c_path`, the NUL-terminated `argv_ptrs`/
     // `env_ptrs` arrays whose elements point into `c_argv`/`c_env`, the
-    // initialized `actions.0`); `pid` is a valid out-pointer; the null
-    // attrp is documented-valid (default attributes).
+    // initialized `actions.0` and `attr.0`); `pid` is a valid
+    // out-pointer.
     let r = unsafe {
         c::posix_spawn(
             &mut pid,
             c_path.as_ptr(),
             &actions.0,
-            std::ptr::null(),
+            &attr.0,
             argv_ptrs.as_ptr(),
             env_ptrs.as_ptr(),
         )
@@ -164,6 +215,30 @@ pub fn spawn(
         return Err(errno_err("posix_spawn", r, path));
     }
     Ok(pid)
+}
+
+/// `SIGKILL` the whole process group led by `pid` (which must have been
+/// spawned with `GroupSpec::NewGroup`, making pid == pgid).
+pub fn kill_group(pid: c::pid_t) -> Result<()> {
+    // SAFETY: kill has no pointer arguments; the negative-pid form
+    // targets the process group `pid` leads.
+    let r = unsafe { c::kill(-pid, c::SIGKILL) };
+    if r != 0 {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(errno_err("kill", code, OsStr::new("")));
+    }
+    Ok(())
+}
+
+/// `SIGKILL` the single process `pid`.
+pub fn kill_single(pid: c::pid_t) -> Result<()> {
+    // SAFETY: kill has no pointer arguments.
+    let r = unsafe { c::kill(pid, c::SIGKILL) };
+    if r != 0 {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(errno_err("kill", code, OsStr::new("")));
+    }
+    Ok(())
 }
 
 /// Blocking `waitpid` on `pid`, decoding the raw status word into the

@@ -160,9 +160,14 @@ them.
    exclusively by `winargv`), consuming `wait` with decoded status
    (Signaled pinned on the Linux leg), mechanism-level `resolve`
    (PATH+execbit / PATH+PATHEXT), explicit-env and Stdio Null wiring,
-   `rrun` as the gating consumer, parity tests on both legs. Remaining
-   in step 2: groups/kill-tree (suspended spawn + Job Objects / setpgid)
-   and the D8 divergence entries that land with them.
+   `rrun` as the gating consumer, parity tests on both legs.
+   **Second slice landed:** `GroupSpec::NewGroup` + `Child::kill_tree`/
+   `kill_single` — `POSIX_SPAWN_SETPGROUP` at-spawn placement on Linux;
+   D2's suspended-spawn → assign-to-kill-on-close-Job → resume sequence
+   on Windows — with divergence entries 001 (killed-status form) and 002
+   (drop-unwaited semantics) recorded and parity-pinned. Remaining from
+   D2 for later: disown-style detach (clear-kill-on-close), which waits
+   for a consumer that needs it.
 3. **Wait-any / reactor seed** (D2's `wait_any` + D6's signal source),
    absorbing the 64-handle limit internally per §5.6.
 4. **Stdio/handle model** (D5) — decide std-slot-swap vs STARTUPINFO

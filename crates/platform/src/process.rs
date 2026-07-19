@@ -40,6 +40,21 @@ pub enum Stdio {
     Null,
 }
 
+/// Process-group placement for the child (RFC v2 §5.4 — groups are
+/// first-class). Maps to `setpgid`-at-spawn on unix and a kill-on-close
+/// Job Object joined before the first instruction on Windows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GroupSpec {
+    /// Stay in the parent's group / no job object.
+    #[default]
+    Inherit,
+    /// Lead a fresh group: the child (and everything it spawns) becomes
+    /// [`Child::kill_tree`]'s target. On Windows the job is
+    /// kill-on-close, so dropping the child without waiting terminates
+    /// the tree (see `docs/behavior/process.md`).
+    NewGroup,
+}
+
 /// A fully-specified spawn request.
 ///
 /// Built with [`Command`], executed by a [`Spawner`]. `argv` is a list of
@@ -58,6 +73,7 @@ pub struct Command {
     pub stdin: Stdio,
     pub stdout: Stdio,
     pub stderr: Stdio,
+    pub group: GroupSpec,
 }
 
 impl Command {
@@ -70,6 +86,7 @@ impl Command {
             stdin: Stdio::default(),
             stdout: Stdio::default(),
             stderr: Stdio::default(),
+            group: GroupSpec::default(),
         }
     }
 
@@ -92,6 +109,12 @@ impl Command {
     #[must_use]
     pub fn env(mut self, env: EnvSpec) -> Self {
         self.env = env;
+        self
+    }
+
+    #[must_use]
+    pub fn group(mut self, group: GroupSpec) -> Self {
+        self.group = group;
         self
     }
 }
@@ -126,6 +149,18 @@ pub trait Child {
 
     /// OS process identifier, for display/diagnostics.
     fn id(&self) -> u32;
+
+    /// Forcibly terminate the child's whole group (the child and every
+    /// descendant). Requires [`GroupSpec::NewGroup`] at spawn — on a
+    /// child spawned with `Inherit` this fails `Unsupported` rather than
+    /// guessing at a target (killing the parent's own group is the
+    /// alternative, and it is never what the caller meant). The child
+    /// must still be `wait`ed to observe the resulting status; the form
+    /// that status takes is OS-divergent (divergence 001).
+    fn kill_tree(&self) -> Result<()>;
+
+    /// Forcibly terminate the child process only — descendants survive.
+    fn kill_single(&self) -> Result<()>;
 }
 
 /// A backend capable of spawning processes. Object-safe.

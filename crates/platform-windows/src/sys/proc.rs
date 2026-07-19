@@ -122,16 +122,51 @@ fn inheritable_dup_of_std(slot: u32) -> Result<Option<SlotHandle>> {
     Ok(OwnedWinHandle::from_raw(dup).map(SlotHandle::Owned))
 }
 
+/// Create a kill-on-close Job Object (extraction map D2: the group
+/// mechanism — closing the last handle terminates every member, so a
+/// dropped-unwaited grouped child cannot leak its tree).
+fn create_kill_on_close_job() -> Result<OwnedWinHandle> {
+    // SAFETY: null security attributes and name are documented-valid.
+    let job = unsafe { w::CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    let job = OwnedWinHandle::from_raw(job)
+        .ok_or_else(|| errmap::last_win32_err("CreateJobObjectW", OsStr::new("")))?;
+    // SAFETY: JOBOBJECT_EXTENDED_LIMIT_INFORMATION is plain-old-data for
+    // which all-zeroes is valid; only the limit flag is set before use.
+    let mut info: w::JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    info.BasicLimitInformation.LimitFlags = w::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // SAFETY: `job` is the valid handle just created; `info` is a fully
+    // valid struct of exactly the passed size, outliving the call.
+    let ok = unsafe {
+        w::SetInformationJobObject(
+            job.as_raw(),
+            w::JobObjectExtendedLimitInformation,
+            (&info as *const w::JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<w::JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(errmap::last_win32_err(
+            "SetInformationJobObject",
+            OsStr::new(""),
+        ));
+    }
+    Ok(job)
+}
+
 /// Spawn `command_line` (winargv-built, not yet NUL-terminated) with
-/// working directory `cwd`. Returns (process handle, pid); the thread
-/// handle is closed here — nothing in this slice resumes threads
-/// (suspended spawn arrives with process groups).
+/// working directory `cwd`. With `new_group`, the child starts
+/// `CREATE_SUSPENDED`, joins a fresh kill-on-close Job Object, and only
+/// then resumes — job membership is guaranteed before the child (or
+/// anything it later spawns) executes a single instruction (extraction
+/// map D2's proven sequence). Returns (process handle, job handle if
+/// grouped, pid).
 pub fn spawn(
     command_line: &[u16],
     cwd: &OsStr,
     env: &EnvSpec,
     stdio: [Stdio; 3],
-) -> Result<(OwnedWinHandle, u32)> {
+    new_group: bool,
+) -> Result<(OwnedWinHandle, Option<OwnedWinHandle>, u32)> {
     let mut line: Vec<u16> = command_line.to_vec();
     line.push(0);
     let cwd_w = to_wide_nul(cwd);
@@ -167,11 +202,14 @@ pub fn spawn(
             .map_or(std::ptr::null_mut(), SlotHandle::raw);
     }
 
-    let flags = if block.is_some() {
+    let mut flags = if block.is_some() {
         w::CREATE_UNICODE_ENVIRONMENT
     } else {
         0
     };
+    if new_group {
+        flags |= w::CREATE_SUSPENDED;
+    }
     let env_ptr = block
         .as_ref()
         .map_or(std::ptr::null(), |b| b.as_ptr().cast::<core::ffi::c_void>());
@@ -207,10 +245,72 @@ pub fn spawn(
     // `slot_handles` drops here — CreateProcessW has snapshotted them.
     let process = OwnedWinHandle::from_raw(pi.hProcess)
         .ok_or_else(|| PlatformError::new(ErrorKind::Other, OsCode::None, "CreateProcessW"))?;
-    // The main thread runs immediately in this slice; its handle is not
-    // retained. Suspended spawn (groups) will retain it.
-    drop(OwnedWinHandle::from_raw(pi.hThread));
-    Ok((process, pi.dwProcessId))
+    let thread = OwnedWinHandle::from_raw(pi.hThread);
+
+    if !new_group {
+        // The main thread runs immediately; its handle is not retained.
+        drop(thread);
+        return Ok((process, None, pi.dwProcessId));
+    }
+
+    // Suspended → assign → resume. On any failure the suspended child
+    // must not be leaked: terminate it directly (it never ran an
+    // instruction, so this is clean).
+    let sequence = (|| -> Result<OwnedWinHandle> {
+        let job = create_kill_on_close_job()?;
+        // SAFETY: both handles are valid and open; the process is
+        // suspended, so membership precedes its first instruction.
+        let ok = unsafe { w::AssignProcessToJobObject(job.as_raw(), process.as_raw()) };
+        if ok == 0 {
+            return Err(errmap::last_win32_err(
+                "AssignProcessToJobObject",
+                OsStr::new(""),
+            ));
+        }
+        let thread = thread.as_ref().ok_or_else(|| {
+            PlatformError::new(ErrorKind::Other, OsCode::None, "CreateProcessW thread")
+        })?;
+        // SAFETY: `thread` is the valid, suspended main-thread handle.
+        let prev = unsafe { w::ResumeThread(thread.as_raw()) };
+        if prev == u32::MAX {
+            return Err(errmap::last_win32_err("ResumeThread", OsStr::new("")));
+        }
+        Ok(job)
+    })();
+    match sequence {
+        Ok(job) => Ok((process, Some(job), pi.dwProcessId)),
+        Err(e) => {
+            // SAFETY: `process` is the valid handle of the still-suspended
+            // (or at worst just-assigned) child this call created; it is
+            // terminated exactly once here before the handles drop.
+            unsafe {
+                w::TerminateProcess(process.as_raw(), 1);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Terminate every process in `job` (kill-tree). Exit code 1 — Windows
+/// has no signal identity to encode (divergence 001).
+pub fn terminate_job(job: &OwnedWinHandle) -> Result<()> {
+    // SAFETY: `job` is a valid open job handle for the life of `&self`.
+    let ok = unsafe { w::TerminateJobObject(job.as_raw(), 1) };
+    if ok == 0 {
+        return Err(errmap::last_win32_err("TerminateJobObject", OsStr::new("")));
+    }
+    Ok(())
+}
+
+/// Terminate the single process `process` with exit code 1.
+pub fn terminate_process(process: &OwnedWinHandle) -> Result<()> {
+    // SAFETY: `process` is a valid open process handle for the life of
+    // `&self`.
+    let ok = unsafe { w::TerminateProcess(process.as_raw(), 1) };
+    if ok == 0 {
+        return Err(errmap::last_win32_err("TerminateProcess", OsStr::new("")));
+    }
+    Ok(())
 }
 
 /// Block until `process` exits; decode the code. `Signaled` is never

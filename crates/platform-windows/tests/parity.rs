@@ -148,3 +148,58 @@ fn windows_process_backend_conforms() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+/// Groups and kill-tree (divergence 001 pin, Windows side). The sleeper
+/// (`ping -n 30` ≈ 29s) completing inside cargo's normal budget IS the
+/// kill assertion (wall-clock discipline, extraction map D7); instant-
+/// exit stand-ins keep the refusal case race-free.
+#[test]
+fn windows_process_group_kill() {
+    use platform::process::{Command, ExitStatus, GroupSpec, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_windows::WindowsSpawner;
+
+    let sleeper = |group: GroupSpec| {
+        let mut c = Command::new("ping", tmp.clone())
+            .arg("-n")
+            .arg("30")
+            .arg("127.0.0.1")
+            .group(group);
+        c.stdout = Stdio::Null;
+        c
+    };
+
+    // kill_tree on a NewGroup child: TerminateJobObject reaches the job;
+    // wait reports Code(1) — Windows has no signal to encode (divergence
+    // 001, the cross-OS pin opposite Linux's Signaled(9)).
+    let child = s.spawn(&sleeper(GroupSpec::NewGroup)).expect("spawn");
+    child.kill_tree().expect("kill_tree");
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Code(1));
+
+    // kill_tree reaches a grandchild: cmd spawns ping as its own child;
+    // killing the job takes both down promptly.
+    let mut c = Command::new("cmd", tmp.clone())
+        .arg("/c")
+        .arg("ping -n 30 127.0.0.1 >NUL")
+        .group(GroupSpec::NewGroup);
+    c.stdout = Stdio::Null;
+    let child = s.spawn(&c).expect("spawn");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    child.kill_tree().expect("kill_tree");
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Code(1));
+
+    // kill_single works without a group.
+    let child = s.spawn(&sleeper(GroupSpec::Inherit)).expect("spawn");
+    child.kill_single().expect("kill_single");
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Code(1));
+
+    // kill_tree without NewGroup is refused, not guessed at.
+    let c = Command::new("cmd", tmp).arg("/c").arg("exit 0");
+    let child = s.spawn(&c).expect("spawn");
+    assert_eq!(
+        child.kill_tree().expect_err("must refuse").kind,
+        platform::error::ErrorKind::Unsupported
+    );
+    child.wait().expect("wait");
+}

@@ -7,7 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, Spawner};
+use platform::process::{Child, Command, ExitStatus, GroupSpec, Spawner};
 
 use crate::sys::handle::OwnedWinHandle;
 use crate::sys::proc;
@@ -18,8 +18,13 @@ use crate::winargv;
 pub struct WindowsSpawner;
 
 /// A spawned child; `wait` consumes it (double-wait unrepresentable).
+/// A `NewGroup` child holds its kill-on-close Job Object handle: dropping
+/// the child without waiting terminates the whole tree (pinned in
+/// `docs/behavior/process.md`; the disown-style detach that reverses
+/// kill-on-close arrives with rush adoption — extraction map D2).
 pub struct WindowsChild {
     process: OwnedWinHandle,
+    job: Option<OwnedWinHandle>,
     pid: u32,
 }
 
@@ -30,6 +35,21 @@ impl Child for WindowsChild {
 
     fn id(&self) -> u32 {
         self.pid
+    }
+
+    fn kill_tree(&self) -> Result<()> {
+        match &self.job {
+            Some(job) => proc::terminate_job(job),
+            None => Err(PlatformError::new(
+                ErrorKind::Unsupported,
+                OsCode::None,
+                "kill_tree",
+            )),
+        }
+    }
+
+    fn kill_single(&self) -> Result<()> {
+        proc::terminate_process(&self.process)
     }
 }
 
@@ -77,13 +97,14 @@ impl Spawner for WindowsSpawner {
         // (.bat/.cmd get cmd-rules quoting or refusal) and builds the one
         // command line handed to CreateProcessW.
         let line = winargv::build_command_line(&resolved, &args)?;
-        let (process, pid) = proc::spawn(
+        let (process, job, pid) = proc::spawn(
             &line,
             &cmd.cwd,
             &cmd.env,
             [cmd.stdin, cmd.stdout, cmd.stderr],
+            cmd.group == GroupSpec::NewGroup,
         )?;
-        Ok(Box::new(WindowsChild { process, pid }))
+        Ok(Box::new(WindowsChild { process, job, pid }))
     }
 
     /// Mechanism-level lookup (RFC v2 §5.4): a name containing a path
