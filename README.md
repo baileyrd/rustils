@@ -29,10 +29,12 @@ crates/
   platform-windows  windows-sys floor; same layering (Dir impl = R1, on Windows CI)
   coreutils         reference consumer (rcat, ls) — tested against the mock
 docs/
-  rfc-v2.md         the governing RFC
-  behavior/         per-API behavior specs the parity suite asserts
-  divergences.md    numbered cross-backend divergence registry
-  learning/         M1 write-ups
+  rfc-v2.md              the governing RFC
+  architecture.md        target-state layer map + ecosystem repo placement
+  convergence-roadmap.md phased migration/convergence sequencing
+  behavior/              per-API behavior specs the parity suite asserts
+  divergences.md         numbered cross-backend divergence registry
+  learning/              M1 write-ups
 ```
 
 ## Verify

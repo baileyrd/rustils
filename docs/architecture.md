@@ -3,7 +3,9 @@
 **Status:** Adopted 2026-07-19 (RFC v2 Amendment A3). This document records
 the target-state picture the owner confirmed; the RFC's consumer gate (§3)
 governs *when* each future surface gets built, this document records *where*
-everything belongs when it does.
+everything belongs when it does. For *in what order* — the phased
+migration/convergence sequencing across this repo and the parallel
+tools — see [`docs/convergence-roadmap.md`](convergence-roadmap.md).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
