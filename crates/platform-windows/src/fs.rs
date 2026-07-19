@@ -3,6 +3,7 @@
 //! `openat` family (RFC v2 §5.3).
 
 use std::ffi::OsStr;
+use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
 use std::path::Path;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
@@ -31,8 +32,45 @@ impl WindowsDir {
     }
 }
 
-struct WindowsFile {
+/// An open file backed by an [`OwnedWinHandle`]. Public for std interop
+/// (RFC v2 §5.1); the [`Dir`] trait still hands out `Box<dyn File>`.
+pub struct WindowsFile {
     handle: OwnedWinHandle,
+}
+
+// std interop (RFC v2 §5.1): delegation to OwnedWinHandle's conversions —
+// handle ownership moves, no raw-handle juggling at this layer.
+
+impl AsHandle for WindowsDir {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.handle.as_handle()
+    }
+}
+
+impl From<WindowsDir> for OwnedHandle {
+    fn from(dir: WindowsDir) -> OwnedHandle {
+        OwnedHandle::from(dir.handle)
+    }
+}
+
+impl AsHandle for WindowsFile {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.handle.as_handle()
+    }
+}
+
+impl From<WindowsFile> for std::fs::File {
+    fn from(file: WindowsFile) -> std::fs::File {
+        std::fs::File::from(OwnedHandle::from(file.handle))
+    }
+}
+
+impl From<std::fs::File> for WindowsFile {
+    fn from(file: std::fs::File) -> Self {
+        Self {
+            handle: OwnedWinHandle::from(OwnedHandle::from(file)),
+        }
+    }
 }
 
 impl File for WindowsFile {

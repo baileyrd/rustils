@@ -59,6 +59,18 @@ jobs:
           tool: cargo-deny
       - run: cargo deny check
 
+  # RFC v2 §4.2: Miri on everything it can execute — the pure crates
+  # (platform, platform-mock, coreutils' library tests). The backend
+  # crates make foreign calls Miri cannot model and are excluded.
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - run: cargo miri test -p platform -p platform-mock -p coreutils --lib
+
   # Fast Windows feedback without waiting on a windows-latest runner: a
   # cross-compile check from Linux catches most platform-windows compile
   # errors in minutes. The windows-latest matrix leg above remains the real

@@ -1,7 +1,7 @@
 //! `Dir`/`File` trait impls over the sys layer. No `unsafe` here.
 
 use std::ffi::OsStr;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
@@ -32,8 +32,53 @@ impl LinuxDir {
     }
 }
 
-struct LinuxFile {
+/// An open file backed by an `OwnedFd`. Public for std interop (RFC v2
+/// §5.1); the [`Dir`] trait still hands out `Box<dyn File>`.
+pub struct LinuxFile {
     fd: OwnedFd,
+}
+
+// std interop (RFC v2 §5.1): handle types are adoptable incrementally,
+// not a total buy-in island. All conversions are safe fd-ownership moves.
+
+impl AsFd for LinuxDir {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
+impl From<LinuxDir> for OwnedFd {
+    fn from(dir: LinuxDir) -> OwnedFd {
+        dir.fd
+    }
+}
+
+/// The fd must reference a directory; operations on a capability built
+/// from a non-directory fd fail with `NotADirectory` at call time.
+impl From<OwnedFd> for LinuxDir {
+    fn from(fd: OwnedFd) -> Self {
+        Self { fd }
+    }
+}
+
+impl AsFd for LinuxFile {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
+impl From<LinuxFile> for std::fs::File {
+    fn from(file: LinuxFile) -> std::fs::File {
+        std::fs::File::from(file.fd)
+    }
+}
+
+impl From<std::fs::File> for LinuxFile {
+    fn from(file: std::fs::File) -> Self {
+        Self {
+            fd: OwnedFd::from(file),
+        }
+    }
 }
 
 impl File for LinuxFile {

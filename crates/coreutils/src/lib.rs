@@ -13,3 +13,24 @@
 
 pub mod cat;
 pub mod ls;
+
+/// Ambient entry point to this OS's native backend — the one place the
+/// CLI binaries touch a concrete backend type; everything else in this
+/// crate is written against the `platform` traits alone.
+#[cfg(any(target_os = "linux", windows))]
+pub mod native {
+    use std::path::Path;
+
+    use platform::error::Result;
+    use platform::fs::Dir;
+
+    #[cfg(target_os = "linux")]
+    pub fn open_dir(path: &Path) -> Result<Box<dyn Dir>> {
+        Ok(Box::new(platform_linux::LinuxDir::open_ambient(path)?))
+    }
+
+    #[cfg(windows)]
+    pub fn open_dir(path: &Path) -> Result<Box<dyn Dir>> {
+        Ok(Box::new(platform_windows::WindowsDir::open_ambient(path)?))
+    }
+}
