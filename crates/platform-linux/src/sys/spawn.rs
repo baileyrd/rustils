@@ -123,6 +123,7 @@ impl Drop for SpawnAttr {
 /// file action (which clears CLOEXEC on the target), and every other
 /// copy closes at exec — no leaked pipe ends keeping a reader from EOF
 /// (extraction map D5's deadlock class).
+#[cfg(not(feature = "track-p"))]
 fn make_pipe() -> Result<(OwnedFd, OwnedFd)> {
     let mut fds: [c::c_int; 2] = [0; 2];
     // SAFETY: `fds` is a valid out-array of exactly two ints.
@@ -134,6 +135,16 @@ fn make_pipe() -> Result<(OwnedFd, OwnedFd)> {
     // SAFETY: both fds are freshly returned, valid, otherwise-unowned;
     // each is wrapped exactly once.
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
+/// Track P `make_pipe`: raw `SYS_pipe2`, same CLOEXEC discipline.
+#[cfg(feature = "track-p")]
+fn make_pipe() -> Result<(OwnedFd, OwnedFd)> {
+    let (r, w) = rusty_libc::fd::pipe2(rusty_libc::fd::O_CLOEXEC)
+        .map_err(|e| errno_err("pipe2", e.0, OsStr::new("")))?;
+    // SAFETY: both fds are freshly returned, valid, otherwise-unowned;
+    // each is wrapped exactly once.
+    Ok(unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) })
 }
 
 /// Parent-side pipe ends for piped stdio slots: `[stdin write, stdout
@@ -308,11 +319,11 @@ pub fn poll_pids(pids: &[c::pid_t], timeout: Option<std::time::Duration>) -> Res
     }
 
     use std::os::fd::AsRawFd;
-    let mut fds: Vec<c::pollfd> = pidfds
+    let mut fds: Vec<PollEntry> = pidfds
         .iter()
-        .map(|fd| c::pollfd {
+        .map(|fd| PollEntry {
             fd: fd.as_raw_fd(),
-            events: c::POLLIN,
+            events: POLL_IN,
             revents: 0,
         })
         .collect();
@@ -325,26 +336,52 @@ pub fn poll_pids(pids: &[c::pid_t], timeout: Option<std::time::Duration>) -> Res
                 left.as_millis().min(i32::MAX as u128) as c::c_int
             }
         };
-        // SAFETY: `fds` is a valid array of exactly `fds.len()` pollfds,
-        // each holding an open fd owned by `pidfds`, all outliving the
-        // call.
-        let r = unsafe { c::poll(fds.as_mut_ptr(), fds.len() as c::nfds_t, timeout_ms) };
-        if r > 0 {
-            let hit = fds
-                .iter()
-                .position(|p| p.revents != 0)
-                .expect("poll reported readiness");
-            return Ok(Some(hit));
+        match poll_once(&mut fds, timeout_ms) {
+            Ok(0) => return Ok(None),
+            Ok(_) => {
+                let hit = fds
+                    .iter()
+                    .position(|p| p.revents != 0)
+                    .expect("poll reported readiness");
+                return Ok(Some(hit));
+            }
+            Err(e) if e.os == OsCode::Errno(libc::EINTR) => continue,
+            Err(e) => return Err(e),
         }
-        if r == 0 {
-            return Ok(None);
-        }
+    }
+}
+
+/// The `poll(2)` entry type: the kernel's `struct pollfd` under either
+/// backend, with identical field names — the construction above is shared.
+#[cfg(not(feature = "track-p"))]
+use crate::ffi::libc_surface::pollfd as PollEntry;
+#[cfg(feature = "track-p")]
+use rusty_libc::fd::PollFd as PollEntry;
+#[cfg(not(feature = "track-p"))]
+const POLL_IN: i16 = c::POLLIN;
+#[cfg(feature = "track-p")]
+const POLL_IN: i16 = rusty_libc::fd::POLLIN;
+
+/// One `poll(2)` round: `Ok(count)` of ready entries (0 = timeout);
+/// `EINTR` surfaces as an `Err` the caller's loop retries on.
+#[cfg(not(feature = "track-p"))]
+fn poll_once(fds: &mut [PollEntry], timeout_ms: c::c_int) -> Result<usize> {
+    // SAFETY: `fds` is a valid array of exactly `fds.len()` pollfds, each
+    // holding an open fd owned by the caller, all outliving the call.
+    let r = unsafe { c::poll(fds.as_mut_ptr(), fds.len() as c::nfds_t, timeout_ms) };
+    if r < 0 {
         let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        if code == libc::EINTR {
-            continue;
-        }
         return Err(errno_err("poll", code, OsStr::new("")));
     }
+    Ok(r as usize)
+}
+
+/// One `poll(2)` round — Track P: raw `SYS_poll` (`SYS_ppoll` on aarch64,
+/// absorbed inside rusty_libc; the removed-syscall lesson from extraction
+/// map D4 handled at the dependency's layer, not ours).
+#[cfg(feature = "track-p")]
+fn poll_once(fds: &mut [PollEntry], timeout_ms: c::c_int) -> Result<usize> {
+    rusty_libc::fd::poll(fds, timeout_ms).map_err(|e| errno_err("poll", e.0, OsStr::new("")))
 }
 
 /// `SIGKILL` the whole process group led by `pid` (which must have been
