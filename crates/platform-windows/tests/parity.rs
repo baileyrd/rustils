@@ -237,7 +237,8 @@ fn windows_wait_any_and_try_wait() {
         .spawn(&Command::new("cmd", tmp.clone()).arg("/c").arg("exit 9"))
         .expect("spawn");
     let mut children: Vec<Box<dyn Child>> = vec![sleeper, quick];
-    let idx = wait_any(&mut children, None)
+    let idx = s
+        .wait_any(&mut children, None)
         .expect("wait_any")
         .expect("no timeout");
     assert_eq!(idx, 1, "the quick child finishes first");
@@ -247,14 +248,19 @@ fn windows_wait_any_and_try_wait() {
     );
 
     // Timeout: the sleeper alone times out promptly.
-    let waited =
-        wait_any(&mut children, Some(std::time::Duration::from_millis(50))).expect("wait_any");
+    let waited = s
+        .wait_any(&mut children, Some(std::time::Duration::from_millis(50)))
+        .expect("wait_any");
     assert_eq!(waited, None);
 
     // Empty set is refused like the OS primitives refuse it.
     let mut none: Vec<Box<dyn Child>> = Vec::new();
     assert_eq!(
         wait_any(&mut none, None).expect_err("must refuse").kind,
+        platform::error::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        s.wait_any(&mut none, None).expect_err("must refuse").kind,
         platform::error::ErrorKind::InvalidInput
     );
 
@@ -313,4 +319,37 @@ fn windows_process_pipes() {
     }
     assert_eq!(got, b"round trip\r\n");
     assert!(child.wait().expect("wait").success());
+}
+
+/// Many children through the multiplexer (R3): 70 processes collected to
+/// completion — past WaitForMultipleObjects's 64-handle cap, forcing the
+/// chunked sweep that absorbs the documented limit (RFC v2 5.6).
+#[test]
+fn windows_wait_any_many_children() {
+    use platform::process::{Child, Command, ExitStatus, Spawner};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_windows::WindowsSpawner;
+    let mut children: Vec<Box<dyn Child>> = (0..70)
+        .map(|i| {
+            s.spawn(
+                &Command::new("cmd", tmp.clone())
+                    .arg("/c")
+                    .arg(format!("exit {}", i % 8)),
+            )
+            .expect("spawn")
+        })
+        .collect();
+    let mut statuses = Vec::new();
+    while !children.is_empty() {
+        let idx = s
+            .wait_any(&mut children, None)
+            .expect("wait_any")
+            .expect("no timeout");
+        statuses.push(children.remove(idx).wait().expect("wait"));
+    }
+    assert_eq!(statuses.len(), 70);
+    assert!(statuses
+        .iter()
+        .all(|st| matches!(st, ExitStatus::Code(c) if *c < 8)));
 }

@@ -278,6 +278,75 @@ pub fn spawn(
     Ok((pid, parent_ends))
 }
 
+/// Multiplexed wait over pidfds (RFC v2 §5.6 reactor internals, R3):
+/// `pidfd_open` each pid, `poll` the set with `timeout` (`None` =
+/// forever), and return `Some(position)` of a readable pidfd (= that
+/// process terminated, waitable without blocking) or `None` on timeout.
+/// `Err` with `Unsupported` if the kernel lacks `pidfd_open` (pre-5.3) —
+/// the caller falls back to the portable poll loop.
+pub fn poll_pids(pids: &[c::pid_t], timeout: Option<std::time::Duration>) -> Result<Option<usize>> {
+    let mut pidfds: Vec<OwnedFd> = Vec::with_capacity(pids.len());
+    for &pid in pids {
+        // SAFETY: pidfd_open takes (pid, flags) and returns an fd or -1;
+        // no pointer arguments. There is no libc wrapper at this repo's
+        // MSRV baseline, hence the raw syscall.
+        let fd = unsafe { c::syscall(c::SYS_pidfd_open, pid, 0u32) };
+        if fd < 0 {
+            let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if code == libc::ENOSYS {
+                return Err(PlatformError::new(
+                    ErrorKind::Unsupported,
+                    OsCode::Errno(code),
+                    "pidfd_open",
+                ));
+            }
+            return Err(errno_err("pidfd_open", code, OsStr::new("")));
+        }
+        // SAFETY: `fd` is a freshly returned, valid, otherwise-unowned
+        // descriptor; wrapped exactly once.
+        pidfds.push(unsafe { OwnedFd::from_raw_fd(fd as c::c_int) });
+    }
+
+    use std::os::fd::AsRawFd;
+    let mut fds: Vec<c::pollfd> = pidfds
+        .iter()
+        .map(|fd| c::pollfd {
+            fd: fd.as_raw_fd(),
+            events: c::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    let deadline = timeout.map(|t| std::time::Instant::now() + t);
+    loop {
+        let timeout_ms: c::c_int = match deadline {
+            None => -1,
+            Some(d) => {
+                let left = d.saturating_duration_since(std::time::Instant::now());
+                left.as_millis().min(i32::MAX as u128) as c::c_int
+            }
+        };
+        // SAFETY: `fds` is a valid array of exactly `fds.len()` pollfds,
+        // each holding an open fd owned by `pidfds`, all outliving the
+        // call.
+        let r = unsafe { c::poll(fds.as_mut_ptr(), fds.len() as c::nfds_t, timeout_ms) };
+        if r > 0 {
+            let hit = fds
+                .iter()
+                .position(|p| p.revents != 0)
+                .expect("poll reported readiness");
+            return Ok(Some(hit));
+        }
+        if r == 0 {
+            return Ok(None);
+        }
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        if code == libc::EINTR {
+            continue;
+        }
+        return Err(errno_err("poll", code, OsStr::new("")));
+    }
+}
+
 /// `SIGKILL` the whole process group led by `pid` (which must have been
 /// spawned with `GroupSpec::NewGroup`, making pid == pgid).
 pub fn kill_group(pid: c::pid_t) -> Result<()> {

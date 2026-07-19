@@ -137,6 +137,10 @@ impl Child for MockChild {
     fn take_stderr(&mut self) -> Option<Box<dyn platform::fs::File>> {
         self.stderr.take()
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 fn mem_pipe(data: Vec<u8>) -> Box<dyn platform::fs::File> {

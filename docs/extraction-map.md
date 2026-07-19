@@ -174,11 +174,17 @@ them.
    the reaped-status stash) and portable `wait_any` (poll-over-try_wait,
    10ms tick — the same coarser stand-in rush ran before adopting
    `WaitForMultipleObjects`, deliberately contract-first), consumed by
-   `rpar` and parity-pinned on both legs. Remaining for R3: the
-   OS-multiplexed internals (pidfd+poll on Linux; WFMO with the
-   64-handle limit absorbed) and D6's signal event source — the full
-   reactor of §5.6, which replaces the seed's internals without changing
-   its contract.
+   `rpar` and parity-pinned on both legs.
+   **R3 internals landed:** `Spawner::wait_any` (default = the portable
+   loop) overridden natively — pidfd_open + `poll` on Linux (raw
+   syscall; no libc wrapper at the MSRV baseline; `Unsupported` on
+   pre-5.3 kernels falls back to the portable loop), and
+   `WaitForMultipleObjects` on Windows with the 64-handle cap absorbed
+   in `sys::proc::wait_many` (≤64: one true blocking wait; beyond:
+   64-chunk zero-timeout sweeps on a 10ms tick). Parity sweeps 70
+   children on both legs — past the Windows cap by construction.
+   Remaining for R3: D6's signal event source (the trap-style
+   atomic-flag deferral core), which completes §5.6's reactor.
 4. **Stdio/handle model** (D5) — decide std-slot-swap vs STARTUPINFO
    lists on the record.
    **Landed, with the decision recorded:** `Stdio::Pipe` +

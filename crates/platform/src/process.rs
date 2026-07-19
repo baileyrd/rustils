@@ -184,6 +184,11 @@ pub trait Child {
     /// The parent's read end of the child's stderr, if piped. `Some`
     /// exactly once.
     fn take_stderr(&mut self) -> Option<Box<dyn crate::fs::File>>;
+
+    /// Downcast hook so a backend's [`Spawner::wait_any`] can reach its
+    /// own children's OS handles through the object-safe trait. Not for
+    /// consumers.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// Block until *some* child in `children` terminates, for up to `timeout`
@@ -238,6 +243,20 @@ pub trait Spawner {
     /// only — policy layers (e.g. a shell's builtin/function precedence)
     /// live in the consumer.
     fn resolve(&self, program: &OsStr) -> Result<OsString>;
+
+    /// Backend-multiplexed wait-any: same contract as the free
+    /// [`wait_any`], which is also the default implementation. Native
+    /// backends override with a real OS multiplexer (pidfd+`poll` on
+    /// Linux; `WaitForMultipleObjects` on Windows with its 64-handle
+    /// limit absorbed internally, RFC v2 §5.6) and fall back to the
+    /// portable loop for children they don't recognize.
+    fn wait_any(
+        &self,
+        children: &mut [Box<dyn Child>],
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Option<usize>> {
+        wait_any(children, timeout)
+    }
 }
 
 #[cfg(test)]

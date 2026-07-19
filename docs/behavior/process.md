@@ -49,10 +49,12 @@ assertions.
   the decoded result).
 - `wait_any` returns the index of *a* terminated child or `None` on
   timeout; an empty set is `InvalidInput`. Which index wins when several
-  have terminated is unspecified. (Seed implementation: a 10ms
-  poll-over-`try_wait` tick — the contract stays fixed when the R3
-  reactor replaces the internals with pidfd+poll /
-  `WaitForMultipleObjects`.)
+  have terminated is unspecified. The free function is the portable
+  10ms poll-over-`try_wait` tick; `Spawner::wait_any` (same contract)
+  is the backend multiplexer — pidfd+`poll` on Linux,
+  `WaitForMultipleObjects` on Windows with the 64-handle limit absorbed
+  internally — falling back to the portable loop for foreign children
+  or a pre-pidfd kernel.
 - `Stdio::Pipe` + `take_stdin`/`take_stdout`/`take_stderr`: each yields
   `Some` exactly once. Reads on a captured end return 0 at end-of-file —
   which arrives when every write-side copy has closed (on Windows,

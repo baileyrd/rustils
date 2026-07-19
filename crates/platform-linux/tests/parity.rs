@@ -229,7 +229,8 @@ fn linux_wait_any_and_try_wait() {
         .spawn(&Command::new("sh", tmp.clone()).arg("-c").arg("exit 9"))
         .expect("spawn");
     let mut children: Vec<Box<dyn Child>> = vec![sleeper, quick];
-    let idx = wait_any(&mut children, None)
+    let idx = s
+        .wait_any(&mut children, None)
         .expect("wait_any")
         .expect("no timeout");
     assert_eq!(idx, 1, "the quick child finishes first");
@@ -239,20 +240,61 @@ fn linux_wait_any_and_try_wait() {
     );
 
     // Timeout: the sleeper alone times out promptly.
-    let waited =
-        wait_any(&mut children, Some(std::time::Duration::from_millis(50))).expect("wait_any");
+    let waited = s
+        .wait_any(&mut children, Some(std::time::Duration::from_millis(50)))
+        .expect("wait_any");
     assert_eq!(waited, None);
 
-    // Empty set is refused like the OS primitives refuse it.
+    // Empty set is refused like the OS primitives refuse it — by both
+    // the portable loop and the backend multiplexer.
     let mut none: Vec<Box<dyn Child>> = Vec::new();
     assert_eq!(
         wait_any(&mut none, None).expect_err("must refuse").kind,
+        platform::error::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        s.wait_any(&mut none, None).expect_err("must refuse").kind,
         platform::error::ErrorKind::InvalidInput
     );
 
     // Release the sleeper.
     children[0].kill_single().expect("kill");
     children.remove(0).wait().expect("wait");
+}
+
+/// Many children through the multiplexer (R3): 70 processes collected to
+/// completion. On Linux this exercises a 70-fd poll set; the count is
+/// chosen to force the Windows leg past WaitForMultipleObjects's
+/// 64-handle cap into the chunked sweep.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_wait_any_many_children() {
+    use platform::process::{Child, Command, ExitStatus, Spawner};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_linux::LinuxSpawner;
+    let mut children: Vec<Box<dyn Child>> = (0..70)
+        .map(|i| {
+            s.spawn(
+                &Command::new("sh", tmp.clone())
+                    .arg("-c")
+                    .arg(format!("exit {}", i % 8)),
+            )
+            .expect("spawn")
+        })
+        .collect();
+    let mut statuses = Vec::new();
+    while !children.is_empty() {
+        let idx = s
+            .wait_any(&mut children, None)
+            .expect("wait_any")
+            .expect("no timeout");
+        statuses.push(children.remove(idx).wait().expect("wait"));
+    }
+    assert_eq!(statuses.len(), 70);
+    assert!(statuses
+        .iter()
+        .all(|st| matches!(st, ExitStatus::Code(c) if *c < 8)));
 }
 
 /// Pipes (extraction map step 4, Linux side): capture, stdin feeding with
