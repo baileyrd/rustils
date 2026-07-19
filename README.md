@@ -48,13 +48,16 @@ Release **R0/R1 (partial)** per the RFC roadmap: workspace, error model,
 capability-fs trait surface, mock backend, Linux `Dir` over the `openat`
 family, Windows `Dir` over `NtCreateFile` handle-relative opens (the
 ntdll admission rationale lives in `platform-windows/src/ffi/nt_surface.rs`),
-parity suite on both OS legs, reference consumer wired to both native
-backends, CI (fmt, clippy `-D warnings`, tests on ubuntu+windows ×
-stable+MSRV, mingw cross-compile pre-check, unsafe-scope gate,
-cargo-deny). The process backends are next; the reactor/pty/quoting
-mechanisms arrive via the rush hoist (RFC §7, donor recorded in
+parity suite on both OS legs, std-interop on all handle types (RFC §5.1),
+reference consumers (`rcat`, `rls`) wired to both native backends, CI
+(fmt, clippy `-D warnings`, tests on ubuntu+windows × stable+MSRV, mingw
+cross-compile pre-check, Miri on the pure crates, unsafe-scope gate,
+cargo-deny). Process semantics are specced
+([`docs/behavior/process.md`](docs/behavior/process.md)) with the mock as
+the anchor; the native spawn/quoting/groups/reactor mechanisms arrive via
+the rush hoist (RFC §7, donor recorded in
 [`docs/r2-hoist-donor.md`](docs/r2-hoist-donor.md)) and are deliberately
-not designed here first.
+not built here first.
 
 ## License
 

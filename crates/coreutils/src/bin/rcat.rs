@@ -4,10 +4,13 @@
 
 use std::path::Path;
 
-use platform::fs::Dir;
-
-fn run(path: &std::ffi::OsStr) -> std::process::ExitCode {
-    let p = Path::new(path);
+fn main() -> std::process::ExitCode {
+    let mut args = std::env::args_os().skip(1);
+    let Some(path) = args.next() else {
+        eprintln!("usage: rcat <file>");
+        return std::process::ExitCode::from(2);
+    };
+    let p = Path::new(&path);
     let parent = p
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
@@ -16,7 +19,7 @@ fn run(path: &std::ffi::OsStr) -> std::process::ExitCode {
         eprintln!("rcat: not a file path: {}", p.display());
         return std::process::ExitCode::from(2);
     };
-    let dir = match open_native(parent) {
+    let dir = match coreutils::native::open_dir(parent) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("rcat: {e}");
@@ -29,25 +32,4 @@ fn run(path: &std::ffi::OsStr) -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     }
     std::process::ExitCode::SUCCESS
-}
-
-#[cfg(target_os = "linux")]
-fn open_native(parent: &Path) -> platform::error::Result<Box<dyn Dir>> {
-    Ok(Box::new(platform_linux::LinuxDir::open_ambient(parent)?))
-}
-
-#[cfg(windows)]
-fn open_native(parent: &Path) -> platform::error::Result<Box<dyn Dir>> {
-    Ok(Box::new(platform_windows::WindowsDir::open_ambient(
-        parent,
-    )?))
-}
-
-fn main() -> std::process::ExitCode {
-    let mut args = std::env::args_os().skip(1);
-    let Some(path) = args.next() else {
-        eprintln!("usage: rcat <file>");
-        return std::process::ExitCode::from(2);
-    };
-    run(&path)
 }
