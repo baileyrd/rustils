@@ -25,3 +25,9 @@ pub use libc::{
 // admitted solely for `TIOCGWINSZ` — the window-size query has no
 // non-ioctl form.
 pub use libc::{cfmakeraw, ioctl, isatty};
+
+// Slice 2 (poll_readable/read_chunk/set_echo/is_raw, roadmap Phase 2).
+// ICANON and ECHO are read from/written into the `c_lflag` field already
+// reachable through `termios` above — admitted so `is_raw`'s live probe
+// and `set_echo`'s bit flip don't need to re-derive cfmakeraw's mask.
+pub use libc::{ECHO, ICANON};

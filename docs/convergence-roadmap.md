@@ -91,23 +91,35 @@ convergence work, not implied by this landing.
 
 ## Phase 2 — Terminal slice 2 (D9, remaining facets)
 
-**Lands here.** Forcing consumer: rusty_lines (via 1b above), which
-needs all of these to fully converge. Add to `platform::term`:
+**Landed 2026-07-19.** Forcing consumer: rusty_lines (via 1b above).
+Added to `platform::term::Terminal`:
 
+- `is_raw()` — a **live** OS-state probe (not a cached flag), so a
+  consumer can notice drift from something outside its own
+  `enter_raw`/`leave_raw` calls.
 - `poll_readable(timeout)` / `read_chunk` — VMIN=1/VTIME=0-style
   batched reads, distinct from the multiplexed `wait_any` reactor.
-- `set_echo(bool)` — echo toggle independent of full raw mode
-  (password prompts).
-- Bracketed-paste enable/disable + envelope decode.
-- Cooked↔raw `suspend`/`resume` (the `$EDITOR`-handoff shape, not
-  job-control handoff — that stays Unix-only/later, see below).
+  Live-verified: `rterm --raw-probe` under a real pty polls then reads
+  a batched chunk.
+- `set_echo(bool) -> Result<bool>` — echo toggle independent of full
+  raw mode (password prompts), returning the previous state so a
+  caller restores exactly.
 
-Deliberately still excluded (real D9 material, no forcing consumer
-yet): Unix job-control terminal handoff (`tcsetpgrp` give/reclaim,
-SIGTSTP/SIGCONT — waits on rush interactive or another job-control
-consumer) and rusty_naner's console-*acquisition* facet
-(attach/alloc/redirect for GUI-subsystem processes — waits on the
-rusty_naner convergence being scheduled).
+**Scoped out on purpose, not deferred** — the other two facets in the
+original plan turned out to need no new surface at all:
+bracketed paste is protocol bytes over the stream `read_chunk` already
+exposes (no OS call, so it stays consumer-expressible, not
+PAL-owned); cooked↔raw suspend/resume is exactly a second
+`leave_raw()`/`enter_raw()` pair — the existing save/restore contract
+already produces the right outcome. `docs/behavior/term.md` records
+this as a deliberate scoping decision, not an oversight.
+
+Still excluded (real D9 material, no forcing consumer yet): Unix
+job-control terminal handoff (`tcsetpgrp` give/reclaim, SIGTSTP/
+SIGCONT — waits on rush interactive or another job-control consumer)
+and rusty_naner's console-*acquisition* facet (attach/alloc/redirect
+for GUI-subsystem processes — waits on the rusty_naner convergence
+being scheduled).
 
 ---
 

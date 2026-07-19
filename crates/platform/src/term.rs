@@ -23,16 +23,33 @@
 //! contract — both are reflected in this trait's shape.
 //!
 //! Slice 1 is the portable core the donors agree on: per-stream tty
-//! detection, window size, and raw mode. Several real, larger facets are
-//! deliberately deferred to later slices, each entering only when a
-//! consumer forces it (§3): Unix job-control handoff (`tcsetpgrp`,
-//! SIGTSTP/SIGCONT — no portable twin); PTY hosting (D13 — a distinct
-//! Process×Terminal surface, not folded into raw-mode/winsize); resize
-//! *notification* (a genuine divergence `rusty_term` proves: a SIGWINCH
-//! stream on Unix vs no Windows equivalent, so Windows consumers poll —
-//! `behavior/term.md` records it); line-editing facets (bracketed
-//! paste, cooked↔raw suspend/resume, byte→key decode — from
-//! rusty_lines); and console *acquisition* for GUI-subsystem processes
+//! detection, window size, and raw mode. Slice 2 (convergence roadmap
+//! Phase 2, forced by rusty_lines' `term_sys` facade) adds the input
+//! side a line editor needs: a live [`Terminal::is_raw`] probe,
+//! [`Terminal::poll_readable`]/[`Terminal::read_chunk`] for batched,
+//! non-per-byte input, and [`Terminal::set_echo`] for a password-prompt
+//! style echo toggle independent of full raw mode.
+//!
+//! **Two facets rusty_lines has that deliberately get no new surface**
+//! here, because they need none: bracketed paste is protocol bytes over
+//! the stream the consumer already reads via [`read_chunk`](
+//! Terminal::read_chunk) — no OS call is involved, so it stays
+//! expressible by the consumer rather than owned here (the same
+//! discipline this project applies to shell policy). Cooked↔raw
+//! suspend/resume (the `$EDITOR`-handoff shape) is exactly
+//! [`enter_raw`](Terminal::enter_raw)/[`leave_raw`](Terminal::leave_raw)
+//! called a second time — their save/restore contract already covers
+//! it; naming a separate pair would duplicate, not extend, the surface.
+//!
+//! Several other real, larger facets are deliberately deferred to later
+//! slices, each entering only when a consumer forces it (§3): Unix
+//! job-control handoff (`tcsetpgrp`, SIGTSTP/SIGCONT — no portable
+//! twin); PTY hosting (D13 — a distinct Process×Terminal surface, not
+//! folded into raw-mode/winsize); resize *notification* (a genuine
+//! divergence `rusty_term` proves: a SIGWINCH stream on Unix vs no
+//! Windows equivalent, so Windows consumers poll — `behavior/term.md`
+//! records it); byte→key decode (keymap policy, stays with the
+//! consumer); and console *acquisition* for GUI-subsystem processes
 //! (attach/alloc/redirect — from rusty_naner, a separate facet from
 //! raw-mode on an already-inherited console).
 //!
@@ -41,6 +58,8 @@
 //! [`Terminal::leave_raw`] restores exactly it. Consumers own the
 //! enter/leave pairing (RAII belongs to the consumer's guard, not this
 //! object-safe trait — same division as the donors').
+
+use std::time::Duration;
 
 use crate::error::Result;
 
@@ -89,4 +108,36 @@ pub trait Terminal {
     /// Restore the state saved by [`enter_raw`](Terminal::enter_raw).
     /// Idempotent: without a prior `enter_raw` it is a no-op.
     fn leave_raw(&mut self) -> Result<()>;
+
+    /// A **live** probe of whether stdin's current attributes look raw
+    /// (line buffering and echo both off) — re-queried from the OS each
+    /// call, not cached from the last `enter_raw`. This is what lets a
+    /// consumer notice drift: something outside this handle (a `stty`
+    /// invocation, a suspended-then-foregrounded shell) can change the
+    /// terminal's mode without going through [`enter_raw`]/[`leave_raw`]
+    /// at all, and rusty_lines' self-healing idle tick exists precisely
+    /// to catch and correct that.
+    fn is_raw(&self) -> bool;
+
+    /// Block on stdin for up to `timeout` (`None` = forever), returning
+    /// whether it became readable. Works whether or not stdin is a
+    /// terminal (a redirected pipe is just as pollable) — this is a
+    /// readiness check, not a tty operation.
+    fn poll_readable(&self, timeout: Option<Duration>) -> Result<bool>;
+
+    /// Read up to `buf.len()` bytes from stdin in one call — batched,
+    /// not per-byte (the VMIN=1/VTIME=0 shape in raw mode: blocks for at
+    /// least one byte, then returns whatever else is already buffered
+    /// without an extra round trip). `Ok(0)` is EOF, matching
+    /// `std::io::Read`'s convention.
+    fn read_chunk(&self, buf: &mut [u8]) -> Result<usize>;
+
+    /// Toggle local echo on stdin, independent of full raw mode (the
+    /// password-prompt shape: line editing/canonical mode stays on,
+    /// only the terminal's echo of typed characters is suppressed).
+    /// Returns the *previous* echo state, so a caller restores exactly
+    /// by calling `set_echo(previous)` — the same save/restore
+    /// discipline as raw mode, scaled down to one bool because that is
+    /// all this operation touches.
+    fn set_echo(&mut self, on: bool) -> Result<bool>;
 }

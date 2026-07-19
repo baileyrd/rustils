@@ -385,6 +385,8 @@ fn windows_terminal_honest_when_redirected() {
     assert!(!t.is_tty(TermStream::Stdout));
     assert!(!t.is_tty(TermStream::Stderr));
     assert!(t.window_size().is_err(), "no tty: size must be Err");
+    assert!(!t.is_raw(), "no tty: is_raw's live probe must say false");
     assert!(t.enter_raw().is_err(), "no tty: raw mode must refuse");
     t.leave_raw().expect("leave without enter is an Ok no-op");
+    assert!(t.set_echo(false).is_err(), "no tty: set_echo must refuse");
 }

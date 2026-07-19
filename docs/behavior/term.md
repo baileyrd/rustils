@@ -38,7 +38,72 @@ contract tests.
   `coreutils::term_report::with_raw` (restores on success *and* on body
   error — mock-tested).
 
-## Not in slice 1 (recorded, gated)
+## is_raw
+
+- A **live** probe — re-queried from the OS on every call, never cached
+  from the last `enter_raw`. This is the point of the primitive: it is
+  what lets a consumer (rusty_lines' self-healing idle tick) notice
+  drift from something outside this handle — an external `stty`
+  invocation, a suspended-then-foregrounded shell — that changed the
+  terminal's mode without going through `enter_raw`/`leave_raw` at all.
+- Linux: `tcgetattr` then check `ICANON`/`ECHO` both clear. Windows:
+  `GetConsoleMode` then check `ENABLE_LINE_INPUT`/`ENABLE_ECHO_INPUT`
+  both clear. A handle that cannot be queried reports `false` — a
+  best-effort probe, not a fallible operation.
+- **Parity-pinned (both legs):** with stdin redirected, `is_raw()` is
+  `false` (matching `enter_raw`'s refusal on the same stream).
+
+## poll_readable / read_chunk
+
+- `poll_readable` blocks on stdin up to a timeout (`None` = forever),
+  returning whether it became readable — works on any stdin, tty or
+  not (a redirected pipe polls fine). Linux: `poll(2)`. Windows:
+  `WaitForSingleObject` on the console input handle — coarser than
+  "a byte is ready" (any input record wakes it, not just keystrokes),
+  but `ReadFile` afterward blocks correctly on whatever was actually
+  queued, so a spurious wake costs one extra round trip, never a wrong
+  read (recorded here rather than as a divergence: both ends produce
+  the same observable contract, only the wake granularity differs).
+- `read_chunk` is one call, batched — not per-byte. In raw mode this is
+  the VMIN=1/VTIME=0 shape: blocks for at least one byte, then returns
+  whatever else is already buffered without a second round trip.
+  `Ok(0)` is EOF, matching `std::io::Read`'s convention.
+- **Live-verified** (not parity-pinned — timing-sensitive, exercised by
+  hand): `rterm --raw-probe` under a real pty polls, then reads a
+  batched chunk, entirely through these two primitives.
+
+## set_echo
+
+- Toggles local echo on stdin independent of full raw mode — the
+  password-prompt shape: canonical/line-editing mode stays on, only
+  the terminal's echo of typed characters is suppressed. Linux: flip
+  `ECHO` in `c_lflag`, `tcsetattr(TCSADRAIN)`. Windows: flip
+  `ENABLE_ECHO_INPUT`, `SetConsoleMode`.
+- Returns the *previous* on/off state, so a caller restores exactly by
+  calling `set_echo(previous)` — the raw-mode save/restore discipline,
+  scaled to the one bool this operation touches.
+- **Parity-pinned (both legs):** with stdin redirected, `set_echo`
+  returns `Err` (matching `enter_raw`'s and `is_raw`'s refusal — a
+  non-terminal fd has no echo state to toggle).
+
+## Deliberately no new surface (slice 2 scoping decision)
+
+Two rusty_lines facets from the D9 survey get **no new trait method**,
+because the existing surface already covers them:
+
+- **Bracketed paste** is protocol bytes (`ESC[?2004h`/`l` to enable,
+  content wrapped in `ESC[200~…ESC[201~`) read and written over the
+  stream a consumer already controls via `read_chunk` — no OS call is
+  involved, so encoding/decoding it stays the consumer's business, the
+  same discipline this project applies to shell policy (rustils makes
+  it *expressible*, does not own it).
+- **Cooked↔raw suspend/resume** (the `$EDITOR`-handoff shape) is
+  exactly `leave_raw()` then a later `enter_raw()` — their existing
+  save/restore contract already produces the right outcome. Naming a
+  separate `suspend`/`resume` pair would duplicate this surface, not
+  extend it.
+
+## Not in slice 1 or 2 (recorded, gated)
 
 - Job-control terminal handoff (`tcsetpgrp` give/reclaim with the
   SIGTTOU-ignored precondition) and SIGTSTP/SIGCONT suspend-resume are
@@ -50,8 +115,8 @@ contract tests.
 - Console *acquisition* for GUI-subsystem processes (attach/alloc/
   redirect — the rusty_naner facet) is separate from raw-mode on an
   already-inherited console; a future slice.
-- Line-editing facets (bracketed paste, cooked↔raw suspend/resume,
-  byte→key decode — the rusty_lines facet).
+- Byte→key decode (keymap policy — emacs/vi bindings — stays with the
+  consumer, same as shell expansion/globbing stays with rush).
 
 ## Registered future divergence: resize notification
 

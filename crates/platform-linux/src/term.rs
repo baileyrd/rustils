@@ -1,5 +1,7 @@
 //! `Terminal` impl over `sys::termios` (extraction map D9).
 
+use std::time::Duration;
+
 use platform::error::Result;
 use platform::term::{TermStream, Terminal, WinSize};
 
@@ -54,5 +56,21 @@ impl Terminal for LinuxTerminal {
             t::restore(t::stream_fd(TermStream::Stdin), &saved)?;
         }
         Ok(())
+    }
+
+    fn is_raw(&self) -> bool {
+        t::is_raw(t::stream_fd(TermStream::Stdin))
+    }
+
+    fn poll_readable(&self, timeout: Option<Duration>) -> Result<bool> {
+        t::poll_readable(t::stream_fd(TermStream::Stdin), timeout)
+    }
+
+    fn read_chunk(&self, buf: &mut [u8]) -> Result<usize> {
+        t::read_chunk(t::stream_fd(TermStream::Stdin), buf)
+    }
+
+    fn set_echo(&mut self, on: bool) -> Result<bool> {
+        t::set_echo(t::stream_fd(TermStream::Stdin), on)
     }
 }
