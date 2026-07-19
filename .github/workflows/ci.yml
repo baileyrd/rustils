@@ -75,7 +75,7 @@ jobs:
   # cross-compile check from Linux catches most platform-windows compile
   # errors in minutes. The windows-latest matrix leg above remains the real
   # gate — this is a pre-check, not a replacement. (Practice borrowed from
-  # rusty_win32, the R2 hoist donor — see docs/r2-hoist-donor.md.)
+  # rusty_win32, an R2 extraction donor — see docs/extraction-map.md.)
   cross-compile-check:
     runs-on: ubuntu-latest
     steps:

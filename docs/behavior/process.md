@@ -2,11 +2,11 @@
 
 The semantics the parity suite asserts for every backend implementing
 `Spawner`/`Child`. Today the only backend is `platform-mock` (its unit
-tests are the pinning tests); the native backends arrive at the R2 hoist
-(RFC v2 §7.2 — spawn internals, quoting, groups, and the reactor are
-proven in rush first, and this repo deliberately does not build divergent
-twins of them). This spec is written now so the hoist lands against a
-recorded contract, not a blank page.
+tests are the pinning tests); the native backends arrive at R2 by
+extraction from rush and its satellite crates (RFC v2 §7 Amendment A1;
+donors and sequence in `../extraction-map.md`) — semantics already proven
+there, ported rather than designed fresh. This spec is written now so the
+extraction lands against a recorded contract, not a blank page.
 
 ## Specified
 
