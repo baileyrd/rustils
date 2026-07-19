@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, Spawner};
+use platform::process::{Child, Command, ExitStatus, GroupSpec, Spawner};
 
 use crate::ffi::libc_surface as c;
 use crate::sys::spawn;
@@ -19,6 +19,7 @@ pub struct LinuxSpawner;
 /// A spawned child; `wait` consumes it (double-wait unrepresentable).
 pub struct LinuxChild {
     pid: c::pid_t,
+    own_group: bool,
 }
 
 impl Child for LinuxChild {
@@ -28,6 +29,23 @@ impl Child for LinuxChild {
 
     fn id(&self) -> u32 {
         self.pid as u32
+    }
+
+    fn kill_tree(&self) -> Result<()> {
+        if !self.own_group {
+            // Killing the parent's own group is the only alternative
+            // target and never what the caller meant (trait contract).
+            return Err(PlatformError::new(
+                ErrorKind::Unsupported,
+                OsCode::None,
+                "kill_tree",
+            ));
+        }
+        spawn::kill_group(self.pid)
+    }
+
+    fn kill_single(&self) -> Result<()> {
+        spawn::kill_single(self.pid)
     }
 }
 
@@ -47,8 +65,12 @@ impl Spawner for LinuxSpawner {
             &cmd.cwd,
             &cmd.env,
             [cmd.stdin, cmd.stdout, cmd.stderr],
+            cmd.group,
         )?;
-        Ok(Box::new(LinuxChild { pid }))
+        Ok(Box::new(LinuxChild {
+            pid,
+            own_group: cmd.group == GroupSpec::NewGroup,
+        }))
     }
 
     /// Mechanism-level lookup (RFC v2 §5.4): a name containing `/` is used

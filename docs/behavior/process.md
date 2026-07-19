@@ -32,6 +32,18 @@ assertions.
 - `resolve` of an unknown program fails `NotFound` with the program as
   path context.
 
+- `GroupSpec::NewGroup` places the child in a fresh group *before its
+  first instruction executes* (`POSIX_SPAWN_SETPGROUP`; suspended-spawn →
+  Job-Object assign → resume) — there is no window in which the child or
+  a fast-spawned grandchild escapes the group.
+- `Child::kill_tree` requires `NewGroup` and fails `Unsupported`
+  otherwise (the only alternative target is the parent's own group,
+  which is never what the caller meant). `kill_single` always works.
+- A killed child must still be `wait`ed; the status it reports is
+  OS-divergent — `Signaled(9)` vs `Code(1)` — per divergence **001**.
+- Dropping an un-waited `NewGroup` child: tree terminates on Windows
+  (kill-on-close), keeps running on unix — divergence **002**.
+
 ## Deliberately unspecified (until the R2 hoist supplies them)
 
 - Pipe wiring, process groups / kill-tree, wait-any (the reactor), PTY —

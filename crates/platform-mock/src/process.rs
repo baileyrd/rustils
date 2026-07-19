@@ -7,7 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, Spawner};
+use platform::process::{Child, Command, ExitStatus, GroupSpec, Spawner};
 
 /// A scripted response for a program name.
 #[derive(Debug, Clone)]
@@ -37,6 +37,7 @@ impl MockSpawner {
 
 struct MockChild {
     status: ExitStatus,
+    own_group: bool,
 }
 
 impl Child for MockChild {
@@ -46,6 +47,26 @@ impl Child for MockChild {
 
     fn id(&self) -> u32 {
         0
+    }
+
+    /// Scripted children have already "finished"; kill succeeds without
+    /// changing the scripted status. The `NewGroup` precondition is
+    /// enforced exactly like the native backends so consumer logic can be
+    /// tested against it.
+    fn kill_tree(&self) -> Result<()> {
+        if self.own_group {
+            Ok(())
+        } else {
+            Err(PlatformError::new(
+                ErrorKind::Unsupported,
+                OsCode::None,
+                "kill_tree",
+            ))
+        }
+    }
+
+    fn kill_single(&self) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -58,6 +79,7 @@ impl Spawner for MockSpawner {
         })?;
         Ok(Box::new(MockChild {
             status: script.status,
+            own_group: cmd.group == GroupSpec::NewGroup,
         }))
     }
 
@@ -90,6 +112,21 @@ mod tests {
         let child = spawner.spawn(&Command::new("x", "/")).expect("spawn");
         let _status = child.wait().expect("wait");
         // `child.wait()` again would not compile.
+    }
+
+    #[test]
+    fn kill_tree_requires_new_group() {
+        let spawner = MockSpawner::new().script("x", ExitStatus::Code(0));
+        let inherit = spawner.spawn(&Command::new("x", "/")).expect("spawn");
+        assert_eq!(
+            inherit.kill_tree().expect_err("must refuse").kind,
+            ErrorKind::Unsupported
+        );
+        let grouped = spawner
+            .spawn(&Command::new("x", "/").group(GroupSpec::NewGroup))
+            .expect("spawn");
+        grouped.kill_tree().expect("kill_tree with NewGroup");
+        grouped.kill_single().expect("kill_single always works");
     }
 
     #[test]

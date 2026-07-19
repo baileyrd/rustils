@@ -147,3 +147,51 @@ fn linux_process_backend_conforms() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+/// Groups and kill-tree (divergence 001 pin, Linux side). The sleeper
+/// would run 30s; the test completing inside cargo's normal budget IS the
+/// kill assertion (wall-clock discipline, extraction map D7).
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_process_group_kill() {
+    use platform::process::{Command, ExitStatus, GroupSpec, Spawner};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_linux::LinuxSpawner;
+
+    // kill_tree on a NewGroup child: SIGKILL reaches the group; wait
+    // reports Signaled(9) — never a raw status word (B-5).
+    let c = Command::new("sh", tmp.clone())
+        .arg("-c")
+        .arg("sleep 30")
+        .group(GroupSpec::NewGroup);
+    let child = s.spawn(&c).expect("spawn");
+    child.kill_tree().expect("kill_tree");
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Signaled(9));
+
+    // kill_tree reaches a grandchild: the shell spawns its own child and
+    // waits on it; killing the group takes both down promptly.
+    let c = Command::new("sh", tmp.clone())
+        .arg("-c")
+        .arg("sleep 30 & wait")
+        .group(GroupSpec::NewGroup);
+    let child = s.spawn(&c).expect("spawn");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    child.kill_tree().expect("kill_tree");
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Signaled(9));
+
+    // kill_single works without a group.
+    let c = Command::new("sh", tmp.clone()).arg("-c").arg("sleep 30");
+    let child = s.spawn(&c).expect("spawn");
+    child.kill_single().expect("kill_single");
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Signaled(9));
+
+    // kill_tree without NewGroup is refused, not guessed at.
+    let c = Command::new("sh", tmp).arg("-c").arg("exit 0");
+    let child = s.spawn(&c).expect("spawn");
+    assert_eq!(
+        child.kill_tree().expect_err("must refuse").kind,
+        platform::error::ErrorKind::Unsupported
+    );
+    child.wait().expect("wait");
+}
