@@ -1,5 +1,13 @@
-//! Windows argv → command-line construction — this crate's security
-//! boundary (RFC v2 §5.4; extraction map D3).
+//! Windows argv → command-line construction — the security boundary for
+//! any Windows spawn path (RFC v2 §5.4; extraction map D3).
+//!
+//! Standalone since the convergence roadmap's Phase 1c: this module used
+//! to live inside `platform-windows`, whose Windows-only modules (Dir,
+//! Spawner, Job Objects, console raw mode, the curated `ffi`/`sys`
+//! trees) a handback consumer (rush, rusty_naner) has no reason to pull
+//! in just for safe command-line quoting. `platform-windows` now
+//! re-exports this crate for its own internal use; nothing about its
+//! consumers changed.
 //!
 //! `CreateProcessW` takes a single command-line string, not an argv array;
 //! how that string is split back into argv depends on the *target*:
@@ -22,6 +30,8 @@
 //! logic is unit-tested, Miri-checked, and fuzzable on every CI leg. The
 //! Windows-only [`build_command_line`] wrapper converts from `OsStr` at
 //! the WTF-16 boundary (`util::wide`).
+
+#![forbid(unsafe_code)]
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 

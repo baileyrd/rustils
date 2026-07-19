@@ -6,6 +6,7 @@ members = [
     "crates/platform-mock",
     "crates/platform-linux",
     "crates/platform-windows",
+    "crates/winargv",
     "crates/coreutils",
 ]
 
@@ -23,6 +24,7 @@ platform = { path = "crates/platform" }
 platform-mock = { path = "crates/platform-mock" }
 platform-linux = { path = "crates/platform-linux" }
 platform-windows = { path = "crates/platform-windows" }
+winargv = { path = "crates/winargv" }
 thiserror = "1"
 libc = "0.2"
 windows-sys = { version = "0.59", features = [

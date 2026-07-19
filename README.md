@@ -27,6 +27,7 @@ crates/
   platform-mock     in-memory backend — the injectable test double
   platform-linux    libc floor; ffi (curated surface) → sys (all unsafe) → impls
   platform-windows  windows-sys floor; same layering (Dir impl = R1, on Windows CI)
+  winargv           MSVCRT + cmd-rules command-line quoting — standalone for handback
   coreutils         reference consumer (rcat, ls) — tested against the mock
 docs/
   rfc-v2.md              the governing RFC

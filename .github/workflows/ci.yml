@@ -71,8 +71,8 @@ jobs:
       - run: cargo deny check
 
   # RFC v2 §4.2: Miri on everything it can execute — the pure crates
-  # (platform, platform-mock, coreutils' library tests). The backend
-  # crates make foreign calls Miri cannot model and are excluded.
+  # (platform, platform-mock, winargv, coreutils' library tests). The
+  # backend crates make foreign calls Miri cannot model and are excluded.
   miri:
     runs-on: ubuntu-latest
     steps:
@@ -80,9 +80,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      # platform-windows's lib on a Linux host is just the pure winargv
-      # module — exactly the kind of logic Miri should cover.
-      - run: cargo miri test -p platform -p platform-mock -p platform-windows -p coreutils --lib
+      # winargv is pure string logic with no OS calls (extracted to its
+      # own crate, convergence roadmap Phase 1c) — exactly what Miri
+      # should cover; platform-windows's own lib is windows-gated to
+      # nothing on this host now, kept in the list for when that changes.
+      - run: cargo miri test -p platform -p platform-mock -p platform-windows -p winargv -p coreutils --lib
 
   # Fast Windows feedback without waiting on a windows-latest runner: a
   # cross-compile check from Linux catches most platform-windows compile

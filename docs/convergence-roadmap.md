@@ -74,14 +74,18 @@ and it turns rusty_lines into the concrete forcing consumer for Phase
 
 ### 1c. winargv handback — prerequisite work, not yet a convergence
 
-**Lands here first, then rusty_naner.** `winargv` (D3) currently lives
-inside `platform-windows`; a handback consumer (rusty_naner's
-`raw_arg`-quoted command lines, or rush's own winjob.rs) can't depend on
-`platform-windows` wholesale just for the quoting module. Before either
-can converge, `winargv` needs to be reachable standalone — either its
-own tiny crate, or a `pub use` re-export path that doesn't drag in the
-rest of platform-windows. This is a small, self-contained rustils PR;
-do it before promising rusty_naner or rush a convergence date.
+**Landed here 2026-07-19.** `winargv` is now its own workspace crate
+(`crates/winargv`, depending only on `platform` for error types) rather
+than a module inside `platform-windows`. `platform-windows` re-exports
+it (`pub use winargv;`) so nothing about its own internal use changed —
+`process.rs`'s `crate::winargv::build_command_line` and the existing
+`tests/winargv_oracle.rs`/fuzz target still resolve unchanged. What
+changed: a handback consumer (rusty_naner's `raw_arg`-quoted command
+lines, or rush's own winjob.rs) can now depend on `winargv` alone —
+zero windows-sys, zero Dir/Spawner/console surface — instead of pulling
+in all of `platform-windows` for one quoting module. The actual
+handback PRs (rusty_naner, rush) are still open, tracked as their own
+convergence work, not implied by this landing.
 
 ---
 

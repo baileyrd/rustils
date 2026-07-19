@@ -339,8 +339,13 @@ them.
    splitting rules (differential — builder and parser cannot share a
    bug); the Windows oracle anchors the model to the real OS, and the
    model's deterministic tests replicate the oracle table. Nightly
-   schedule in `.github/workflows/fuzz.yml`. Only the rush handback
-   remains from this step.
+   schedule in `.github/workflows/fuzz.yml`.
+   **Standalone-reachability landed (convergence roadmap Phase 1c,
+   2026-07-19):** moved to its own `crates/winargv` crate (depends only
+   on `platform`), re-exported unchanged from `platform-windows`. A
+   handback consumer no longer needs the rest of the Windows backend.
+   Only the rush/rusty_naner handback PRs themselves remain from this
+   step.
 2. **Spawn + groups** behind the `Spawner` trait: Unix (D1) and Windows
    suspended-spawn/jobs (D2), with `behavior/process.md` grown to match
    and D8's divergence entries recorded.
