@@ -43,6 +43,16 @@ assertions.
   OS-divergent — `Signaled(9)` vs `Code(1)` — per divergence **001**.
 - Dropping an un-waited `NewGroup` child: tree terminates on Windows
   (kill-on-close), keeps running on unix — divergence **002**.
+- `Child::try_wait` never blocks and never loses a status: once it
+  reports `Some`, every re-poll and the eventual consuming `wait` report
+  the same status (unix `WNOHANG` reaps the zombie; the backend stashes
+  the decoded result).
+- `wait_any` returns the index of *a* terminated child or `None` on
+  timeout; an empty set is `InvalidInput`. Which index wins when several
+  have terminated is unspecified. (Seed implementation: a 10ms
+  poll-over-`try_wait` tick — the contract stays fixed when the R3
+  reactor replaces the internals with pidfd+poll /
+  `WaitForMultipleObjects`.)
 
 ## Deliberately unspecified (until the R2 hoist supplies them)
 

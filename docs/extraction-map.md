@@ -170,6 +170,15 @@ them.
    for a consumer that needs it.
 3. **Wait-any / reactor seed** (D2's `wait_any` + D6's signal source),
    absorbing the 64-handle limit internally per §5.6.
+   **Seed landed:** `Child::try_wait` (WNOHANG / zero-timeout wait, with
+   the reaped-status stash) and portable `wait_any` (poll-over-try_wait,
+   10ms tick — the same coarser stand-in rush ran before adopting
+   `WaitForMultipleObjects`, deliberately contract-first), consumed by
+   `rpar` and parity-pinned on both legs. Remaining for R3: the
+   OS-multiplexed internals (pidfd+poll on Linux; WFMO with the
+   64-handle limit absorbed) and D6's signal event source — the full
+   reactor of §5.6, which replaces the seed's internals without changing
+   its contract.
 4. **Stdio/handle model** (D5) — decide std-slot-swap vs STARTUPINFO
    lists on the record.
 5. **Track P at R4** via D4.

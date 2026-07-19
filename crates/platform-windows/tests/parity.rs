@@ -203,3 +203,62 @@ fn windows_process_group_kill() {
     );
     child.wait().expect("wait");
 }
+
+/// try_wait + wait_any (extraction map step 3 seed, Windows side) —
+/// mirrors the Linux leg's assertions with cmd/ping fixtures.
+#[test]
+fn windows_wait_any_and_try_wait() {
+    use platform::process::{wait_any, Child, Command, ExitStatus, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_windows::WindowsSpawner;
+
+    // try_wait: None while running; Some after; wait returns the stash.
+    let c = Command::new("cmd", tmp.clone()).arg("/c").arg("exit 4");
+    let mut child: Box<dyn Child> = s.spawn(&c).expect("spawn");
+    loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            assert_eq!(status, ExitStatus::Code(4));
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(child.try_wait().expect("repoll"), Some(ExitStatus::Code(4)));
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Code(4));
+
+    // wait_any: returns the quick child's index, sleeper still running.
+    let mut sleeper_cmd = Command::new("ping", tmp.clone())
+        .arg("-n")
+        .arg("30")
+        .arg("127.0.0.1");
+    sleeper_cmd.stdout = Stdio::Null;
+    let sleeper = s.spawn(&sleeper_cmd).expect("spawn");
+    let quick = s
+        .spawn(&Command::new("cmd", tmp.clone()).arg("/c").arg("exit 9"))
+        .expect("spawn");
+    let mut children: Vec<Box<dyn Child>> = vec![sleeper, quick];
+    let idx = wait_any(&mut children, None)
+        .expect("wait_any")
+        .expect("no timeout");
+    assert_eq!(idx, 1, "the quick child finishes first");
+    assert_eq!(
+        children.remove(1).wait().expect("wait"),
+        ExitStatus::Code(9)
+    );
+
+    // Timeout: the sleeper alone times out promptly.
+    let waited =
+        wait_any(&mut children, Some(std::time::Duration::from_millis(50))).expect("wait_any");
+    assert_eq!(waited, None);
+
+    // Empty set is refused like the OS primitives refuse it.
+    let mut none: Vec<Box<dyn Child>> = Vec::new();
+    assert_eq!(
+        wait_any(&mut none, None).expect_err("must refuse").kind,
+        platform::error::ErrorKind::InvalidInput
+    );
+
+    // Release the sleeper.
+    children[0].kill_single().expect("kill");
+    children.remove(0).wait().expect("wait");
+}

@@ -26,11 +26,15 @@ pub struct WindowsChild {
     process: OwnedWinHandle,
     job: Option<OwnedWinHandle>,
     pid: u32,
+    reaped: Option<ExitStatus>,
 }
 
 impl Child for WindowsChild {
     fn wait(self: Box<Self>) -> Result<ExitStatus> {
-        proc::wait(&self.process)
+        match self.reaped {
+            Some(status) => Ok(status),
+            None => proc::wait(&self.process),
+        }
     }
 
     fn id(&self) -> u32 {
@@ -50,6 +54,16 @@ impl Child for WindowsChild {
 
     fn kill_single(&self) -> Result<()> {
         proc::terminate_process(&self.process)
+    }
+
+    fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
+        // No reap semantics on Windows — the handle stays valid and the
+        // exit code re-readable — but stash anyway so the trait contract
+        // ("keeps reporting the same status") holds by construction.
+        if self.reaped.is_none() {
+            self.reaped = proc::try_wait(&self.process)?;
+        }
+        Ok(self.reaped)
     }
 }
 
@@ -104,7 +118,12 @@ impl Spawner for WindowsSpawner {
             [cmd.stdin, cmd.stdout, cmd.stderr],
             cmd.group == GroupSpec::NewGroup,
         )?;
-        Ok(Box::new(WindowsChild { process, job, pid }))
+        Ok(Box::new(WindowsChild {
+            process,
+            job,
+            pid,
+            reaped: None,
+        }))
     }
 
     /// Mechanism-level lookup (RFC v2 §5.4): a name containing a path

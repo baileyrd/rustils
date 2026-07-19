@@ -313,6 +313,26 @@ pub fn terminate_process(process: &OwnedWinHandle) -> Result<()> {
     Ok(())
 }
 
+/// Non-blocking poll: zero-timeout `WaitForSingleObject`. `Some(code)` if
+/// the process has exited, `None` if still running.
+pub fn try_wait(process: &OwnedWinHandle) -> Result<Option<ExitStatus>> {
+    // SAFETY: `process` is a valid open process handle for the life of
+    // `&self`; a zero timeout never blocks.
+    let r = unsafe { w::WaitForSingleObject(process.as_raw(), 0) };
+    if r != w::WAIT_OBJECT_0 {
+        // WAIT_TIMEOUT — still running. Any genuine failure will surface
+        // on the eventual blocking wait; a poll reports liveness only.
+        return Ok(None);
+    }
+    let mut code: u32 = 0;
+    // SAFETY: same valid handle; `code` is a valid out-pointer.
+    let ok = unsafe { w::GetExitCodeProcess(process.as_raw(), &mut code) };
+    if ok == 0 {
+        return Err(errmap::last_win32_err("GetExitCodeProcess", OsStr::new("")));
+    }
+    Ok(Some(ExitStatus::Code(code as i32)))
+}
+
 /// Block until `process` exits; decode the code. `Signaled` is never
 /// produced on Windows (behavior spec `docs/behavior/process.md`).
 pub fn wait(process: &OwnedWinHandle) -> Result<ExitStatus> {
