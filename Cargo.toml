@@ -14,7 +14,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 repository = "https://github.com/baileyrd/rustils"
-# No license chosen yet (README "License"); not publishable until one is.
+license = "MIT"
+# Not published to crates.io yet; flip deliberately when ready.
 publish = false
 
 [workspace.dependencies]
