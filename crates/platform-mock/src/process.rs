@@ -68,6 +68,11 @@ impl Child for MockChild {
     fn kill_single(&self) -> Result<()> {
         Ok(())
     }
+
+    /// Scripted children have already terminated by construction.
+    fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
+        Ok(Some(self.status))
+    }
 }
 
 impl Spawner for MockSpawner {

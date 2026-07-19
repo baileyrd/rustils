@@ -241,6 +241,18 @@ pub fn kill_single(pid: c::pid_t) -> Result<()> {
     Ok(())
 }
 
+fn decode(status: c::c_int) -> ExitStatus {
+    if c::WIFEXITED(status) {
+        ExitStatus::Code(c::WEXITSTATUS(status))
+    } else if c::WIFSIGNALED(status) {
+        ExitStatus::Signaled(c::WTERMSIG(status))
+    } else {
+        // Stop/continue events are impossible without WUNTRACED/
+        // WCONTINUED flags; classify defensively rather than panic.
+        ExitStatus::Code(1)
+    }
+}
+
 /// Blocking `waitpid` on `pid`, decoding the raw status word into the
 /// uniform [`ExitStatus`] (B-5: the raw word never crosses this boundary).
 pub fn wait(pid: c::pid_t) -> Result<ExitStatus> {
@@ -259,13 +271,29 @@ pub fn wait(pid: c::pid_t) -> Result<ExitStatus> {
         }
         return Err(errno_err("waitpid", code, OsStr::new("")));
     }
-    if c::WIFEXITED(status) {
-        Ok(ExitStatus::Code(c::WEXITSTATUS(status)))
-    } else if c::WIFSIGNALED(status) {
-        Ok(ExitStatus::Signaled(c::WTERMSIG(status)))
-    } else {
-        // Stop/continue events are impossible without WUNTRACED/
-        // WCONTINUED flags; classify defensively rather than panic.
-        Ok(ExitStatus::Code(1))
+    Ok(decode(status))
+}
+
+/// Non-blocking `waitpid(WNOHANG)`: `Some(decoded)` if `pid` terminated
+/// (the zombie is reaped — the caller must stash the result), `None` if
+/// still running.
+pub fn try_wait(pid: c::pid_t) -> Result<Option<ExitStatus>> {
+    let mut status: c::c_int = 0;
+    loop {
+        // SAFETY: `status` is a valid out-pointer; `pid` is a child this
+        // process spawned and has not reaped yet (the caller stashes the
+        // result of a successful poll and never polls again).
+        let r = unsafe { c::waitpid(pid, &mut status, c::WNOHANG) };
+        if r == pid {
+            return Ok(Some(decode(status)));
+        }
+        if r == 0 {
+            return Ok(None);
+        }
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        if code == libc::EINTR {
+            continue;
+        }
+        return Err(errno_err("waitpid", code, OsStr::new("")));
     }
 }

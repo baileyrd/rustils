@@ -161,6 +161,56 @@ pub trait Child {
 
     /// Forcibly terminate the child process only — descendants survive.
     fn kill_single(&self) -> Result<()>;
+
+    /// Non-blocking poll: `Some(status)` if the child has terminated,
+    /// `None` if it is still running. A child that has reported a status
+    /// here keeps reporting the same status (backends stash the reaped
+    /// result), and the consuming [`Child::wait`] afterwards returns it —
+    /// polling never loses the exit status.
+    fn try_wait(&mut self) -> Result<Option<ExitStatus>>;
+}
+
+/// Block until *some* child in `children` terminates, for up to `timeout`
+/// (`None` = wait forever). Returns `Some(index)` of a terminated child —
+/// retrieve the status via that child's [`Child::try_wait`]/[`Child::wait`]
+/// — or `None` on timeout. An empty slice is `InvalidInput` (mirrors the
+/// OS primitives' own refusal).
+///
+/// This is the wait-any *seed* (extraction map step 3): a portable
+/// poll-over-`try_wait` loop with a 10ms tick — the same coarser stand-in
+/// rush ran before adopting `WaitForMultipleObjects`, correct on every
+/// backend including the mock. The OS-multiplexed reactor (pidfd+poll on
+/// Linux; `WaitForMultipleObjects` with the 64-handle limit absorbed
+/// internally, RFC v2 §5.6) replaces this loop's internals at R3 without
+/// changing this contract.
+pub fn wait_any(
+    children: &mut [Box<dyn Child>],
+    timeout: Option<std::time::Duration>,
+) -> Result<Option<usize>> {
+    use crate::error::{ErrorKind, OsCode, PlatformError};
+    if children.is_empty() {
+        return Err(PlatformError::new(
+            ErrorKind::InvalidInput,
+            OsCode::None,
+            "wait_any",
+        ));
+    }
+    let start = std::time::Instant::now();
+    const TICK: std::time::Duration = std::time::Duration::from_millis(10);
+    loop {
+        for (i, child) in children.iter_mut().enumerate() {
+            if child.try_wait()?.is_some() {
+                return Ok(Some(i));
+            }
+        }
+        let elapsed = start.elapsed();
+        let sleep = match timeout {
+            Some(limit) if elapsed >= limit => return Ok(None),
+            Some(limit) => TICK.min(limit - elapsed),
+            None => TICK,
+        };
+        std::thread::sleep(sleep);
+    }
 }
 
 /// A backend capable of spawning processes. Object-safe.

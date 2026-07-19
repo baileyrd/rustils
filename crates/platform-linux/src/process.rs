@@ -20,11 +20,17 @@ pub struct LinuxSpawner;
 pub struct LinuxChild {
     pid: c::pid_t,
     own_group: bool,
+    /// Set by a successful `try_wait`: `WNOHANG` reaps the zombie, so the
+    /// decoded status must be stashed for the eventual consuming `wait`.
+    reaped: Option<ExitStatus>,
 }
 
 impl Child for LinuxChild {
     fn wait(self: Box<Self>) -> Result<ExitStatus> {
-        spawn::wait(self.pid)
+        match self.reaped {
+            Some(status) => Ok(status),
+            None => spawn::wait(self.pid),
+        }
     }
 
     fn id(&self) -> u32 {
@@ -46,6 +52,13 @@ impl Child for LinuxChild {
 
     fn kill_single(&self) -> Result<()> {
         spawn::kill_single(self.pid)
+    }
+
+    fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
+        if self.reaped.is_none() {
+            self.reaped = spawn::try_wait(self.pid)?;
+        }
+        Ok(self.reaped)
     }
 }
 
@@ -70,6 +83,7 @@ impl Spawner for LinuxSpawner {
         Ok(Box::new(LinuxChild {
             pid,
             own_group: cmd.group == GroupSpec::NewGroup,
+            reaped: None,
         }))
     }
 

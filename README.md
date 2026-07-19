@@ -65,7 +65,9 @@ oracle-tested against `CommandLineToArgvW` on the Windows leg. Step 2 is in: nat
 `rrun` as the consumer, and first-class groups — `GroupSpec::NewGroup`
 with `kill_tree`/`kill_single` (`setpgid`-at-spawn; suspended-spawn into
 a kill-on-close Job Object), with the registry's first divergence
-entries (001/002) recorded. Next: the wait-any/reactor seed.
+entries (001/002) recorded. Step 3's seed is in: `Child::try_wait` and
+portable `wait_any` (consumed by `rpar`, the parallel runner); the
+OS-multiplexed reactor internals and signal source are R3.
 
 ## License
 
