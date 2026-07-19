@@ -54,10 +54,10 @@ reference consumers (`rcat`, `rls`) wired to both native backends, CI
 cross-compile pre-check, Miri on the pure crates, unsafe-scope gate,
 cargo-deny). Process semantics are specced
 ([`docs/behavior/process.md`](docs/behavior/process.md)) with the mock as
-the anchor; the native spawn/quoting/groups/reactor mechanisms arrive via
-the rush hoist (RFC §7, donor recorded in
-[`docs/r2-hoist-donor.md`](docs/r2-hoist-donor.md)) and are deliberately
-not built here first.
+the anchor; the native spawn/quoting/groups/reactor mechanisms are ported
+from rush and its satellite crates per the extraction map
+([`docs/extraction-map.md`](docs/extraction-map.md), RFC §7 Amendment A1)
+— proven donors mined deliberately, not designed here from scratch.
 
 ## License
 

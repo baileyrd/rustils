@@ -1,10 +1,10 @@
 # RFC v2 — rustils (Rust Platform Core)
 ## A hand-rolled, Rust-native platform personality layer for Windows and Linux
 
-**Status:** Proposed — supersedes `docs/rfc.md`, `docs/roadmap.md`, and the architecture docs generated in the original Copilot scaffold
+**Status:** Proposed — supersedes `docs/rfc.md`, `docs/roadmap.md`, and the architecture docs generated in the original Copilot scaffold. **Amended:** A1 (2026-07-19) re-grounds §7/§8-R2 — see the amendment note in §7 and `docs/extraction-map.md`.
 **Date:** 2026-07-18
 **Sponsor:** Nano
-**Companion document:** `rush-shell-plan.md` v1.2 (ADR-011 defines the contract between the two projects)
+**Companion document:** ~~`rush-shell-plan.md` v1.2 (ADR-011)~~ — superseded by Amendment A1: the plan described an alternate rush never built; the real contract material is `docs/extraction-map.md`
 
 ---
 
@@ -167,7 +167,22 @@ Standing policy thereafter: `#![forbid(unsafe_code)]` in `platform`, `platform_m
 
 ## 7. The rush Contract (connectable)
 
-This section is mirrored as **ADR-011** in `rush-shell-plan.md` v1.2; the two documents cite each other and must not drift.
+> **Amendment A1 (2026-07-19).** This section was written against
+> `rush-shell-plan.md`, a planning document for an *alternate* rush that
+> was never built; the real [`baileyrd/rush`](https://github.com/baileyrd/rush)
+> predates this RFC, took its own path, and — with its satellite crates
+> `rusty_libc`, `rusty_win32`, `rusty_lines`, `rusty_regx` — has already
+> built and CI-proven the mechanisms §7.2 contracted to receive. There is
+> no ADR-011 counterparty and no Phase 2 gate to wait on. The division of
+> labor in §7.1 stands (it matches rush's actual code structure), but the
+> sequencing in §7.2 is re-grounded: **R2 is an extraction project this
+> repo may start at any time**, porting semantics and tests from the
+> donors catalogued in `docs/extraction-map.md`, re-floored on §2's tier
+> doctrine, with rush's own suites as the conformance oracle. O-1..O-3
+> remain open and are decided during extraction. §7.2's original text is
+> retained below as the record of what was superseded.
+
+This section was mirrored as **ADR-011** in `rush-shell-plan.md` v1.2 — see Amendment A1 above: that document described an alternate rush that was never built, and this section is now read through the amendment.
 
 ### 7.1 Division of labor
 
@@ -194,7 +209,7 @@ rust-platform-core owns **mechanisms**: spawn/quoting, process groups & kill-tre
 |---|---|---|---|
 | **R0 — Sound** | Fix B-1..B-5; delete parked stubs; land `platform_mock`; CI extensions (§4.2); this RFC replaces v1 docs | All B-fixes landed with tests; unsafe-scope lint green; parity suite runs (small) on both OS legs | integrity of everything after |
 | **R1 — Redesigned core** | §5.1/5.2/5.3/5.5 across fs+process; `Command` builder (without reactor); coreutils ported to the new surface; behavior specs written for every portable API | coreutils passes its suite against `platform_windows`, `platform_linux`, **and `platform_mock`**; parity ratchet armed | coreutils |
-| **R2 — The hoist** | Receive winargv, spawn internals, reactor, groups from rush per §7.2; rush adapters become consumers; O-1..O-3 decided | rush's conformance suite green with its host adapters running on this layer, on both OSes; API freeze begins | rush (Phase 2 gate) |
+| **R2 — The extraction** (Amendment A1) | Port winargv (with cmd-rules/refusal — closes rush's BatBadBut gap), spawn internals, groups, wait-any from the donors in `docs/extraction-map.md`; O-1..O-3 decided | ported mechanisms green under this repo's parity suite on both OSes, with rush's suites as the oracle; rush adoption is the follow-on, not the gate | coreutils now; rush on adoption |
 | **R3 — Interactive mechanisms** | PTY hoist; term/console-mode module if rush Phase 5 demands it | rush interactive smoke test green through this layer | rush (Phase 5) |
 | **R4 — Track P** | Linux raw-syscall `sys` behind a feature, call-by-call, each with tests + a learning note | libc-free build of coreutils passes the same suite | M1 (explicitly) |
 | **R5+ — New domains** | window / registry / security / net / ipc — each unparked **only** when its consumer exists and is named by amending §3's table | per-domain | future projects |
