@@ -10,17 +10,20 @@
 //! lifetimes, error mapping, and (post-R2-hoist) the `winargv` quoting
 //! module, which is this crate's security boundary.
 //!
-//! ## Status: skeleton
+//! ## Status: Dir/File landed (R1)
 //!
-//! The `Dir`/`File` impls over `CreateFileW`-relative opens are R1 work
-//! per the roadmap and are developed on a Windows host — this crate
-//! currently compiles to an empty library elsewhere, and CI's Windows leg
-//! is where its tests run. The module layout and the wide-string util are
-//! laid down now because every future piece hangs from them.
+//! The `Dir`/`File` impls run over `NtCreateFile` handle-relative opens
+//! (`sys::nt`; the admission rationale lives in `ffi::nt_surface`) with
+//! Win32 handle-based APIs for everything after the open. Developed from a
+//! Linux host against `cargo check --target x86_64-pc-windows-gnu`; CI's
+//! Windows leg is where the tests actually run.
 
 #![cfg(windows)]
 #![deny(unsafe_code)] // opted back in, narrowly, inside sys/ modules only
 
 pub mod ffi;
+pub mod fs;
 pub mod sys;
 pub mod util;
+
+pub use fs::WindowsDir;

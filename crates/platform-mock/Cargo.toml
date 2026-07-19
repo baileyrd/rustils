@@ -4,6 +4,7 @@ description = "In-memory backend implementing every platform trait — the injec
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 platform.workspace = true
