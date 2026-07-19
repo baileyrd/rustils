@@ -2,12 +2,12 @@
 //! mirror, with `NtCreateFile` handle-relative opens standing in for the
 //! `openat` family (RFC v2 §5.3).
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
 use std::path::Path;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::fs::{Dir, DirEntry, File, Metadata, OpenOptions};
+use platform::fs::{Dir, DirEntry, File, FileType, Metadata, OpenOptions};
 
 use crate::ffi::nt_surface as nt;
 use crate::ffi::win32_surface as w;
@@ -229,6 +229,29 @@ impl Dir for WindowsDir {
         // A non-empty directory is refused here by the OS itself
         // (ERROR_DIR_NOT_EMPTY → DirectoryNotEmpty).
         fileio::mark_delete(&handle, rel)
+    }
+
+    fn symlink(&self, target: &OsStr, link_name: &OsStr) -> Result<()> {
+        // No POSIX analog: the reparse point must declare file-vs-
+        // directory at creation. Best-effort decide by looking up
+        // `target` relative to this same capability — an existing
+        // directory there makes a directory-type link; anything else
+        // (a file, a dangling target, an absolute target, or one
+        // elsewhere entirely) falls back to file-type, matching the
+        // heuristic other cross-platform symlink recipes use (see
+        // `Dir::symlink`'s doc comment for the full divergence note).
+        let is_dir = matches!(
+            self.metadata(target),
+            Ok(Metadata {
+                file_type: FileType::Dir,
+                ..
+            })
+        );
+        fileio::symlink(&self.handle, link_name, target, is_dir)
+    }
+
+    fn read_link(&self, rel: &OsStr) -> Result<OsString> {
+        fileio::read_link(&self.handle, rel)
     }
 
     fn rename(&self, from: &OsStr, to: &OsStr) -> Result<()> {

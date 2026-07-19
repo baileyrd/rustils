@@ -92,10 +92,15 @@ surface (they're already expressible with what landed). PTY hosting,
 resize-notification, and job-control handoff remain gated follow-ons.
 Phase 3 grew the `Fs` surface (D11): `File::sync_all`,
 `Dir::rename`/`rename_no_replace` (Linux `renameat2`; Windows
-handle-relative `FILE_RENAME_INFO`), and a default-provided
-`Dir::write_atomic` composed from both — strace-verified to fsync
-before it publishes. `symlink`/`read_link` are deferred to their own
-slice (Windows reparse points deserve dedicated care).
+handle-relative `FILE_RENAME_INFORMATION` via `NtSetInformationFile`),
+and a default-provided `Dir::write_atomic` composed from both —
+strace-verified to fsync before it publishes. A follow-on slice added
+`Dir::symlink`/`read_link` (Linux `symlinkat`/`readlinkat`; Windows
+`FSCTL_SET_REPARSE_POINT`/`FSCTL_GET_REPARSE_POINT` over a hand-built
+`REPARSE_DATA_BUFFER`), with the one thing Windows requires that POSIX
+doesn't — declaring file-vs-directory at creation — registered as a
+divergence rather than papered over (`docs/divergences.md` #004).
+`faccessat`-style permission probing stays deferred.
 
 ## License
 

@@ -164,6 +164,91 @@ pub fn unlinkat(dirfd: RawFd, rel: &OsStr, remove_dir: bool) -> Result<()> {
         .map_err(|e| trackp_err("unlinkat", e).with_path(rel))
 }
 
+/// `symlinkat(target, dirfd, link_name)` — creates `link_name` (relative
+/// to `dirfd`) as a symlink storing `target` verbatim. Note the argument
+/// order: `target` is not itself resolved relative to `dirfd`, only
+/// `link_name` is.
+#[cfg(not(feature = "track-p"))]
+pub fn symlink(dirfd: RawFd, target: &OsStr, link_name: &OsStr) -> Result<()> {
+    let c_target = to_cstring(target, "symlinkat")?;
+    let c_link = to_cstring(link_name, "symlinkat")?;
+    // SAFETY: both paths are valid NUL-terminated strings outliving the
+    // call; `dirfd` is a valid open descriptor for the link-name end.
+    let r = unsafe { c::symlinkat(c_target.as_ptr(), dirfd, c_link.as_ptr()) };
+    if r < 0 {
+        return Err(os_err("symlinkat", link_name));
+    }
+    Ok(())
+}
+
+/// `symlinkat(target, dirfd, link_name)` — Track P: `rusty_libc::fs::symlinkat`.
+#[cfg(feature = "track-p")]
+pub fn symlink(dirfd: RawFd, target: &OsStr, link_name: &OsStr) -> Result<()> {
+    let c_target = to_cstring(target, "symlinkat")?;
+    let c_link = to_cstring(link_name, "symlinkat")?;
+    rusty_libc::fs::symlinkat(&c_target, dirfd, &c_link)
+        .map_err(|e| trackp_err("symlinkat", e).with_path(link_name))
+}
+
+/// `readlinkat(dirfd, rel, buf)` — the stored target, not resolved. Grows
+/// the buffer and retries when the target may have been truncated (the
+/// syscall gives no explicit truncation signal beyond "filled the buffer
+/// exactly"), capped well past any real-world target length.
+#[cfg(not(feature = "track-p"))]
+pub fn read_link(dirfd: RawFd, rel: &OsStr) -> Result<OsString> {
+    let c_rel = to_cstring(rel, "readlinkat")?;
+    let mut cap = 256usize;
+    loop {
+        let mut buf = vec![0u8; cap];
+        // SAFETY: `buf` is a valid writable region of `cap` bytes
+        // outliving the call; `c_rel` is a valid NUL-terminated path;
+        // `dirfd` is a valid open descriptor.
+        let n = unsafe { c::readlinkat(dirfd, c_rel.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+        if n < 0 {
+            return Err(os_err("readlinkat", rel));
+        }
+        let n = n as usize;
+        if n < cap {
+            buf.truncate(n);
+            return Ok(OsString::from_vec(buf));
+        }
+        cap *= 4;
+        if cap > 1 << 20 {
+            return Err(
+                PlatformError::new(ErrorKind::InvalidInput, OsCode::None, "readlinkat")
+                    .with_path(rel),
+            );
+        }
+    }
+}
+
+/// `readlinkat(dirfd, rel, buf)` — Track P: `rusty_libc::fs::readlinkat`.
+#[cfg(feature = "track-p")]
+pub fn read_link(dirfd: RawFd, rel: &OsStr) -> Result<OsString> {
+    let c_rel = to_cstring(rel, "readlinkat")?;
+    let mut cap = 256usize;
+    loop {
+        let mut buf = vec![0u8; cap];
+        match rusty_libc::fs::readlinkat(dirfd, &c_rel, &mut buf) {
+            Ok(bytes) => {
+                let n = bytes.len();
+                if n < cap {
+                    buf.truncate(n);
+                    return Ok(OsString::from_vec(buf));
+                }
+            }
+            Err(e) => return Err(trackp_err("readlinkat", e).with_path(rel)),
+        }
+        cap *= 4;
+        if cap > 1 << 20 {
+            return Err(
+                PlatformError::new(ErrorKind::InvalidInput, OsCode::None, "readlinkat")
+                    .with_path(rel),
+            );
+        }
+    }
+}
+
 /// `fstatat` returning (file type, size).
 #[cfg(not(feature = "track-p"))]
 pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {

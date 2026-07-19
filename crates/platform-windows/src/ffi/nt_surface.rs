@@ -30,3 +30,15 @@ pub use windows_sys::Win32::System::Kernel::OBJ_CASE_INSENSITIVE;
 pub use windows_sys::Wdk::Storage::FileSystem::{
     FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0,
 };
+
+// Third admission (symlink slice): not an ntdll function this time, but
+// the same discipline — `REPARSE_DATA_BUFFER` is the kernel-defined
+// (winioctl.h) layout `FSCTL_SET_REPARSE_POINT`/`FSCTL_GET_REPARSE_POINT`
+// pass through `DeviceIoControl` (a Win32 call, `ffi::win32_surface`);
+// windows-sys carries the struct here under Wdk rather than Win32 since
+// it originates from the driver-facing headers. `SYMLINK_FLAG_RELATIVE`
+// is the one bit distinguishing a relative-target symlink from an
+// absolute one in `REPARSE_DATA_BUFFER_0_2`.
+pub use windows_sys::Wdk::Storage::FileSystem::{
+    REPARSE_DATA_BUFFER, REPARSE_DATA_BUFFER_0, REPARSE_DATA_BUFFER_0_2, SYMLINK_FLAG_RELATIVE,
+};

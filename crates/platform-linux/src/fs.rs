@@ -1,6 +1,6 @@
 //! `Dir`/`File` trait impls over the sys layer. No `unsafe` here.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
@@ -178,6 +178,14 @@ impl Dir for LinuxDir {
 
     fn remove_dir(&self, rel: &OsStr) -> Result<()> {
         fdio::unlinkat(self.fd.as_raw_fd(), rel, true)
+    }
+
+    fn symlink(&self, target: &OsStr, link_name: &OsStr) -> Result<()> {
+        fdio::symlink(self.fd.as_raw_fd(), target, link_name)
+    }
+
+    fn read_link(&self, rel: &OsStr) -> Result<OsString> {
+        fdio::read_link(self.fd.as_raw_fd(), rel)
     }
 
     fn rename(&self, from: &OsStr, to: &OsStr) -> Result<()> {

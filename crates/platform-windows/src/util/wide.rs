@@ -32,3 +32,14 @@ pub fn to_wide_nt_component(s: &OsStr) -> Vec<u16> {
 pub fn from_wide(units: &[u16]) -> OsString {
     OsString::from_wide(units)
 }
+
+/// Length-counted (no NUL) UTF-16, byte-for-byte — **no** separator
+/// normalization, unlike [`to_wide_nt_component`]. For content that must
+/// round-trip exactly rather than resolve as a path component: a
+/// symlink's print name (`sys::fileio::symlink`/`read_link`, the
+/// `Dir::symlink`/`read_link` contract), which stores and returns
+/// `target` verbatim, the same way `readlinkat` never normalizes on
+/// Linux either.
+pub fn to_wide_raw(s: &OsStr) -> Vec<u16> {
+    s.encode_wide().collect()
+}

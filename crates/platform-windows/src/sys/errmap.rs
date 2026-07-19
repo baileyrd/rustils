@@ -22,7 +22,10 @@ fn kind_of_win32(code: u32) -> ErrorKind {
         w::ERROR_FILE_EXISTS | w::ERROR_ALREADY_EXISTS => ErrorKind::AlreadyExists,
         w::ERROR_DIR_NOT_EMPTY => ErrorKind::DirectoryNotEmpty,
         w::ERROR_DIRECTORY => ErrorKind::NotADirectory,
-        w::ERROR_INVALID_PARAMETER => ErrorKind::InvalidInput,
+        // `ERROR_NOT_A_REPARSE_POINT`: `read_link` on an entry that
+        // isn't a symlink — mirrors Linux `readlinkat` refusing with
+        // `EINVAL`/`InvalidInput` for the same case.
+        w::ERROR_INVALID_PARAMETER | w::ERROR_NOT_A_REPARSE_POINT => ErrorKind::InvalidInput,
         _ => ErrorKind::Other,
     }
 }

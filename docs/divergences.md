@@ -56,3 +56,35 @@ implementation convenience.
   (behavioral) and `windows_signal_source_installs` (installation-level;
   the test documents why delivery is not asserted on headless CI).
 - **Accepted**: 2026-07-19, with the D6 extraction.
+
+## 004 — a symlink must declare file-vs-directory at creation on Windows
+
+- **Linux**: `Dir::symlink` creates a single kind of object (`symlinkat`);
+  the link resolves to whatever `target` turns out to be — a file, a
+  directory, or nothing at all — with no distinction at creation time.
+- **Windows**: the NT reparse point backing a symlink must be created as
+  either a file-type or a directory-type object (`FILE_NON_DIRECTORY_FILE`
+  vs. `FILE_DIRECTORY_FILE` on the creating `NtCreateFile`) — there is no
+  reparse tag meaning "either." This backend decides by best-effort
+  `metadata`-ing `target` relative to the same `Dir` capability: an
+  existing directory there makes a directory-type link; anything else (a
+  file, a dangling target, an absolute target, or one elsewhere entirely)
+  falls back to file-type. A dangling link later satisfied by a directory
+  stays file-type on Windows until recreated — real tooling (`mklink`,
+  `CreateSymbolicLinkW`) hits the exact same requirement, this is not a
+  gap specific to this backend.
+- **OS limitation**: `FSCTL_SET_REPARSE_POINT`'s `REPARSE_DATA_BUFFER` has
+  no "resolve lazily" mode; the object type is fixed at the `NtCreateFile`
+  that creates the reparse point, before the reparse data is even
+  attached.
+- **Downstream effect**: which removal call works also differs. A
+  directory-type link is removed like a directory (`remove_dir`); a
+  file-type link, like a file (`remove_file`) — mirroring how `mklink /D`
+  targets need `rd`, not `del`. Linux's `remove_file` works uniformly on
+  any symlink regardless of what it points at. The parity suite's own
+  cleanup tries `remove_file` first, falling back to `remove_dir`, rather
+  than pinning which one Windows requires.
+- **Pinning tests**: the symlink-to-directory block in each backend's
+  `tests/parity.rs` `assert_fs_behavior` (`dirlink`).
+- **Accepted**: 2026-07-19, with the symlink slice (D11, convergence
+  roadmap).

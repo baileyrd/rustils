@@ -236,9 +236,18 @@ rusty_lines' host. Windows fg/bg absence is already characterized (D8).
 > **Landed (first slice, convergence roadmap Phase 3, 2026-07-19):**
 > `renameat2` (replace + `RENAME_NOREPLACE`) and `File::sync_all`
 > (`fsync`/`FlushFileBuffers`), plus a default-provided
-> `Dir::write_atomic` composed from the two. `symlinkat`/`readlinkat`/
-> `faccessat` remain deferred — Windows symlink creation needs real
-> reparse-point construction, deserving its own slice.
+> `Dir::write_atomic` composed from the two.
+>
+> **Landed (symlink slice, 2026-07-19):** `symlinkat`/`readlinkat` as
+> `Dir::symlink`/`read_link` — target stored verbatim, `read_link`
+> round-trips it exactly. Windows needed the reparse-point construction
+> this slice's own predecessor deferred (`FSCTL_SET_REPARSE_POINT`/
+> `REPARSE_DATA_BUFFER`, a third ntdll-adjacent admission), plus a
+> registered divergence for the file-vs-directory decision NT forces at
+> creation time that POSIX doesn't (`docs/divergences.md` #004).
+> `faccessat` remains deferred — needs its own design pass on what a
+> cross-platform permission predicate even means (Windows ACLs have no
+> POSIX mode-bit analog).
 
 ### D12 — Small process/events donors (each waits for its consumer)
 
