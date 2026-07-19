@@ -100,8 +100,12 @@ impl File for LinuxFile {
 
     fn flush(&mut self) -> Result<()> {
         // write(2) has no userspace buffer to flush; durability (fsync)
-        // will be a distinct, explicit API when a consumer needs it.
+        // is the distinct, explicit sync_all below.
         Ok(())
+    }
+
+    fn sync_all(&mut self) -> Result<()> {
+        fdio::fsync(&self.fd)
     }
 }
 
@@ -174,5 +178,13 @@ impl Dir for LinuxDir {
 
     fn remove_dir(&self, rel: &OsStr) -> Result<()> {
         fdio::unlinkat(self.fd.as_raw_fd(), rel, true)
+    }
+
+    fn rename(&self, from: &OsStr, to: &OsStr) -> Result<()> {
+        fdio::rename(self.fd.as_raw_fd(), from, to)
+    }
+
+    fn rename_no_replace(&self, from: &OsStr, to: &OsStr) -> Result<()> {
+        fdio::rename_no_replace(self.fd.as_raw_fd(), from, to)
     }
 }

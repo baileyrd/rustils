@@ -211,6 +211,76 @@ pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
     Ok((ft, st.stx_size))
 }
 
+/// `renameat2(olddirfd, old, newdirfd, new, flags)` — same directory on
+/// both ends (D11's Fs second wave). `flags` is `0` (replace) or
+/// `RENAME_NOREPLACE`.
+///
+/// No libc *wrapper function* exists at this repo's MSRV baseline on
+/// the glibc x86_64 target (the same situation `pidfd_open` was in) —
+/// the raw syscall via `SYS_renameat2`.
+#[cfg(not(feature = "track-p"))]
+fn renameat2_raw(dirfd: RawFd, old: &OsStr, new: &OsStr, flags: u32) -> Result<()> {
+    let c_old = to_cstring(old, "renameat2")?;
+    let c_new = to_cstring(new, "renameat2")?;
+    // SAFETY: both paths are valid NUL-terminated strings outliving the
+    // call; `dirfd` is a valid open descriptor used for both ends
+    // (rename within one directory); renameat2 has no other pointer
+    // parameters.
+    let r = unsafe {
+        c::syscall(
+            c::SYS_renameat2,
+            dirfd,
+            c_old.as_ptr(),
+            dirfd,
+            c_new.as_ptr(),
+            flags,
+        )
+    };
+    if r < 0 {
+        return Err(os_err("renameat2", old));
+    }
+    Ok(())
+}
+
+/// Track P: rusty_libc has `renameat2` directly (unlike `pidfd_open`),
+/// so this — unlike the escape-hatch functions — follows the ordinary
+/// split shape every other fdio call in this module uses.
+#[cfg(feature = "track-p")]
+fn renameat2_raw(dirfd: RawFd, old: &OsStr, new: &OsStr, flags: u32) -> Result<()> {
+    let c_old = to_cstring(old, "renameat2")?;
+    let c_new = to_cstring(new, "renameat2")?;
+    rusty_libc::fs::renameat2(dirfd, &c_old, dirfd, &c_new, flags)
+        .map_err(|e| trackp_err("renameat2", e).with_path(old))
+}
+
+pub fn rename(dirfd: RawFd, from: &OsStr, to: &OsStr) -> Result<()> {
+    renameat2_raw(dirfd, from, to, 0)
+}
+
+pub fn rename_no_replace(dirfd: RawFd, from: &OsStr, to: &OsStr) -> Result<()> {
+    #[cfg(not(feature = "track-p"))]
+    let flag = c::RENAME_NOREPLACE;
+    #[cfg(feature = "track-p")]
+    let flag = rusty_libc::fs::RENAME_NOREPLACE;
+    renameat2_raw(dirfd, from, to, flag)
+}
+
+/// `fsync(fd)` — durability (`File::sync_all`). Not track-p-gated: like
+/// `pidfd_open`, rusty_libc has no `fsync` yet (outside its current
+/// ~25-syscall surface), and `fsync` has no interesting arguments to
+/// route through a raw-syscall story either way — one implementation
+/// for both configurations, the same treatment `pidfd_open` gets in
+/// `sys/spawn.rs`.
+pub fn fsync(fd: &OwnedFd) -> Result<()> {
+    // SAFETY: `fd` is a valid open descriptor; fsync has no pointer
+    // parameters.
+    let r = unsafe { c::fsync(fd.as_raw_fd()) };
+    if r < 0 {
+        return Err(os_err("fsync", OsStr::new("")));
+    }
+    Ok(())
+}
+
 /// Enumerate a directory via `fdopendir`/`readdir`, consuming an fd opened
 /// with `O_DIRECTORY`. Returns (name, file type) pairs, excluding `.`/`..`.
 pub fn read_dir(dirfd: OwnedFd) -> Result<Vec<(OsString, FileType)>> {

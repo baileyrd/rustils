@@ -233,6 +233,13 @@ rusty_lines' host. Windows fg/bg absence is already characterized (D8).
   `pread`/`pwrite`; `rusty_win32/handle.rs` pipe/dup/inheritability as
   the Windows counterparts. Feeds D5's remaining fd-3+ engine.
 
+> **Landed (first slice, convergence roadmap Phase 3, 2026-07-19):**
+> `renameat2` (replace + `RENAME_NOREPLACE`) and `File::sync_all`
+> (`fsync`/`FlushFileBuffers`), plus a default-provided
+> `Dir::write_atomic` composed from the two. `symlinkat`/`readlinkat`/
+> `faccessat` remain deferred — Windows symlink creation needs real
+> reparse-point construction, deserving its own slice.
+
 ### D12 — Small process/events donors (each waits for its consumer)
 
 - Single-fd `poll_readable` (`rush/sys.rs`, zero-timeout poll — the

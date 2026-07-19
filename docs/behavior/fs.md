@@ -18,6 +18,41 @@ convenience.
   fails `NotADirectory`.
 - Child capabilities from `open_dir` observe the live tree (handle
   semantics), not a snapshot.
+- `sync_all` blocks until a file's writes are durable (`fsync` /
+  `FlushFileBuffers`) — distinct from `flush`, which has nothing to do
+  on either backend since a synchronous `write` has no userspace buffer.
+- `rename`/`rename_no_replace` operate on two names **within the same
+  directory capability** (both relative to `self`) — cross-directory
+  rename is not exposed; a consumer needing it opens the common
+  ancestor. `rename` replaces an existing `to` atomically (concurrent
+  readers never observe `to` absent); `rename_no_replace` refuses with
+  `AlreadyExists` instead, and the check-and-rename is atomic in the
+  kernel — no consumer-visible TOCTOU window (D11, convergence roadmap
+  Phase 3).
+- `write_atomic` (default-provided on `Dir`, RFC v2 §5.3): durably
+  publishes `contents` at `rel`, never leaving a partially-written or
+  missing file observable at that name, even across a crash between the
+  write and the publishing rename. Sequence: write to a same-directory
+  temp name → `sync_all` the temp file (durability *before* publish,
+  not after) → close → `rename` over `rel`; the temp file is
+  best-effort removed if the write/sync step fails. Composed entirely
+  from `open`/`write`/`sync_all`/`rename` — one implementation, shared
+  by every backend including future ones.
+- **Live-verified** (strace, not parity-pinned — timing/ordering, not a
+  value assertion): `write_atomic` on Linux fires `fsync` strictly
+  *before* the publishing `renameat2`, and `rename_no_replace` carries
+  `RENAME_NOREPLACE`.
+
+## Not in this slice (D11, recorded, deferred)
+
+`symlink`/`read_link` (`symlinkat`/`readlinkat`) and `faccessat`-style
+permission probing are real D11 donor material but deferred out of this
+Phase 3 slice: Windows symlink creation needs real reparse-point
+construction (no ambient path to hand `CreateSymbolicLinkW`, so it
+would need the same handle-relative + `SeCreateSymbolicLinkPrivilege`/
+Developer-Mode story rusty_naner's archive extraction already hit) and
+deserves its own careful pass rather than being bolted onto the
+rename/atomic-write work. A future slice, not an oversight.
 
 ## Deliberately unspecified
 

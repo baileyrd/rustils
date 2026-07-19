@@ -119,6 +119,11 @@ impl File for MockFile {
     fn flush(&mut self) -> Result<()> {
         Ok(())
     }
+
+    fn sync_all(&mut self) -> Result<()> {
+        // In-memory: writes are already "durable" the instant they land.
+        Ok(())
+    }
 }
 
 impl Dir for MockDir {
@@ -231,6 +236,14 @@ impl Dir for MockDir {
     fn remove_dir(&self, rel: &OsStr) -> Result<()> {
         self.remove(rel, true, "remove_dir")
     }
+
+    fn rename(&self, from: &OsStr, to: &OsStr) -> Result<()> {
+        self.rename_impl(from, to, true)
+    }
+
+    fn rename_no_replace(&self, from: &OsStr, to: &OsStr) -> Result<()> {
+        self.rename_impl(from, to, false)
+    }
 }
 
 impl MockDir {
@@ -254,6 +267,22 @@ impl MockDir {
             }
         }
         entries.remove(rel);
+        Ok(())
+    }
+
+    fn rename_impl(&self, from: &OsStr, to: &OsStr, replace: bool) -> Result<()> {
+        let mut n = self.node.lock().expect("mock lock");
+        let Node::Dir(entries) = &mut *n else {
+            return Err(err(ErrorKind::NotADirectory, "rename", from));
+        };
+        if !entries.contains_key(from) {
+            return Err(err(ErrorKind::NotFound, "rename", from));
+        }
+        if !replace && entries.contains_key(to) {
+            return Err(err(ErrorKind::AlreadyExists, "rename", to));
+        }
+        let node = entries.remove(from).expect("checked above");
+        entries.insert(to.to_os_string(), node);
         Ok(())
     }
 }
@@ -313,5 +342,68 @@ mod tests {
             .expect("create");
         let e = root.remove_dir(OsStr::new("d")).expect_err("must refuse");
         assert_eq!(e.kind, ErrorKind::DirectoryNotEmpty);
+    }
+
+    #[test]
+    fn rename_replaces_by_default_and_moves_the_same_content() {
+        let root = MockDir::root().with_file("a.txt", "hi");
+        root.rename(OsStr::new("a.txt"), OsStr::new("b.txt"))
+            .expect("rename");
+        assert_eq!(
+            root.metadata(OsStr::new("a.txt")).unwrap_err().kind,
+            ErrorKind::NotFound
+        );
+        assert_eq!(root.metadata(OsStr::new("b.txt")).unwrap().len, 2);
+
+        // Replaces an existing "c.txt" by default.
+        let root = root.with_file("c.txt", "xxxxx");
+        root.rename(OsStr::new("b.txt"), OsStr::new("c.txt"))
+            .expect("rename replaces");
+        assert_eq!(root.metadata(OsStr::new("c.txt")).unwrap().len, 2);
+    }
+
+    #[test]
+    fn rename_no_replace_refuses_atomically_when_destination_exists() {
+        let root = MockDir::root()
+            .with_file("a.txt", "hi")
+            .with_file("b.txt", "existing");
+        let e = root
+            .rename_no_replace(OsStr::new("a.txt"), OsStr::new("b.txt"))
+            .expect_err("must refuse");
+        assert_eq!(e.kind, ErrorKind::AlreadyExists);
+        // No partial move: both names are exactly as they were.
+        assert_eq!(root.metadata(OsStr::new("a.txt")).unwrap().len, 2);
+        assert_eq!(root.metadata(OsStr::new("b.txt")).unwrap().len, 8);
+
+        root.rename_no_replace(OsStr::new("a.txt"), OsStr::new("c.txt"))
+            .expect("no existing destination: must succeed");
+        assert_eq!(root.metadata(OsStr::new("c.txt")).unwrap().len, 2);
+    }
+
+    #[test]
+    fn write_atomic_publishes_and_leaves_no_temp_file() {
+        let root = MockDir::root();
+        root.write_atomic(OsStr::new("f.txt"), b"first")
+            .expect("write_atomic");
+        let mut f = root
+            .open(OsStr::new("f.txt"), &OpenOptions::read())
+            .expect("open");
+        let mut buf = [0u8; 16];
+        let n = f.read(&mut buf).expect("read");
+        assert_eq!(&buf[..n], b"first");
+        drop(f);
+
+        // A second call fully overwrites — no residual bytes from the
+        // shorter old content, no leftover temp-name entry.
+        root.write_atomic(OsStr::new("f.txt"), b"2")
+            .expect("write_atomic 2");
+        let names: Vec<_> = root
+            .read_dir()
+            .expect("read_dir")
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec![OsStr::new("f.txt").to_os_string()]);
+        assert_eq!(root.metadata(OsStr::new("f.txt")).unwrap().len, 1);
     }
 }

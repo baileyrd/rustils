@@ -92,9 +92,13 @@ impl File for WindowsFile {
 
     fn flush(&mut self) -> Result<()> {
         // Synchronous WriteFile has no userspace buffer to flush;
-        // durability (FlushFileBuffers) will be a distinct, explicit API
-        // when a consumer needs it — mirroring the Linux backend's stance.
+        // durability is the distinct, explicit sync_all below —
+        // mirroring the Linux backend.
         Ok(())
+    }
+
+    fn sync_all(&mut self) -> Result<()> {
+        fileio::sync_all(&self.handle)
     }
 }
 
@@ -225,5 +229,13 @@ impl Dir for WindowsDir {
         // A non-empty directory is refused here by the OS itself
         // (ERROR_DIR_NOT_EMPTY → DirectoryNotEmpty).
         fileio::mark_delete(&handle, rel)
+    }
+
+    fn rename(&self, from: &OsStr, to: &OsStr) -> Result<()> {
+        fileio::rename(&self.handle, from, to, true)
+    }
+
+    fn rename_no_replace(&self, from: &OsStr, to: &OsStr) -> Result<()> {
+        fileio::rename(&self.handle, from, to, false)
     }
 }

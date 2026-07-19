@@ -39,6 +39,10 @@ impl platform::fs::File for MemPipe {
     fn flush(&mut self) -> Result<()> {
         Ok(())
     }
+
+    fn sync_all(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Spawner whose children terminate exactly as scripted.

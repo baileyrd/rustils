@@ -13,8 +13,9 @@
 //! non-UTF-8 names unrepresentable.
 
 use std::ffi::{OsStr, OsString};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::error::Result;
+use crate::error::{ErrorKind, OsCode, PlatformError, Result};
 
 /// Options for opening or creating a file relative to a [`Dir`].
 ///
@@ -78,6 +79,15 @@ pub trait File {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
     fn write(&mut self, buf: &[u8]) -> Result<usize>;
     fn flush(&mut self) -> Result<()>;
+
+    /// Durability: block until this file's writes are on stable storage
+    /// (`fsync`/`FlushFileBuffers`), not merely past the OS page/write
+    /// cache. `flush` above is not this — a synchronous `write` already
+    /// has no userspace buffer to flush; this is the distinct, explicit
+    /// operation `flush`'s doc comment always said would come when a
+    /// consumer needed it. [`Dir::write_atomic`] (D11, convergence
+    /// roadmap Phase 3) is that consumer.
+    fn sync_all(&mut self) -> Result<()>;
 }
 
 /// An open directory: the capability all filesystem operations flow through.
@@ -109,4 +119,70 @@ pub trait Dir {
 
     /// Remove the (empty) directory at `rel`.
     fn remove_dir(&self, rel: &OsStr) -> Result<()>;
+
+    /// Rename `from` to `to`, both relative to this directory,
+    /// **replacing** `to` if it already exists (POSIX `rename(2)` /
+    /// `renameat2` with no flags; Windows `FILE_RENAME_INFO` with
+    /// `ReplaceIfExists`). Atomic: `to` is never observably absent —
+    /// concurrent readers see either the old file or the new one.
+    fn rename(&self, from: &OsStr, to: &OsStr) -> Result<()>;
+
+    /// Rename `from` to `to`, refusing (`AlreadyExists`) if `to` already
+    /// exists, instead of replacing it (`RENAME_NOREPLACE` /
+    /// `ReplaceIfExists = false`) — the check-and-rename happens
+    /// atomically in the kernel, so this is race-free where a
+    /// stat-then-rename from the consumer would not be.
+    fn rename_no_replace(&self, from: &OsStr, to: &OsStr) -> Result<()>;
+
+    /// Durably write `contents` to `rel`, atomically: never leaves a
+    /// partially-written or missing file observable at that name, even
+    /// across a crash between the write and the rename that publishes
+    /// it (D11, convergence roadmap Phase 3 — the pattern independently
+    /// present in nexus's `storage/atomic.rs` and rusty_naner's staged
+    /// install). Default-provided: it composes [`open`](Dir::open) +
+    /// [`File::write`] + [`File::sync_all`] + [`rename`](Dir::rename),
+    /// so every backend gets it for free and there is exactly one
+    /// implementation to trust.
+    ///
+    /// Sequence: write into a same-directory temp name (guaranteeing
+    /// the final rename is same-filesystem, hence atomic) → `sync_all`
+    /// the temp file (durability *before* the rename, not after — a
+    /// crash before this point leaves only the temp name, never a
+    /// half-written `rel`) → close it → `rename` over `rel`. The temp
+    /// file is best-effort removed if the write/sync step fails.
+    fn write_atomic(&self, rel: &OsStr, contents: &[u8]) -> Result<()> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut tmp_name = rel.to_os_string();
+        tmp_name.push(format!(".rustils-tmp-{}-{n:x}", std::process::id()));
+
+        let write_and_sync = || -> Result<()> {
+            let mut f = self.open(
+                &tmp_name,
+                &OpenOptions {
+                    write: true,
+                    create_new: true,
+                    ..OpenOptions::default()
+                },
+            )?;
+            let mut off = 0usize;
+            while off < contents.len() {
+                let n = f.write(&contents[off..])?;
+                if n == 0 {
+                    return Err(
+                        PlatformError::new(ErrorKind::Other, OsCode::None, "write_atomic")
+                            .with_path(tmp_name.as_os_str()),
+                    );
+                }
+                off += n;
+            }
+            f.sync_all()
+        };
+
+        if let Err(e) = write_and_sync() {
+            let _ = self.remove_file(&tmp_name);
+            return Err(e);
+        }
+        self.rename(&tmp_name, rel)
+    }
 }
