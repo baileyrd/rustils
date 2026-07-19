@@ -267,13 +267,16 @@ pub fn sync_all(handle: &OwnedWinHandle) -> Result<()> {
 /// capability model needs (D11, convergence roadmap Phase 3), since
 /// there is no ambient path to hand `MoveFileExW`.
 ///
-/// `FILE_RENAME_INFO` ends in a flexible array member (`FileName`) that
-/// `windows-sys` models as `[u16; 1]`; the struct's `size_of` is exactly
-/// the offset just past that first array slot (it is the struct's last
-/// field), so a header copy followed by appending the remaining UTF-16
-/// units at that offset reconstructs the variable-length layout without
-/// needing `offset_of!` (unavailable at this workspace's 1.75 MSRV;
-/// stabilized in 1.77).
+/// `FILE_RENAME_INFO` ends in a flexible array member (`FileName`).
+/// **Not** `size_of::<FILE_RENAME_INFO>()` bytes in: the struct's own
+/// alignment (8, driven by the `HANDLE` field) pads its *end*, past
+/// `FileName`, so `size_of` overshoots by that padding — confirmed the
+/// hard way (`ERROR_INVALID_PARAMETER` from a real Windows CI run: the
+/// filename landed 2 bytes later than the OS expected). The correct
+/// offset is computed via `addr_of!` pointer subtraction on a zeroed
+/// instance — the compiler's own layout, not a hand-derived guess, and
+/// available without `offset_of!` (unavailable at this workspace's 1.75
+/// MSRV; stabilized in 1.77).
 pub fn rename(dir: &OwnedWinHandle, from: &OsStr, to: &OsStr, replace: bool) -> Result<()> {
     // The target may be a file or a directory; try the file disposition
     // first (the common case) and fall back to the directory one rather
@@ -298,37 +301,48 @@ pub fn rename(dir: &OwnedWinHandle, from: &OsStr, to: &OsStr, replace: bool) -> 
 
     let name = to_wide_nt_component(to);
     let name_bytes = (name.len() * 2) as u32;
-    let mut buf = vec![0u8; std::mem::size_of::<w::FILE_RENAME_INFO>() + name_bytes as usize];
-    let header = w::FILE_RENAME_INFO {
-        Anonymous: w::FILE_RENAME_INFO_0 {
-            ReplaceIfExists: u8::from(replace),
-        },
-        RootDirectory: dir.as_raw(),
-        FileNameLength: name_bytes,
-        FileName: [name.first().copied().unwrap_or(0)],
+
+    // SAFETY: an all-zero bit pattern is a valid `FILE_RENAME_INFO`
+    // (BOOLEAN/HANDLE/u32/u16 are all valid at all-zeroes); never read
+    // through the union, only used to compute `FileName`'s real offset.
+    let probe: w::FILE_RENAME_INFO = unsafe { std::mem::zeroed() };
+    let base = std::ptr::addr_of!(probe) as usize;
+    let name_field = std::ptr::addr_of!(probe.FileName) as usize;
+    let name_offset = name_field - base;
+
+    // SAFETY: an all-zero bit pattern is a valid `FILE_RENAME_INFO`; every
+    // field is then overwritten below before this value is read as bytes.
+    let mut header: w::FILE_RENAME_INFO = unsafe { std::mem::zeroed() };
+    header.Anonymous = w::FILE_RENAME_INFO_0 {
+        ReplaceIfExists: u8::from(replace),
     };
-    // SAFETY: `buf` is at least `size_of::<FILE_RENAME_INFO>()` bytes
-    // (allocated above with that as a lower bound); the header copy
-    // writes exactly that many bytes, which is valid since the header
-    // itself is a fully initialized, properly aligned value being read
-    // as bytes, not written misaligned.
+    header.RootDirectory = dir.as_raw();
+    header.FileNameLength = name_bytes;
+
+    let mut buf = vec![0u8; name_offset + name_bytes as usize];
+    // SAFETY: `buf` is at least `name_offset` bytes (allocated above);
+    // copying exactly the header portion up to (not including)
+    // `FileName` is in-bounds on both sides and leaves `FileName`
+    // itself untouched — it is overwritten fully by the loop below.
     unsafe {
         std::ptr::copy_nonoverlapping(
             (&header as *const w::FILE_RENAME_INFO).cast::<u8>(),
             buf.as_mut_ptr(),
-            std::mem::size_of::<w::FILE_RENAME_INFO>(),
+            name_offset,
         );
     }
-    if name.len() > 1 {
-        let tail = bytemuck_u16_tail(&name[1..]);
-        let start = std::mem::size_of::<w::FILE_RENAME_INFO>();
-        buf[start..start + tail.len()].copy_from_slice(&tail);
+    // `FILE_RENAME_INFO`'s `FileName` is raw UTF-16 code units, not a
+    // `u16` slice the ABI guarantees any transmute safety for; write
+    // each unit's bytes explicitly rather than reinterpreting the slice.
+    for (i, unit) in name.iter().enumerate() {
+        let at = name_offset + i * 2;
+        buf[at..at + 2].copy_from_slice(&unit.to_le_bytes());
     }
 
     // SAFETY: `buf` holds a fully populated `FILE_RENAME_INFO` at its
-    // start (header copied above) followed by the rest of the wide
-    // filename at the correct trailing offset; its length is passed
-    // exactly as `buf.len()`. `handle` is open with DELETE access.
+    // start (header copied above) followed by the wide filename at its
+    // real, compiler-computed offset; its length is passed exactly as
+    // `buf.len()`. `handle` is open with DELETE access.
     let ok = unsafe {
         w::SetFileInformationByHandle(
             handle.as_raw(),
@@ -341,16 +355,4 @@ pub fn rename(dir: &OwnedWinHandle, from: &OsStr, to: &OsStr, replace: bool) -> 
         return Err(errmap::last_win32_err("SetFileInformationByHandle", to));
     }
     Ok(())
-}
-
-/// `&[u16]` as its little-endian byte representation — `FILE_RENAME_INFO`'s
-/// `FileName` is raw UTF-16 code units, not a `u16` slice the ABI
-/// guarantees any particular transmute safety for; copy byte-by-byte
-/// instead of reinterpreting the slice.
-fn bytemuck_u16_tail(units: &[u16]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(units.len() * 2);
-    for u in units {
-        out.extend_from_slice(&u.to_le_bytes());
-    }
-    out
 }
