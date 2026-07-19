@@ -42,17 +42,28 @@ convenience.
   value assertion): `write_atomic` on Linux fires `fsync` strictly
   *before* the publishing `renameat2`, and `rename_no_replace` carries
   `RENAME_NOREPLACE`.
+- `symlink`/`read_link` (`symlinkat`/`readlinkat`, D11's symlink slice):
+  `symlink` creates `link_name` as a link storing `target` **verbatim**
+  — `target` is opaque content, not validated, resolved, or required to
+  exist, and refuses `AlreadyExists` if `link_name` already names an
+  entry. `read_link` returns exactly the bytes `symlink` was given, an
+  exact round trip regardless of whether `target` is relative or
+  absolute. `metadata` on a symlink is lstat-style (already true before
+  this slice, via `AT_SYMLINK_NOFOLLOW`/`FILE_OPEN_REPARSE_POINT`): it
+  classifies the link itself as `FileType::Symlink` without following
+  it, even when the target is dangling. `open` (unchanged) follows
+  symlinks transparently, the same as it always has.
+- Windows requires declaring file-vs-directory at symlink-creation time,
+  with a consumer-visible effect on which removal call applies —
+  `docs/divergences.md` #004, not asserted as uniform behavior here.
 
 ## Not in this slice (D11, recorded, deferred)
 
-`symlink`/`read_link` (`symlinkat`/`readlinkat`) and `faccessat`-style
-permission probing are real D11 donor material but deferred out of this
-Phase 3 slice: Windows symlink creation needs real reparse-point
-construction (no ambient path to hand `CreateSymbolicLinkW`, so it
-would need the same handle-relative + `SeCreateSymbolicLinkPrivilege`/
-Developer-Mode story rusty_naner's archive extraction already hit) and
-deserves its own careful pass rather than being bolted onto the
-rename/atomic-write work. A future slice, not an oversight.
+`faccessat`-style permission probing is real D11 donor material but
+deferred out of this slice: it needs its own design pass on what a
+cross-platform permission predicate even means (Windows ACLs have no
+POSIX mode-bit analog), rather than being bolted onto the
+rename/atomic-write/symlink work.
 
 ## Deliberately unspecified
 

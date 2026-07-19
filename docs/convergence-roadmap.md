@@ -136,25 +136,42 @@ decisions. Added to `platform::fs`:
   this MSRV on glibc x86_64, same situation `pidfd_open` was in — the
   raw-syscall arm; rusty_libc *does* have `renameat2`, so the track-p
   arm is an ordinary split, not another escape hatch). Windows:
-  `FILE_RENAME_INFO` via `SetFileInformationByHandle` with
+  `FILE_RENAME_INFORMATION` via `NtSetInformationFile` with
   `RootDirectory` set to the capability's own handle — the
-  handle-relative rename this backend's ambient-path-free model needs
-  (not `MoveFileExW`, which has no such handle).
+  handle-relative rename this backend's ambient-path-free model needs.
+  Not the Win32 `SetFileInformationByHandle`, the first thing tried: a
+  live windows-latest CI run proved that wrapper rejects a non-null
+  `RootDirectory` for the classic `FileRenameInfo` class with
+  `ERROR_INVALID_PARAMETER` — handle-relative rename turns out to be a
+  Win32-layer restriction, not an NT one (second ntdll admission,
+  `ffi::nt_surface`).
 - `Dir::write_atomic` (default-provided, composes `open`+`write`+
   `sync_all`+`rename` — one implementation for every backend) — the
   headline deliverable, forced by two independent donors (nexus
   `storage/atomic.rs`, rusty_naner's staged install). Strace-verified
   on Linux: `fsync` fires strictly before the publishing `renameat2`.
 
-**Deferred to a later slice**, not an oversight: `symlink`/`read_link`
-(`symlinkat`/`readlinkat`) and `faccessat`-style permission probing.
-Windows symlink creation needs real reparse-point construction (no
-ambient path for `CreateSymbolicLinkW`, so the same handle-relative +
-`SeCreateSymbolicLinkPrivilege`/Developer-Mode story rusty_naner's own
-archive extraction hit) and deserves its own careful pass rather than
-riding along with the rename/atomic-write work. `test`-style file
-predicates + PATH-resolution unification (rush donor) stay lower
-priority, no second consumer yet.
+**Landed (symlink slice) 2026-07-19.** The item this phase originally
+deferred. Added to `platform::fs`:
+
+- `Dir::symlink`/`read_link` (`symlinkat`/`readlinkat`) — the target is
+  stored verbatim, not validated or resolved; `read_link` round-trips
+  the exact bytes. Linux: ordinary `symlinkat`/`readlinkat` libc
+  wrappers (unlike `renameat2`, no raw-syscall escape hatch needed).
+  Windows: `FSCTL_SET_REPARSE_POINT`/`FSCTL_GET_REPARSE_POINT` over a
+  hand-built `REPARSE_DATA_BUFFER` (third ntdll-adjacent admission,
+  `ffi::nt_surface` — a struct, not a function this time), using the
+  same `addr_of!`-derived-offset technique `rename`'s
+  `FILE_RENAME_INFORMATION` construction established. The one thing
+  Windows requires that POSIX doesn't — declaring file-vs-directory at
+  creation — is a registered divergence (`docs/divergences.md` #004),
+  not papered over.
+
+`faccessat`-style permission probing and `test`-style file predicates +
+PATH-resolution unification (rush donor) stay deferred: `faccessat`
+needs its own design pass on what a cross-platform permission predicate
+even means (Windows ACLs have no POSIX mode-bit analog); the `test`/PATH
+work has no second consumer yet.
 
 ## Phase 4 — Track P completion
 

@@ -120,6 +120,38 @@ pub trait Dir {
     /// Remove the (empty) directory at `rel`.
     fn remove_dir(&self, rel: &OsStr) -> Result<()>;
 
+    /// Create `link_name` (relative to this directory) as a symbolic
+    /// link whose stored target is `target`, byte-for-byte (POSIX
+    /// `symlinkat(2)`; D11, convergence roadmap symlink slice). Fails
+    /// `AlreadyExists` if `link_name` already names an entry.
+    ///
+    /// `target` is opaque content, not validated or resolved against
+    /// this directory: it need not exist, and if it is a relative
+    /// string, it resolves (when the OS later follows the link)
+    /// relative to `link_name`'s own directory, not to `self` at the
+    /// time of this call. A leading `/` or a Windows drive/UNC prefix
+    /// is treated as absolute; anything else is stored as a
+    /// relative target.
+    ///
+    /// Windows divergence (`docs/divergences.md`): unlike POSIX, the NT
+    /// reparse point backing a symlink must declare at creation time
+    /// whether it names a file or a directory — there is no single
+    /// reparse tag that means "either." This backend decides by
+    /// best-effort `metadata`-ing `target` relative to `self`: an
+    /// existing directory there makes a directory-type link, anything
+    /// else (a file, or nothing resolvable — a dangling link, an
+    /// absolute target, a target elsewhere) makes a file-type link. A
+    /// dangling link later satisfied by a directory stays a file-type
+    /// link on Windows until recreated; Linux has no such distinction.
+    fn symlink(&self, target: &OsStr, link_name: &OsStr) -> Result<()>;
+
+    /// Read the stored target of the symlink at `rel` (POSIX
+    /// `readlinkat(2)`) — the same bytes `symlink` was given, not
+    /// resolved or validated against the filesystem. `rel` must itself
+    /// be a symlink (`InvalidInput` otherwise); see
+    /// [`Dir::metadata`]'s [`FileType::Symlink`] to check first.
+    fn read_link(&self, rel: &OsStr) -> Result<OsString>;
+
     /// Rename `from` to `to`, both relative to this directory,
     /// **replacing** `to` if it already exists (POSIX `rename(2)` /
     /// `renameat2` with no flags; Windows `FILE_RENAME_INFO` with

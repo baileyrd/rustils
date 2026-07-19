@@ -13,6 +13,7 @@ enum Node {
     Unreachable,
     File(Vec<u8>),
     Dir(BTreeMap<OsString, Arc<Mutex<Node>>>),
+    Symlink(OsString),
 }
 
 fn err(kind: ErrorKind, op: &'static str, rel: &OsStr) -> PlatformError {
@@ -200,6 +201,15 @@ impl Dir for MockDir {
                 file_type: FileType::Dir,
                 len: 0,
             },
+            // Real lstat-style length is the target string's byte
+            // length; not asserted cross-backend (the parity suite
+            // avoids pinning it — Windows reparse points don't carry
+            // the same value), but a real number is more honest here
+            // than a placeholder 0.
+            Node::Symlink(target) => Metadata {
+                file_type: FileType::Symlink,
+                len: target.as_encoded_bytes().len() as u64,
+            },
             Node::Unreachable => unreachable!(),
         })
     }
@@ -219,6 +229,7 @@ impl Dir for MockDir {
                 let file_type = match &*node.lock().expect("mock lock") {
                     Node::File(_) => FileType::File,
                     Node::Dir(_) => FileType::Dir,
+                    Node::Symlink(_) => FileType::Symlink,
                     Node::Unreachable => unreachable!(),
                 };
                 DirEntry {
@@ -235,6 +246,30 @@ impl Dir for MockDir {
 
     fn remove_dir(&self, rel: &OsStr) -> Result<()> {
         self.remove(rel, true, "remove_dir")
+    }
+
+    fn symlink(&self, target: &OsStr, link_name: &OsStr) -> Result<()> {
+        let mut n = self.node.lock().expect("mock lock");
+        let Node::Dir(entries) = &mut *n else {
+            return Err(err(ErrorKind::NotADirectory, "symlink", link_name));
+        };
+        if entries.contains_key(link_name) {
+            return Err(err(ErrorKind::AlreadyExists, "symlink", link_name));
+        }
+        entries.insert(
+            link_name.to_os_string(),
+            Arc::new(Mutex::new(Node::Symlink(target.to_os_string()))),
+        );
+        Ok(())
+    }
+
+    fn read_link(&self, rel: &OsStr) -> Result<OsString> {
+        let node = self.child(rel, "read_link")?;
+        let n = node.lock().expect("mock lock");
+        match &*n {
+            Node::Symlink(target) => Ok(target.clone()),
+            _ => Err(err(ErrorKind::InvalidInput, "read_link", rel)),
+        }
     }
 
     fn rename(&self, from: &OsStr, to: &OsStr) -> Result<()> {
@@ -259,6 +294,7 @@ impl MockDir {
             let child = node.lock().expect("mock lock");
             match (&*child, want_dir) {
                 (Node::File(_), true) => return Err(err(ErrorKind::NotADirectory, op, rel)),
+                (Node::Symlink(_), true) => return Err(err(ErrorKind::NotADirectory, op, rel)),
                 (Node::Dir(_), false) => return Err(err(ErrorKind::IsADirectory, op, rel)),
                 (Node::Dir(entries), true) if !entries.is_empty() => {
                     return Err(err(ErrorKind::DirectoryNotEmpty, op, rel))
@@ -378,6 +414,47 @@ mod tests {
         root.rename_no_replace(OsStr::new("a.txt"), OsStr::new("c.txt"))
             .expect("no existing destination: must succeed");
         assert_eq!(root.metadata(OsStr::new("c.txt")).unwrap().len, 2);
+    }
+
+    #[test]
+    fn symlink_stores_target_verbatim_and_refuses_to_clobber() {
+        let root = MockDir::root().with_file("real.txt", "hi");
+        root.symlink(OsStr::new("nowhere/dangling"), OsStr::new("link"))
+            .expect("symlink");
+        assert_eq!(
+            root.metadata(OsStr::new("link")).unwrap().file_type,
+            FileType::Symlink
+        );
+        assert_eq!(
+            root.read_link(OsStr::new("link")).unwrap(),
+            OsStr::new("nowhere/dangling").to_os_string()
+        );
+
+        let e = root
+            .symlink(OsStr::new("real.txt"), OsStr::new("link"))
+            .expect_err("must refuse: link already exists");
+        assert_eq!(e.kind, ErrorKind::AlreadyExists);
+
+        let e = root
+            .read_link(OsStr::new("real.txt"))
+            .expect_err("not a symlink");
+        assert_eq!(e.kind, ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn remove_dir_refuses_a_symlink_even_to_a_directory() {
+        let root = MockDir::root();
+        root.create_dir(OsStr::new("d")).expect("mkdir");
+        root.symlink(OsStr::new("d"), OsStr::new("dlink"))
+            .expect("symlink");
+        // A symlink is never itself a directory, regardless of what it
+        // points at — matching POSIX `rmdir` refusing a symlink with
+        // `ENOTDIR`.
+        let e = root
+            .remove_dir(OsStr::new("dlink"))
+            .expect_err("must refuse");
+        assert_eq!(e.kind, ErrorKind::NotADirectory);
+        root.remove_file(OsStr::new("dlink")).expect("rm dlink");
     }
 
     #[test]

@@ -7,7 +7,7 @@
 
 use std::ffi::{OsStr, OsString};
 
-use platform::error::Result;
+use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 use platform::fs::FileType;
 
 use crate::ffi::nt_surface as nt;
@@ -15,7 +15,7 @@ use crate::ffi::win32_surface as w;
 use crate::sys::errmap;
 use crate::sys::handle::OwnedWinHandle;
 use crate::sys::nt as ntsys;
-use crate::util::wide::{from_wide, to_wide_nt_component, to_wide_nul};
+use crate::util::wide::{from_wide, to_wide_nt_component, to_wide_nul, to_wide_raw};
 
 /// Open an absolute directory path as a root capability handle. The only
 /// place an ambient path enters this backend (RFC v2 §5.3) — everything
@@ -368,4 +368,212 @@ pub fn rename(dir: &OwnedWinHandle, from: &OsStr, to: &OsStr, replace: bool) -> 
         return Err(errmap::nt_err(status, "NtSetInformationFile", to));
     }
     Ok(())
+}
+
+/// Compute the NT substitute name for a symlink target: the wire form
+/// the filesystem's reparse-point engine resolves, distinct from the
+/// print name (what a consumer typed, and what `read_link` hands back
+/// unchanged). A relative target is stored as-is with
+/// `SYMLINK_FLAG_RELATIVE`; an absolute one — a drive path (`C:\...`) or
+/// a UNC path (`\\server\share`) — needs the `\??\` NT-namespace prefix
+/// (`\??\C:\...`, `\??\UNC\server\share`) that `CreateSymbolicLinkW`
+/// itself adds internally before reaching this same FSCTL. Returns
+/// `(substitute_name, is_absolute)`.
+fn nt_substitute_name(target: &[u16]) -> (Vec<u16>, bool) {
+    let colon = u16::from(b':');
+    let backslash = u16::from(b'\\');
+    if target.len() >= 2 && target[1] == colon {
+        let mut s: Vec<u16> = "\\??\\".encode_utf16().collect();
+        s.extend_from_slice(target);
+        (s, true)
+    } else if target.len() >= 2 && target[0] == backslash && target[1] == backslash {
+        let mut s: Vec<u16> = "\\??\\UNC".encode_utf16().collect();
+        s.extend_from_slice(&target[1..]); // one leading "\" survives from target
+        (s, true)
+    } else {
+        (target.to_vec(), false)
+    }
+}
+
+/// The `REPARSE_DATA_BUFFER` header's real byte size (up to, not
+/// including, the `Anonymous` union) and the real byte offset of the
+/// symlink path buffer within it — both `addr_of!`-derived on a zeroed
+/// probe rather than hand-computed, the same technique `rename`'s
+/// `FILE_RENAME_INFORMATION` offset uses (`offset_of!` is unavailable at
+/// this workspace's 1.75 MSRV).
+fn reparse_offsets() -> (usize, usize) {
+    // SAFETY: an all-zero bit pattern is a valid `REPARSE_DATA_BUFFER`
+    // (the union's largest member is plain integer fields and a
+    // flexible `u16` array — all valid at all-zeroes); never read
+    // through the union, only used to compute real field offsets.
+    unsafe {
+        let probe: nt::REPARSE_DATA_BUFFER = std::mem::zeroed();
+        let base = std::ptr::addr_of!(probe) as usize;
+        let payload_offset = std::ptr::addr_of!(probe.Anonymous) as usize - base;
+        let path_buffer_offset =
+            std::ptr::addr_of!(probe.Anonymous.SymbolicLinkReparseBuffer.PathBuffer) as usize
+                - base;
+        (payload_offset, path_buffer_offset)
+    }
+}
+
+/// Create `link_name` (relative to `dir`) as an NT reparse-point symlink
+/// storing `target` (D11, symlink slice). `is_dir` selects the
+/// file-vs-directory reparse-point type — an NT/FSCTL requirement with
+/// no POSIX analog; see [`platform::fs::Dir::symlink`]'s doc comment for
+/// how the caller decides it.
+///
+/// `FSCTL_SET_REPARSE_POINT`'s `REPARSE_DATA_BUFFER` is the standard,
+/// widely documented NT symlink recipe (the same one `mklink`/
+/// `CreateSymbolicLinkW` ultimately drive): the print name is `target`
+/// unchanged (`to_wide_raw` — no separator normalization, so
+/// `read_link` gets an exact byte round trip, matching Linux's
+/// `readlinkat` never normalizing either); [`nt_substitute_name`] picks
+/// the wire form the filesystem driver actually resolves from a
+/// **separately** `\`-normalized copy (`to_wide_nt_component`), since
+/// that copy is discarded after computing the substitute name and never
+/// itself returned to a caller. Both are packed substitute-then-print
+/// into the flexible `PathBuffer` at its real, compiler-computed offset.
+pub fn symlink(
+    dir: &OwnedWinHandle,
+    link_name: &OsStr,
+    target: &OsStr,
+    is_dir: bool,
+) -> Result<()> {
+    let handle = ntsys::open_relative(
+        dir,
+        link_name,
+        w::FILE_GENERIC_WRITE | w::SYNCHRONIZE,
+        nt::FILE_CREATE,
+        (if is_dir {
+            nt::FILE_DIRECTORY_FILE
+        } else {
+            nt::FILE_NON_DIRECTORY_FILE
+        }) | nt::FILE_SYNCHRONOUS_IO_NONALERT
+            | nt::FILE_OPEN_REPARSE_POINT,
+    )?;
+
+    let print_name = to_wide_raw(target);
+    let (substitute_name, is_absolute) = nt_substitute_name(&to_wide_nt_component(target));
+    let flags = if is_absolute {
+        0u32
+    } else {
+        nt::SYMLINK_FLAG_RELATIVE
+    };
+
+    let sub_bytes = (substitute_name.len() * 2) as u16;
+    let print_bytes = (print_name.len() * 2) as u16;
+    let (payload_offset, path_buffer_offset) = reparse_offsets();
+    debug_assert_eq!(path_buffer_offset - payload_offset, 12);
+
+    let total_len = path_buffer_offset + sub_bytes as usize + print_bytes as usize;
+    let mut buf = vec![0u8; total_len];
+
+    buf[0..4].copy_from_slice(&w::IO_REPARSE_TAG_SYMLINK.to_le_bytes());
+    let reparse_data_length = (total_len - payload_offset) as u16;
+    buf[4..6].copy_from_slice(&reparse_data_length.to_le_bytes());
+    // Reserved @ [6..8] stays zero.
+
+    let p = payload_offset;
+    buf[p..p + 2].copy_from_slice(&0u16.to_le_bytes()); // SubstituteNameOffset
+    buf[p + 2..p + 4].copy_from_slice(&sub_bytes.to_le_bytes()); // SubstituteNameLength
+    buf[p + 4..p + 6].copy_from_slice(&sub_bytes.to_le_bytes()); // PrintNameOffset
+    buf[p + 6..p + 8].copy_from_slice(&print_bytes.to_le_bytes()); // PrintNameLength
+    buf[p + 8..p + 12].copy_from_slice(&flags.to_le_bytes()); // Flags
+
+    for (i, unit) in substitute_name.iter().enumerate() {
+        let at = path_buffer_offset + i * 2;
+        buf[at..at + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    for (i, unit) in print_name.iter().enumerate() {
+        let at = path_buffer_offset + sub_bytes as usize + i * 2;
+        buf[at..at + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+
+    let mut bytes_returned: u32 = 0;
+    // SAFETY: `buf` holds a fully populated `REPARSE_DATA_BUFFER` with
+    // its `SymbolicLinkReparseBuffer` variant, sized exactly `buf.len()`,
+    // outliving the call; no output buffer is requested (null/0); the
+    // handle was just created with write access for this purpose.
+    let ok = unsafe {
+        w::DeviceIoControl(
+            handle.as_raw(),
+            w::FSCTL_SET_REPARSE_POINT,
+            buf.as_ptr().cast(),
+            buf.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(errmap::last_win32_err("DeviceIoControl", link_name));
+    }
+    Ok(())
+}
+
+/// Read the stored target of the reparse point at `rel` (`FSCTL_GET_REPARSE_POINT`,
+/// the `symlink` companion). Returns the print name — the original,
+/// unprefixed bytes `symlink` was given, an exact round trip — not the
+/// substitute name, which carries the `\??\` NT-namespace prefix for
+/// absolute targets. `rel` must be a reparse point of the symlink tag;
+/// anything else is `InvalidInput`, mirroring Linux's `readlinkat`
+/// refusing a non-symlink with `EINVAL`.
+pub fn read_link(dir: &OwnedWinHandle, rel: &OsStr) -> Result<OsString> {
+    let handle = ntsys::open_relative(
+        dir,
+        rel,
+        w::FILE_READ_ATTRIBUTES | w::SYNCHRONIZE,
+        nt::FILE_OPEN,
+        nt::FILE_SYNCHRONOUS_IO_NONALERT | nt::FILE_OPEN_REPARSE_POINT,
+    )?;
+
+    let mut buf = vec![0u8; w::MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize];
+    let mut bytes_returned: u32 = 0;
+    // SAFETY: `buf` is a valid writable region of its stated size,
+    // outliving the call; `bytes_returned` a valid out-pointer; the
+    // handle is open on a reparse point with read-attributes access.
+    let ok = unsafe {
+        w::DeviceIoControl(
+            handle.as_raw(),
+            w::FSCTL_GET_REPARSE_POINT,
+            std::ptr::null(),
+            0,
+            buf.as_mut_ptr().cast(),
+            buf.len() as u32,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(errmap::last_win32_err("DeviceIoControl", rel));
+    }
+    if (bytes_returned as usize) < 8 {
+        return Err(
+            PlatformError::new(ErrorKind::InvalidInput, OsCode::None, "read_link").with_path(rel),
+        );
+    }
+
+    let tag = u32::from_le_bytes(buf[0..4].try_into().expect("4-byte slice"));
+    if tag != w::IO_REPARSE_TAG_SYMLINK {
+        return Err(
+            PlatformError::new(ErrorKind::InvalidInput, OsCode::None, "read_link").with_path(rel),
+        );
+    }
+
+    let (payload_offset, path_buffer_offset) = reparse_offsets();
+    let p = payload_offset;
+    let print_name_offset =
+        u16::from_le_bytes(buf[p + 4..p + 6].try_into().expect("2-byte slice")) as usize;
+    let print_name_length =
+        u16::from_le_bytes(buf[p + 6..p + 8].try_into().expect("2-byte slice")) as usize;
+
+    let start = path_buffer_offset + print_name_offset;
+    let end = start + print_name_length;
+    let units: Vec<u16> = buf[start..end]
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    Ok(from_wide(&units))
 }
