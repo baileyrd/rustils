@@ -27,6 +27,28 @@ pub enum ErrorKind {
     Interrupted,
     BrokenPipe,
     Unsupported,
+    /// Net surface (RFC v2 R5+, D16): the peer actively refused the
+    /// connection (`ECONNREFUSED`/`WSAECONNREFUSED`) — nothing was
+    /// listening, or the listen backlog was full.
+    ConnectionRefused,
+    /// Net surface: the peer reset the connection
+    /// (`ECONNRESET`/`WSAECONNRESET`).
+    ConnectionReset,
+    /// Net surface: the connection was aborted before it fully
+    /// established (`ECONNABORTED`/`WSAECONNABORTED`).
+    ConnectionAborted,
+    /// Net surface: an operation needing a connected socket was
+    /// attempted on one that isn't (`ENOTCONN`/`WSAENOTCONN`).
+    NotConnected,
+    /// Net surface: the requested local address is already in use
+    /// (`EADDRINUSE`/`WSAEADDRINUSE`).
+    AddrInUse,
+    /// Net surface: the requested local address isn't valid on this
+    /// host (`EADDRNOTAVAIL`/`WSAEADDRNOTAVAIL`).
+    AddrNotAvailable,
+    /// Net surface: the operation exceeded its deadline
+    /// (`ETIMEDOUT`/`WSAETIMEDOUT`).
+    TimedOut,
     Other,
 }
 

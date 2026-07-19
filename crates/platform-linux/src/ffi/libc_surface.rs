@@ -51,3 +51,14 @@ pub use libc::{cfmakeraw, ioctl, isatty};
 // reachable through `termios` above — admitted so `is_raw`'s live probe
 // and `set_echo`'s bit flip don't need to re-derive cfmakeraw's mask.
 pub use libc::{ECHO, ICANON};
+
+// Net surface, TCP slice (RFC v2 R5+, D16). Not track-p-gated at all —
+// unlike fs/process/terminal, sockets were never in rush's required
+// surface (`DESIGN.md`'s ~25-syscall inventory has none), so rusty_libc
+// has nothing here to route through; one implementation for both
+// configurations, the same treatment `fsync` gets.
+pub use libc::{
+    accept4, bind, connect, getpeername, getsockname, listen, setsockopt, sockaddr, sockaddr_in,
+    sockaddr_in6, sockaddr_storage, socket, socklen_t, AF_INET, AF_INET6, IPPROTO_TCP,
+    SOCK_CLOEXEC, SOCK_STREAM, SOL_SOCKET, SOMAXCONN, SO_REUSEADDR, TCP_NODELAY,
+};

@@ -125,6 +125,21 @@ real wrapper call now, live-verified via strace (a real `read_dir`
 firing `getdents64`, a real two-child `wait_any` firing `pidfd_open`
 for each pid).
 
+Phase 5 landed the first slice of the `Net` surface (D16): `Net`,
+`TcpStream`, `TcpListener` for TCP connect/listen/accept/`set_nodelay`,
+deliberately scoped to TCP only this slice (UDP datagram and Unix
+sockets are future work on the same decision) and carrying no TLS
+concept at all — the four named consumers (shh, rusty_tail, rusty_rdp,
+rusty_llama's optional server) all bring or inject their own wire
+crypto. Linux uses raw `libc` socket calls, not track-p-gated (sockets
+were never in rush's required surface, so there's nothing to route
+through `rusty_libc` — `fsync`'s precedent); Windows uses raw Winsock2
+with a lazily-started, deliberately never-cleaned-up `WSAStartup`
+(matching mio/tokio/std's own Windows networking); the mock backend is
+an in-memory duplex-channel implementation with real
+connection-refused/addr-in-use/end-of-stream semantics. Strace-verified
+on Linux. See `docs/behavior/net.md`.
+
 ## License
 
 MIT — matching the sibling crates (`rush`, `rusty_win32`, `rusty_libc`,

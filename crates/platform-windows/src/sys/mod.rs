@@ -6,5 +6,6 @@ pub mod csignals;
 pub mod errmap;
 pub mod fileio;
 pub mod handle;
+pub mod net;
 pub mod nt;
 pub mod proc;
