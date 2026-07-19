@@ -73,11 +73,13 @@ arrives, §3):
 
 | Surface | Forcing consumer(s) | Notes |
 |---|---|---|
-| Terminal | rusty_naner, rush interactive, rusty_lines' host | **rusty_term converges here**: it *is* a platform personality (termios vs console API) — trait in Layer 2, per-OS guts split into Layer 1 |
-| Net | SHH, rusty_rdp | sockets/streams personality |
-| Windowing | nexus front-ends, rusty_rdp display | |
-| Registry / Config | nexus (ERP modules) | per-OS settings personality |
-| Security | nexus | tokens/ACLs vs uid/caps |
+| Terminal | rusty_lines' host, shh, rush interactive, rusty_naner (console-acquisition facet) | five independent donor hand-rolls (D9); **rusty_term is the design oracle** — trait built fresh in Layer 2, rusty_term converges by swapping its backend internals |
+| PTY (Process×Terminal) | a future emulator/mux consumer | donors: shh openpty, rusty_term ConPTY (D13); divergences: ConPTY vs openpty, pollable fd vs thread bridge |
+| Net | shh, rusty_tail, rusty_rdp (+ rusty_llama's optional server) | TCP+UDP+Unix sockets; **no TLS obligation** — all four consumers bring their own wire crypto (D16) |
+| Tun / virtual link | rusty_tail | /dev/net/tun ioctls vs wintun (D14) |
+| Windowing | nexus front-ends | Tauri-mediated in nexus, so it converges last and thinnest; rusty_rdp's "display" is wire-encoding, not OS windowing |
+| Registry / Config | nexus (ERP modules) | today hand-rolled JSON + dirs paths |
+| Security | nexus, shh, rusty_rdp | donors in hand (D15): Landlock/seccomp sandbox, keyring vault, privsep, CSPRNG |
 
 ## Layer 3 — Application
 
@@ -86,12 +88,19 @@ Consumers pull the PAL into shape; the PAL never speculates (§3).
 - **Under contract:** `rush` (RFC §7, hoists at its Phase 2 gate).
 - **Built here:** `coreutils` reference consumers (rcat, rls, rrun, rpar,
   rtee) — every PAL API proved by one of them first.
-- **Parallel tools, pre-rustils, converging:** rusty_tail (Fs),
-  rusty_naner (Fs+Terminal), rusty_lsp (Process), SHH (Net), rusty_rdp
-  (Net+Windowing), rusty_whisper and rusty_llama (compute engines —
-  minimal OS surface, converge last), **nexus** (the micro-frontend / ERP
-  host — the application platform that will force Windowing, Registry and
-  Security through the gate).
+- **Parallel tools, pre-rustils, converging** (corrected by the
+  2026-07-19 full-ecosystem survey): rusty_tail (a Tailscale-style mesh
+  VPN — Net+Tun, NOT a log follower), rusty_naner (a Windows
+  GUI-subsystem launcher/bootstrapper — Terminal console-acquisition +
+  Fs staged-install + Process/winargv, NOT an editor), rusty_lsp
+  (essentially converged already — zero platform crates), shh (modern
+  SSH — Terminal+PTY+Net+Security), rusty_rdp (a pure wire-format codec
+  — Net near-term; Windowing only via a future viewer app),
+  rusty_whisper and rusty_llama (compute engines; llama adds an mmap
+  model load and an optional TCP server), **nexus** (the micro-frontend
+  / ERP host — forces Security and Registry/Config; its hand-rolled Job
+  Objects and Unix job control duplicate landed rustils work, making
+  Process its cheapest first convergence).
 - **Beside the PAL, not on top:** rusty_lines (line editing) and
   rusty_regx (regex) are OS-independent pure-Rust libraries; they need no
   abstraction layer and simply serve the applications.

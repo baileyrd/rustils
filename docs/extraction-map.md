@@ -145,6 +145,180 @@ no `fg`/`bg`/Ctrl-Z (no `tcsetpgrp` equivalent); no fd table beyond the
 three std slots; completion by polling (no SIGCHLD analog); the ambient-
 Job-Object caveat that makes detach-from-job unreliable under CI runners.
 
+### D9 — The Terminal cluster: five donors, one surface (second wave, 2026-07-19; full-ecosystem survey same day)
+
+The strongest signal in the second-wave survey, then confirmed by the
+full-ecosystem sweep: **five donors independently hand-rolled the same
+terminal personality** — rusty_libc, rusty_win32, rush, then
+**rusty_lines** (`src/term_sys.rs`: a three-backend facade over
+rusty_libc/libc/rusty_win32 that is nearly a ready-made spec for the
+trait) and **shh** (`src/tty/{unix,windows}.rs`). No surface has ever
+had stronger consumer-gate evidence.
+
+**rusty_term is the design oracle, not a backend.** It is a full
+terminal *emulator* (~47k LOC) whose OS slice (`src/backend/`, ~1.4k
+LOC) is already factored as a portable trait over two per-OS unsafe
+files — CI-proven on both OSes. Build the rustils trait fresh and port
+its *semantics + tests*; do not depend on it (tokio + edition-2024
+would invert the layer stack). It converges later by swapping its
+backend internals for the PAL trait. What it teaches beyond the
+original sketch: raw mode on Windows is **two streams** (stdin VT-input
++ stdout VT-processing); the save/restore lifecycle IS the contract;
+**resize notification is a divergence** (SIGWINCH stream vs Windows
+timer-poll — no event exists); the pollable-pty-fd vs blocking-thread
+asymmetry mirrors pidfd-vs-WFMO.
+
+**Facets beyond raw-mode/winsize/isatty** (each lands when a consumer
+forces it):
+- *Line-editing support* (rusty_lines): bracketed-paste guard +
+  envelope decode, cooked↔raw suspend/resume (`$EDITOR` handoff),
+  `is_raw` re-assert + signal-free self-healing (200ms tick instead of
+  SIGWINCH — a deliberate design alternative to record), VMIN=1/VTIME=0
+  chunked reads, byte→Key decode (portable pure logic).
+- *Console acquisition* (rusty_naner `naner-core/console.rs`): the
+  GUI-subsystem attach-vs-alloc-vs-redirected personality —
+  AttachConsole/AllocConsole/CONOUT$ reopen/enable-VT with a
+  `ConsoleState` enum. A wholly separate facet the sketch missed.
+
+- **Raw mode**: `rusty_libc/termios.rs` (`make_raw`, kernel-shape
+  `Termios` NCCS=19, `tcgetattr`/`tcsetattr_with`, `tcflush`/`tcdrain`)
+  and `rusty_win32/console.rs` (`Get/SetConsoleMode` with the
+  `ENABLE_VIRTUAL_TERMINAL_INPUT`/`_PROCESSING` bits) — the two halves
+  of one trait.
+- **Window size**: `rusty_libc/tty.rs` (`TIOCGWINSZ`) and
+  `rusty_win32/console.rs` (`GetConsoleScreenBufferInfo`, viewport not
+  scrollback) — cleanly portable.
+- **isatty**: `rush/sys.rs` + `builtins.rs` (`test -t`; Unix syscall vs
+  Windows `IsTerminal`).
+- **Job-control terminal handoff** (Unix): `rush/job.rs`
+  `give_terminal`/`reclaim_terminal` over `tcsetpgrp`, sound only with
+  SIGTTOU ignored — the *mechanism* half of D1 (the job tables stay
+  policy); plus SIGTSTP/SIGCONT suspend-resume plumbing.
+- **Test harness for free**: `rusty_win32/console.rs`
+  `write_char_events`/`WriteConsoleInputW` — synthetic keystrokes, the
+  Windows analog of writing into a pty master; drives a raw-mode reader
+  end-to-end in CI.
+
+Consumers per architecture.md: rusty_naner, rush interactive (Phase 5),
+rusty_lines' host. Windows fg/bg absence is already characterized (D8).
+
+### D10 — Wait-status completion: `waitid`/WNOWAIT + stopped/continued
+
+- `rusty_libc/wait.rs`: `waitid` with `WNOWAIT` and a structured
+  `Siginfo` (`P_ALL/P_PID/P_PGID`, `CLD_*`) — peek-without-reap,
+  strictly richer than the adopted `wait4`; what a job table uses to
+  inspect a child and still reap it later.
+- `rush/sys.rs` + `job.rs`: `WUNTRACED`/`WCONTINUED` flags and
+  `WIFSTOPPED`/`WIFCONTINUED` decode — the Ctrl-Z/fg/bg half of the
+  status set; the landed `ExitStatus` covers exit+signal only.
+  Unix-only (Windows divergence already in D8's list).
+
+### D11 — Fs second wave: mutation layer, predicates, memfd
+
+- `rusty_libc/fs.rs`: the directory-mutation and symlink layer —
+  `renameat2` (`RENAME_NOREPLACE`/`EXCHANGE`), `symlinkat`/`readlinkat`,
+  `faccessat` — only the read/stat side was adopted in Track P.
+- `rush/builtins.rs`: `test`'s file-mode predicates (`-x/-u/-g/-k`,
+  owner uid/gid, same-file by dev+ino) and the PATH-resolution logic
+  duplicated across `command -v`/`type`/completion — a *unification*
+  onto `Spawner::resolve`, not just an extraction.
+- **`memfd_create`** (`rush/sys.rs` `memfd_heredoc` +
+  `rusty_libc/fd.rs`): the thread-free here-doc — the load-bearing
+  invariant that makes a raw `clone(SIGCHLD)` fork sound
+  (single-threaded at every fork point). Cited as D4 *rationale*, never
+  surfaced as an API. **Lands first if the fork/execve decision goes
+  raw.**
+- `rusty_libc/fd.rs`: `fcntl`/`dup` family (CLOEXEC and NONBLOCK
+  toggling, `F_DUPFD_CLOEXEC`, per-fd pipe-capacity get/set),
+  `pread`/`pwrite`; `rusty_win32/handle.rs` pipe/dup/inheritability as
+  the Windows counterparts. Feeds D5's remaining fd-3+ engine.
+
+### D12 — Small process/events donors (each waits for its consumer)
+
+- Single-fd `poll_readable` (`rush/sys.rs`, zero-timeout poll — the
+  `read -t 0` primitive; distinct from the multiplexed reactor).
+- `umask`, rlimit/ulimit (`rush/sys.rs`+`builtins.rs`,
+  `rusty_libc/rlimit.rs`/`umask.rs`) — self-contained, park until a
+  builtin-shaped consumer.
+- uid/gid getters (`rusty_libc/process.rs`) — brushes the gated
+  Security surface.
+- `rusty_win32/process.rs` `environment_block` (double-NUL UTF-16,
+  order-preserving) — reusable spawn primitive.
+- **Time** (`rusty_libc/time.rs`+`vdso.rs`; `rusty_win32/time.rs`): the
+  two donors deliberately share a `Timespec` shape — a portable Time
+  trait is pre-aligned and nearly free; park until a consumer (e.g. a
+  `time` builtin) arrives.
+
+### D13 — PTY: a Process×Terminal capability (full-ecosystem survey)
+
+Two donors: **shh** (`connect/pty.rs`: openpty + slave handoff +
+`TIOCSCTTY` session setup in pre_exec + `TIOCSWINSZ` resize + async
+master with EIO→EOF) and **rusty_term** (`backend/`: openpty/fork/exec
+on Unix; **ConPTY** — CreatePseudoConsole + PROC_THREAD_ATTRIBUTE — on
+Windows, incl. the EOF-vs-exit teardown deadlock lesson). Deliberately
+NOT part of Terminal slice 1: PTY *hosting* is its own surface, gated
+on an emulator/mux consumer. Divergences to register when it lands:
+ConPTY vs openpty; pollable master fd vs blocking-thread bridge.
+
+### D14 — Tun/virtual-link surface (rusty_tail)
+
+rusty_tail is a Tailscale-style mesh VPN (not a log follower — the
+architecture doc's original placement was wrong and is corrected). Its
+`ts-tun/src/sys.rs` hand-rolls /dev/net/tun + TUNSETIFF + SIOCSIF*
+ioctls behind an anticipated-but-unbuilt `TunDevice` trait (its own
+comments defer a wintun backend). A new gated surface with its named
+consumer already in hand.
+
+### D15 — Security surface donors (nexus, shh, rusty_rdp)
+
+The gated Security surface now has concrete donor material:
+- **nexus** `nexus-security/os_sandbox.rs`: Landlock fs confinement +
+  seccomp inet-block + the helper-exec model dodging post-fork
+  allocation (the D4 landmine again); `credential.rs`: OS-keyring
+  vault trait with a disabled mode.
+- **shh** `privsep.rs`: fork-before-runtime, socketpair monitor,
+  `prctl(NO_NEW_PRIVS)`, setrlimit, credential drop with regain-root
+  check.
+- **rusty_rdp**: hand-rolled /dev/urandom entropy reads ×5 — a PAL
+  CSPRNG/`fill_random` primitive would retire them.
+
+### D16 — Net surface shape (shh, rusty_tail, rusty_rdp, rusty_llama)
+
+Four consumers now define Net's shape without guessing: TCP
+connect/listen + set_nodelay (shh, rdp, llama's optional server), UDP
+datagram (rusty_tail magicsock), Unix sockets incl.
+mode-0600-with-stale-cleanup bind (rusty_tail LocalAPI, shh agent).
+**No TLS obligation**: shh and rusty_tail hand-roll wire crypto over
+plain TCP; rdp's rustls is optional and injected. rusty_rdp converges
+cheapest — its `net.rs` is already generic over `Read + Write`.
+
+### Cross-cutting notes from the full-ecosystem survey
+
+- **nexus re-derived already-landed rustils work**: its
+  `job_object.rs` (kill-on-close Job Objects) and `nexus-rush/job.rs`
+  (setpgid×2/tcsetpgrp/SIG_IGN) duplicate D1/D2 — the cheapest, most
+  valuable convergence is swapping them for `platform::Process`, which
+  exists today.
+- **winargv has a second live consumer**: rusty_naner's hand-quoted
+  `raw_arg` command lines (launcher.rs) are the BatBadBut class D3
+  exists to kill.
+- **Atomic durable write** appears twice (nexus `storage/atomic.rs`:
+  temp→fsync→rename→fsync-parent with retry classes; rusty_naner's
+  download→tmp→rename staged install) — a ready Fs primitive, backed
+  by renameat2 (D11) / MoveFileEx.
+- **AsyncFd-over-raw-fd** (nonblocking fcntl → readiness reactor →
+  guarded I/O with error→EOF) appears independently in rusty_tail's
+  TUN and shh's PTY — a reactor-adoption primitive for the Events
+  domain.
+- **rusty_llama** memory-maps its model (`loader.rs`) — the one mmap
+  in the ecosystem; an Fs read-only-map capability candidate (single
+  consumer today, so parked).
+- **rusty_lsp is the counter-example that validates the gate**: zero
+  platform crates; it converges by doing essentially nothing.
+- **rusty_whisper / rusty_regx confirmed** as classified: pure compute
+  (no mmap, no audio-device capture — do NOT add an audio surface on
+  whisper's account) and pure library respectively.
+
 ## Not extracted (shell policy, stays in rush)
 
 Expansion, globbing, aliases, trap registry semantics, pipefail /
