@@ -31,6 +31,8 @@ pub mod ffi;
 #[cfg(windows)]
 pub mod fs;
 #[cfg(windows)]
+mod process;
+#[cfg(windows)]
 pub mod sys;
 #[cfg(windows)]
 pub mod util;
@@ -38,3 +40,5 @@ pub mod winargv;
 
 #[cfg(windows)]
 pub use fs::WindowsDir;
+#[cfg(windows)]
+pub use process::{WindowsChild, WindowsSpawner};

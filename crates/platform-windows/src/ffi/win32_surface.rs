@@ -9,6 +9,8 @@ pub use windows_sys::Win32::Foundation::{
     STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND,
     STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SHARING_VIOLATION, STATUS_SUCCESS, UNICODE_STRING,
 };
+pub use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, WAIT_OBJECT_0};
+pub use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 pub use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileBasicInfo, FileDispositionInfo, FileFullDirectoryInfo,
     GetFileInformationByHandleEx, ReadFile, SetFileInformationByHandle, WriteFile, DELETE,
@@ -17,6 +19,13 @@ pub use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_DATA, OPEN_EXISTING, SYNCHRONIZE,
+};
+pub use windows_sys::Win32::System::Console::{
+    GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+};
+pub use windows_sys::Win32::System::Threading::{
+    CreateProcessW, GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject,
+    CREATE_UNICODE_ENVIRONMENT, INFINITE, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 pub use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 // Oracle for the winargv tests only: parse a command line the way MSVCRT

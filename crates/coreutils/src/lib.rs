@@ -33,4 +33,14 @@ pub mod native {
     pub fn open_dir(path: &Path) -> Result<Box<dyn Dir>> {
         Ok(Box::new(platform_windows::WindowsDir::open_ambient(path)?))
     }
+
+    #[cfg(target_os = "linux")]
+    pub fn spawner() -> Box<dyn platform::process::Spawner> {
+        Box::new(platform_linux::LinuxSpawner)
+    }
+
+    #[cfg(windows)]
+    pub fn spawner() -> Box<dyn platform::process::Spawner> {
+        Box::new(platform_windows::WindowsSpawner)
+    }
 }

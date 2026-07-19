@@ -86,3 +86,65 @@ fn windows_backend_conforms() {
     assert_fs_behavior(&root);
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+/// Process behavior (docs/behavior/process.md) against the native
+/// backend. Fixtures are OS-specific (`cmd`); the assertions mirror the
+/// Linux leg's. `Signaled` has no Windows fixture — the spec pins that it
+/// is never produced here.
+#[test]
+fn windows_process_backend_conforms() {
+    use std::collections::BTreeMap;
+    use std::ffi::OsString;
+
+    use platform::process::{Command, EnvSpec, ExitStatus, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir().join(format!("rustils-proc-parity-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mk tempdir");
+    let s = platform_windows::WindowsSpawner;
+
+    // Exit codes decode uniformly. `cmd` resolves via PATH + PATHEXT.
+    let c = Command::new("cmd", tmp.clone()).arg("/c").arg("exit 7");
+    let child = s.spawn(&c).expect("spawn");
+    assert!(child.id() > 0);
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Code(7));
+
+    // cwd is honored: the child sees the marker only if it starts there.
+    std::fs::write(tmp.join("rustils-marker.txt"), b"x").expect("marker");
+    let c = Command::new("cmd", tmp.clone())
+        .arg("/c")
+        .arg("if exist rustils-marker.txt (exit 0) else (exit 1)");
+    assert!(s.spawn(&c).expect("spawn").wait().expect("wait").success());
+
+    // Explicit env starts empty: only the given variables are visible.
+    // SystemRoot rides along — cmd.exe itself misbehaves without it, and
+    // inheriting it says nothing about leakage of arbitrary variables.
+    let mut env = BTreeMap::new();
+    env.insert(OsString::from("RUSTILS_CODE"), OsString::from("42"));
+    if let Some(sr) = std::env::var_os("SystemRoot") {
+        env.insert(OsString::from("SystemRoot"), sr);
+    }
+    let c = Command::new("cmd", tmp.clone())
+        .arg("/c")
+        .arg("exit %RUSTILS_CODE%")
+        .env(EnvSpec::Explicit(env));
+    assert_eq!(
+        s.spawn(&c).expect("spawn").wait().expect("wait"),
+        ExitStatus::Code(42)
+    );
+
+    // Stdio::Null wiring spawns and completes.
+    let mut c = Command::new("cmd", tmp.clone())
+        .arg("/c")
+        .arg("echo swallowed");
+    c.stdout = Stdio::Null;
+    assert!(s.spawn(&c).expect("spawn").wait().expect("wait").success());
+
+    // resolve: mechanism-level NotFound with path context.
+    let e = s
+        .resolve(std::ffi::OsStr::new("rustils-definitely-missing"))
+        .expect_err("must fail");
+    assert_eq!(e.kind, platform::error::ErrorKind::NotFound);
+    assert!(e.path.is_some());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}

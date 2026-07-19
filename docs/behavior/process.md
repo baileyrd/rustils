@@ -1,12 +1,13 @@
 # Behavior Spec — process (Command / Spawner / Child)
 
 The semantics the parity suite asserts for every backend implementing
-`Spawner`/`Child`. Today the only backend is `platform-mock` (its unit
-tests are the pinning tests); the native backends arrive at R2 by
-extraction from rush and its satellite crates (RFC v2 §7 Amendment A1;
-donors and sequence in `../extraction-map.md`) — semantics already proven
-there, ported rather than designed fresh. This spec is written now so the
-extraction lands against a recorded contract, not a blank page.
+`Spawner`/`Child`. Backends: `platform-mock` (scripted; unit tests),
+`platform-linux` (`posix_spawn`), and `platform-windows`
+(`CreateProcessW` over `winargv`) — the native pair extracted per
+`../extraction-map.md` step 2 (first slice: spawn/wait/resolve; groups,
+kill-tree, pipes, and wait-any follow). The parity tests live in each
+backend crate's `tests/parity.rs` with OS-specific fixtures and mirrored
+assertions.
 
 ## Specified
 
