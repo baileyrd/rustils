@@ -58,6 +58,9 @@ the anchor; the native spawn/quoting/groups/reactor mechanisms are ported
 from rush and its satellite crates per the extraction map
 ([`docs/extraction-map.md`](docs/extraction-map.md), RFC §7 Amendment A1)
 — proven donors mined deliberately, not designed here from scratch.
+Extraction step 1 is in: `winargv` (MSVCRT quoting + cmd-rules batch
+quoting with refuse-unrepresentable — closes the BatBadBut class),
+oracle-tested against `CommandLineToArgvW` on the Windows leg.
 
 ## License
 
