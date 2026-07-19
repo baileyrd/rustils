@@ -90,6 +90,12 @@ and `set_echo` — all consumed and live-verified by `rterm`, with
 bracketed paste and suspend/resume deliberately needing no further
 surface (they're already expressible with what landed). PTY hosting,
 resize-notification, and job-control handoff remain gated follow-ons.
+Phase 3 grew the `Fs` surface (D11): `File::sync_all`,
+`Dir::rename`/`rename_no_replace` (Linux `renameat2`; Windows
+handle-relative `FILE_RENAME_INFO`), and a default-provided
+`Dir::write_atomic` composed from both — strace-verified to fsync
+before it publishes. `symlink`/`read_link` are deferred to their own
+slice (Windows reparse points deserve dedicated care).
 
 ## License
 

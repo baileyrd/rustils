@@ -24,6 +24,14 @@ fn assert_fs_behavior(root: &dyn Dir) {
     let mut buf = [0u8; 64];
     let n = f.read(&mut buf).expect("read");
     assert_eq!(&buf[..n], b"one \xff two");
+    // Drop this read handle now: "a.bin" gets renamed forward to b.bin,
+    // then c.bin, then d.bin later in this function (rename just relinks
+    // the name, same underlying file), and on Windows a lingering open
+    // handle keeps whatever name the file currently has visible in
+    // directory enumeration even after remove_file marks it for
+    // deletion. Shadowing `f` below does not drop this binding early —
+    // only an explicit drop, or end of scope, does.
+    drop(f);
 
     // metadata: type and length agree with what was written
     let md = root.metadata(OsStr::new("a.bin")).expect("metadata");
@@ -67,8 +75,93 @@ fn assert_fs_behavior(root: &dyn Dir) {
         .expect_err("non-empty removal must fail");
     assert_eq!(e.kind, ErrorKind::DirectoryNotEmpty);
     d.remove_file(OsStr::new("inner")).expect("rm inner");
+    // Drop the capability before removing the directory it names: on
+    // Windows, delete-on-close semantics mean a directory entry stays
+    // visible in enumeration until every open handle to it — including
+    // this one — closes, not just the handle `remove_dir` itself opens
+    // and releases. Linux would tolerate the leak (unlink/rmdir detach
+    // the name immediately regardless of open fds), but the capability
+    // model says: done with it, drop it.
+    drop(d);
     root.remove_dir(OsStr::new("d")).expect("rmdir");
-    root.remove_file(OsStr::new("a.bin")).expect("rm");
+
+    // rename: replaces by default, no-replace refuses (D11, roadmap
+    // Phase 3). "a.bin" (still 9 bytes from the round-trip above) moves
+    // to "b.bin"; the old name is gone, the new one reads back intact.
+    root.rename(OsStr::new("a.bin"), OsStr::new("b.bin"))
+        .expect("rename");
+    assert_eq!(
+        root.metadata(OsStr::new("a.bin")).unwrap_err().kind,
+        ErrorKind::NotFound
+    );
+    assert_eq!(root.metadata(OsStr::new("b.bin")).unwrap().len, 9);
+
+    // rename replaces an existing destination by default...
+    root.open(OsStr::new("c.bin"), &OpenOptions::create_truncate())
+        .expect("create c");
+    root.rename(OsStr::new("b.bin"), OsStr::new("c.bin"))
+        .expect("rename replaces c.bin");
+    assert_eq!(root.metadata(OsStr::new("c.bin")).unwrap().len, 9);
+    assert_eq!(
+        root.metadata(OsStr::new("b.bin")).unwrap_err().kind,
+        ErrorKind::NotFound
+    );
+
+    // ...but rename_no_replace refuses when the destination is a
+    // DIFFERENT existing entry, atomically (no partial move: "c.bin"
+    // and "e.bin" are both untouched). Deliberately not "rename c.bin
+    // onto its own name" — that degenerate case is a real, harmless
+    // cross-OS divergence (Linux's renameat2(RENAME_NOREPLACE) refuses
+    // it with EEXIST; Windows' NtSetInformationFile treats renaming a
+    // file onto its own current name as a no-op success), not the
+    // atomic-refuse-if-exists contract this assertion means to pin.
+    root.open(OsStr::new("e.bin"), &OpenOptions::create_truncate())
+        .expect("create e");
+    let e = root
+        .rename_no_replace(OsStr::new("c.bin"), OsStr::new("e.bin"))
+        .expect_err("must refuse: e.bin already exists");
+    assert_eq!(e.kind, ErrorKind::AlreadyExists);
+    assert_eq!(root.metadata(OsStr::new("c.bin")).unwrap().len, 9);
+    assert_eq!(root.metadata(OsStr::new("e.bin")).unwrap().len, 0);
+    root.remove_file(OsStr::new("e.bin")).expect("rm e.bin");
+
+    root.rename_no_replace(OsStr::new("c.bin"), OsStr::new("d.bin"))
+        .expect("no existing destination: must succeed");
+    root.remove_file(OsStr::new("d.bin")).expect("rm d.bin");
+
+    // write_atomic: publishes contents under `rel`, leaves no temp file
+    // behind, and a second call (replace) fully overwrites the first.
+    root.write_atomic(OsStr::new("atomic.txt"), b"first")
+        .expect("write_atomic 1");
+    let mut f = root
+        .open(OsStr::new("atomic.txt"), &OpenOptions::read())
+        .expect("open atomic");
+    let mut buf = [0u8; 64];
+    let n = f.read(&mut buf).expect("read atomic");
+    assert_eq!(&buf[..n], b"first");
+    drop(f);
+
+    root.write_atomic(OsStr::new("atomic.txt"), b"second, shorter overwrite")
+        .expect("write_atomic 2");
+    let mut f = root
+        .open(OsStr::new("atomic.txt"), &OpenOptions::read())
+        .expect("re-open atomic");
+    let n = f.read(&mut buf).expect("re-read atomic");
+    assert_eq!(&buf[..n], b"second, shorter overwrite");
+    drop(f);
+
+    let names: Vec<_> = root
+        .read_dir()
+        .expect("read_dir")
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(
+        names,
+        vec![OsStr::new("atomic.txt").to_os_string()],
+        "no leftover temp file, no leftover a/b/c.bin"
+    );
+    root.remove_file(OsStr::new("atomic.txt")).expect("rm");
 }
 
 #[test]

@@ -10,10 +10,12 @@ use std::ffi::{OsStr, OsString};
 use platform::error::Result;
 use platform::fs::FileType;
 
+use crate::ffi::nt_surface as nt;
 use crate::ffi::win32_surface as w;
 use crate::sys::errmap;
 use crate::sys::handle::OwnedWinHandle;
-use crate::util::wide::{from_wide, to_wide_nul};
+use crate::sys::nt as ntsys;
+use crate::util::wide::{from_wide, to_wide_nt_component, to_wide_nul};
 
 /// Open an absolute directory path as a root capability handle. The only
 /// place an ambient path enters this backend (RFC v2 §5.3) — everything
@@ -245,6 +247,125 @@ pub fn mark_delete(handle: &OwnedWinHandle, path: &OsStr) -> Result<()> {
     };
     if ok == 0 {
         return Err(errmap::last_win32_err("SetFileInformationByHandle", path));
+    }
+    Ok(())
+}
+
+/// `FlushFileBuffers` — durability (`File::sync_all`).
+pub fn sync_all(handle: &OwnedWinHandle) -> Result<()> {
+    // SAFETY: the handle is a live, open, writable file handle.
+    let ok = unsafe { w::FlushFileBuffers(handle.as_raw()) };
+    if ok == 0 {
+        return Err(errmap::last_win32_err("FlushFileBuffers", OsStr::new("")));
+    }
+    Ok(())
+}
+
+/// Rename `from` (opened with DELETE access, relative to `dir`) to `to`
+/// (a name relative to that same `dir`), via `NtSetInformationFile` +
+/// `FILE_RENAME_INFORMATION`'s `RootDirectory` field — the
+/// handle-relative rename this backend's capability model needs (D11,
+/// convergence roadmap Phase 3), since there is no ambient path to hand
+/// `MoveFileExW`.
+///
+/// **Not** the Win32 `SetFileInformationByHandle`: a real windows-latest
+/// CI run proved that wrapper rejects a non-null `RootDirectory` for the
+/// classic `FileRenameInfo` class with `ERROR_INVALID_PARAMETER` —
+/// handle-relative rename turns out to be a Win32-layer restriction, not
+/// an NT one (a second, narrower ntdll admission, `ffi::nt_surface`).
+///
+/// `FILE_RENAME_INFORMATION` ends in a flexible array member
+/// (`FileName`) at an offset **not** equal to `size_of::<…>()` — the
+/// struct's own alignment (8, from the `HANDLE` field) pads its *end*,
+/// past `FileName`, so `size_of` overshoots by that padding (the first
+/// bug this function shipped with, before the Win32-vs-NT one). The
+/// offset is computed via `addr_of!` pointer subtraction on a zeroed
+/// instance — the compiler's own layout, not a hand-derived guess, and
+/// available without `offset_of!` (unavailable at this workspace's 1.75
+/// MSRV; stabilized in 1.77).
+pub fn rename(dir: &OwnedWinHandle, from: &OsStr, to: &OsStr, replace: bool) -> Result<()> {
+    // The target may be a file or a directory; try the file disposition
+    // first (the common case) and fall back to the directory one rather
+    // than requiring the caller to know which (mirroring the Linux
+    // backend, where renameat2 doesn't care either).
+    let handle = ntsys::open_relative(
+        dir,
+        from,
+        w::DELETE | w::SYNCHRONIZE,
+        nt::FILE_OPEN,
+        nt::FILE_NON_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
+    )
+    .or_else(|_| {
+        ntsys::open_relative(
+            dir,
+            from,
+            w::DELETE | w::SYNCHRONIZE,
+            nt::FILE_OPEN,
+            nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
+        )
+    })?;
+
+    let name = to_wide_nt_component(to);
+    let name_bytes = (name.len() * 2) as u32;
+
+    // SAFETY: an all-zero bit pattern is a valid `FILE_RENAME_INFORMATION`
+    // (BOOLEAN/HANDLE/u32/u16 are all valid at all-zeroes); never read
+    // through the union, only used to compute `FileName`'s real offset.
+    let probe: nt::FILE_RENAME_INFORMATION = unsafe { std::mem::zeroed() };
+    let base = std::ptr::addr_of!(probe) as usize;
+    let name_field = std::ptr::addr_of!(probe.FileName) as usize;
+    let name_offset = name_field - base;
+
+    // SAFETY: an all-zero bit pattern is a valid `FILE_RENAME_INFORMATION`;
+    // every field is then overwritten below before this value is read as
+    // bytes.
+    let mut header: nt::FILE_RENAME_INFORMATION = unsafe { std::mem::zeroed() };
+    header.Anonymous = nt::FILE_RENAME_INFORMATION_0 {
+        ReplaceIfExists: u8::from(replace),
+    };
+    header.RootDirectory = dir.as_raw();
+    header.FileNameLength = name_bytes;
+
+    let mut buf = vec![0u8; name_offset + name_bytes as usize];
+    // SAFETY: `buf` is at least `name_offset` bytes (allocated above);
+    // copying exactly the header portion up to (not including)
+    // `FileName` is in-bounds on both sides and leaves `FileName`
+    // itself untouched — it is overwritten fully by the loop below.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            (&header as *const nt::FILE_RENAME_INFORMATION).cast::<u8>(),
+            buf.as_mut_ptr(),
+            name_offset,
+        );
+    }
+    // `FILE_RENAME_INFORMATION`'s `FileName` is raw UTF-16 code units,
+    // not a `u16` slice the ABI guarantees any transmute safety for;
+    // write each unit's bytes explicitly rather than reinterpreting the
+    // slice.
+    for (i, unit) in name.iter().enumerate() {
+        let at = name_offset + i * 2;
+        buf[at..at + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+
+    // SAFETY: `IO_STATUS_BLOCK` is plain-old-data for which all-zeroes is
+    // a valid starting value, overwritten by the call below.
+    let mut iosb: w::IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+    // SAFETY: `iosb` is a valid out-pointer; `buf` holds a fully
+    // populated `FILE_RENAME_INFORMATION` at its start followed by the
+    // wide filename at its real, compiler-computed offset, with its
+    // length passed exactly as `buf.len()`; `handle` is open with
+    // DELETE access.
+    let status = unsafe {
+        nt::NtSetInformationFile(
+            handle.as_raw(),
+            &mut iosb,
+            buf.as_ptr().cast(),
+            buf.len() as u32,
+            nt::FileRenameInformation,
+        )
+    };
+    if status != w::STATUS_SUCCESS {
+        return Err(errmap::nt_err(status, "NtSetInformationFile", to));
     }
     Ok(())
 }

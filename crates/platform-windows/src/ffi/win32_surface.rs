@@ -15,7 +15,7 @@ pub use windows_sys::Win32::Foundation::{
 };
 pub use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 pub use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FileBasicInfo, FileDispositionInfo, FileFullDirectoryInfo,
+    CreateFileW, FileBasicInfo, FileDispositionInfo, FileFullDirectoryInfo, FlushFileBuffers,
     GetFileInformationByHandleEx, ReadFile, SetFileInformationByHandle, WriteFile, DELETE,
     FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_DISPOSITION_INFO,

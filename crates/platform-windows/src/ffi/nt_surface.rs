@@ -17,3 +17,16 @@ pub use windows_sys::Wdk::Storage::FileSystem::{
     FILE_SYNCHRONOUS_IO_NONALERT,
 };
 pub use windows_sys::Win32::System::Kernel::OBJ_CASE_INSENSITIVE;
+
+// Second ntdll admission (D11, convergence roadmap Phase 3): a live
+// windows-latest CI run proved `SetFileInformationByHandle` (the Win32
+// kernel32 wrapper) rejects a non-null `FILE_RENAME_INFO.RootDirectory`
+// with ERROR_INVALID_PARAMETER for the classic `FileRenameInfo` class —
+// handle-relative rename is a Win32-layer restriction, not an NT one.
+// `NtSetInformationFile` with `FileRenameInformation` is the direct NT
+// analog of `NtCreateFile`'s own `OBJECT_ATTRIBUTES.RootDirectory`
+// admission above: the OS primitive this capability model actually
+// needs, one layer down from where the Win32 wrapper stops it.
+pub use windows_sys::Wdk::Storage::FileSystem::{
+    FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0,
+};

@@ -125,18 +125,36 @@ being scheduled).
 
 ## Phase 3 — Fs second wave (D11)
 
-**Lands here**, self-contained, no design decisions, can start anytime.
+**Landed (first slice) 2026-07-19.** Self-contained, no design
+decisions. Added to `platform::fs`:
 
-- **Atomic durable write** — two independent donors (nexus
-  `storage/atomic.rs`: temp→fsync→rename→fsync-parent with retry
-  classes; rusty_naner's download→tmp→rename staged install). A single
-  `Fs`-surface primitive backed by `renameat2` (Linux) /
-  `MoveFileEx(REPLACE_EXISTING)` (Windows).
-- `renameat2` (NOREPLACE/EXCHANGE), `symlinkat`/`readlinkat`,
-  `faccessat` — the mutation-layer half of Track P's fdio family that
-  slice 1–4 didn't cover (read/stat side only).
-- `test`-style file predicates + PATH-resolution unification (rush
-  donor) — lower priority, no second consumer yet.
+- `File::sync_all()` — durability (`fsync`/`FlushFileBuffers`),
+  finally giving `flush`'s long-standing doc comment its distinct
+  explicit companion.
+- `Dir::rename`/`rename_no_replace` — same-directory rename, replace
+  vs. atomic-refuse-if-exists. Linux: `renameat2` (no libc wrapper at
+  this MSRV on glibc x86_64, same situation `pidfd_open` was in — the
+  raw-syscall arm; rusty_libc *does* have `renameat2`, so the track-p
+  arm is an ordinary split, not another escape hatch). Windows:
+  `FILE_RENAME_INFO` via `SetFileInformationByHandle` with
+  `RootDirectory` set to the capability's own handle — the
+  handle-relative rename this backend's ambient-path-free model needs
+  (not `MoveFileExW`, which has no such handle).
+- `Dir::write_atomic` (default-provided, composes `open`+`write`+
+  `sync_all`+`rename` — one implementation for every backend) — the
+  headline deliverable, forced by two independent donors (nexus
+  `storage/atomic.rs`, rusty_naner's staged install). Strace-verified
+  on Linux: `fsync` fires strictly before the publishing `renameat2`.
+
+**Deferred to a later slice**, not an oversight: `symlink`/`read_link`
+(`symlinkat`/`readlinkat`) and `faccessat`-style permission probing.
+Windows symlink creation needs real reparse-point construction (no
+ambient path for `CreateSymbolicLinkW`, so the same handle-relative +
+`SeCreateSymbolicLinkPrivilege`/Developer-Mode story rusty_naner's own
+archive extraction hit) and deserves its own careful pass rather than
+riding along with the rename/atomic-write work. `test`-style file
+predicates + PATH-resolution unification (rush donor) stay lower
+priority, no second consumer yet.
 
 ## Phase 4 — Track P completion
 
