@@ -85,6 +85,10 @@ impl Child for WindowsChild {
             .take()
             .map(|h| Box::new(crate::fs::WindowsFile::from(h)) as Box<dyn platform::fs::File>)
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 /// The default PATHEXT set, per the OS default when the variable is
@@ -181,5 +185,59 @@ impl Spawner for WindowsSpawner {
             }
         }
         Err(PlatformError::new(ErrorKind::NotFound, OsCode::None, "resolve").with_path(program))
+    }
+
+    /// R3 reactor internals (RFC v2 §5.6): `WaitForMultipleObjects` with
+    /// the 64-handle cap absorbed in `sys::proc::wait_many`. Same
+    /// contract as `process::wait_any`; falls back to the portable loop
+    /// for children that aren't ours.
+    fn wait_any(
+        &self,
+        children: &mut [Box<dyn Child>],
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Option<usize>> {
+        if children.is_empty() {
+            return Err(PlatformError::new(
+                ErrorKind::InvalidInput,
+                OsCode::None,
+                "wait_any",
+            ));
+        }
+        // Fast pass — an already-terminated child wins without the OS
+        // multiplexer; also the downcast gate for the native path.
+        let mut all_ours = true;
+        for (i, child) in children.iter_mut().enumerate() {
+            if child.try_wait()?.is_some() {
+                return Ok(Some(i));
+            }
+            if child.as_any_mut().downcast_mut::<WindowsChild>().is_none() {
+                all_ours = false;
+                break;
+            }
+        }
+        if !all_ours {
+            return platform::process::wait_any(children, timeout);
+        }
+        // Raw handle values, one pass; the `&mut children` this method
+        // holds keeps every handle open across the wait (the contract
+        // `sys::proc::wait_many` documents).
+        let handles: Vec<_> = children
+            .iter_mut()
+            .map(|child| {
+                child
+                    .as_any_mut()
+                    .downcast_mut::<WindowsChild>()
+                    .expect("gated above")
+                    .process
+                    .as_raw()
+            })
+            .collect();
+        match proc::wait_many(&handles, timeout)? {
+            Some(index) => {
+                children[index].try_wait()?;
+                Ok(Some(index))
+            }
+            None => Ok(None),
+        }
     }
 }

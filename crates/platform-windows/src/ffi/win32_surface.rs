@@ -11,7 +11,7 @@ pub use windows_sys::Win32::Foundation::{
 };
 pub use windows_sys::Win32::Foundation::{
     DuplicateHandle, SetHandleInformation, DUPLICATE_SAME_ACCESS, ERROR_BROKEN_PIPE,
-    HANDLE_FLAG_INHERIT, WAIT_OBJECT_0,
+    HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 pub use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 pub use windows_sys::Win32::Storage::FileSystem::{
@@ -34,8 +34,8 @@ pub use windows_sys::Win32::System::JobObjects::{
 pub use windows_sys::Win32::System::Pipes::CreatePipe;
 pub use windows_sys::Win32::System::Threading::{
     CreateProcessW, GetCurrentProcess, GetExitCodeProcess, ResumeThread, TerminateProcess,
-    WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, INFINITE,
-    PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
+    WaitForMultipleObjects, WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    INFINITE, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 pub use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 // Oracle for the winargv tests only: parse a command line the way MSVCRT

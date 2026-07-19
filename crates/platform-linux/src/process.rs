@@ -80,6 +80,10 @@ impl Child for LinuxChild {
             .take()
             .map(|fd| Box::new(crate::fs::LinuxFile::from(fd)) as Box<dyn platform::fs::File>)
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -138,5 +142,58 @@ impl Spawner for LinuxSpawner {
             }
         }
         Err(PlatformError::new(ErrorKind::NotFound, OsCode::None, "resolve").with_path(program))
+    }
+
+    /// R3 reactor internals (RFC v2 §5.6): pidfd + `poll` instead of the
+    /// portable tick loop. Same contract as `process::wait_any`; falls
+    /// back to the portable loop when a child isn't ours or the kernel
+    /// lacks pidfd_open.
+    fn wait_any(
+        &self,
+        children: &mut [Box<dyn Child>],
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Option<usize>> {
+        if children.is_empty() {
+            return Err(PlatformError::new(
+                ErrorKind::InvalidInput,
+                OsCode::None,
+                "wait_any",
+            ));
+        }
+        // Fast pass — an already-terminated (or already-stashed) child
+        // wins without touching the OS multiplexer; also the downcast
+        // gate for the native path.
+        let mut pending: Vec<(usize, c::pid_t)> = Vec::with_capacity(children.len());
+        let mut all_ours = true;
+        for (i, child) in children.iter_mut().enumerate() {
+            if child.try_wait()?.is_some() {
+                return Ok(Some(i));
+            }
+            match child.as_any_mut().downcast_mut::<LinuxChild>() {
+                Some(c) => pending.push((i, c.pid)),
+                None => {
+                    all_ours = false;
+                    break;
+                }
+            }
+        }
+        if !all_ours {
+            return platform::process::wait_any(children, timeout);
+        }
+        let pids: Vec<c::pid_t> = pending.iter().map(|&(_, pid)| pid).collect();
+        match spawn::poll_pids(&pids, timeout) {
+            Ok(Some(pos)) => {
+                let (index, _) = pending[pos];
+                // Reap now so the winner's status is stashed (the
+                // wait_any contract: retrieve via try_wait/wait).
+                children[index].try_wait()?;
+                Ok(Some(index))
+            }
+            Ok(None) => Ok(None),
+            Err(e) if e.kind == ErrorKind::Unsupported => {
+                platform::process::wait_any(children, timeout)
+            }
+            Err(e) => Err(e),
+        }
     }
 }

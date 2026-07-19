@@ -42,11 +42,11 @@ fn main() -> std::process::ExitCode {
         }
     }
 
-    // Completion-order reporting: wait_any names whichever finished,
-    // try_wait retrieves its stashed status, and the consuming wait
-    // releases it.
+    // Completion-order reporting: the backend's multiplexed wait_any
+    // (pidfd+poll / WaitForMultipleObjects) names whichever finished;
+    // the consuming wait releases it.
     while !children.is_empty() {
-        let idx = match platform::process::wait_any(&mut children, None) {
+        let idx = match spawner.wait_any(&mut children, None) {
             Ok(Some(i)) => i,
             Ok(None) => unreachable!("no timeout was given"),
             Err(e) => {

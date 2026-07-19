@@ -65,9 +65,10 @@ oracle-tested against `CommandLineToArgvW` on the Windows leg. Step 2 is in: nat
 `rrun` as the consumer, and first-class groups — `GroupSpec::NewGroup`
 with `kill_tree`/`kill_single` (`setpgid`-at-spawn; suspended-spawn into
 a kill-on-close Job Object), with the registry's first divergence
-entries (001/002) recorded. Step 3's seed is in: `Child::try_wait` and
-portable `wait_any` (consumed by `rpar`, the parallel runner); the
-OS-multiplexed reactor internals and signal source are R3. Step 4 is
+entries (001/002) recorded. Step 3 is in: `Child::try_wait`, portable `wait_any`, and the R3
+multiplexed internals — `Spawner::wait_any` over pidfd+`poll` (Linux)
+and `WaitForMultipleObjects` with the 64-handle cap absorbed (Windows)
+— consumed by `rpar`; the signal event source remains for R3. Step 4 is
 in: `Stdio::Pipe` capture/feeding with inheritance control on every
 backend (consumed by `rtee`), with the STARTUPINFO-vs-slot-swap
 decision recorded in the extraction map.

@@ -341,6 +341,59 @@ pub fn spawn(
     }
 }
 
+/// `WaitForMultipleObjects`'s own hard cap on one call's handle count.
+const MAXIMUM_WAIT_OBJECTS: usize = 64;
+
+/// Multiplexed wait over process handles (RFC v2 §5.6 reactor internals,
+/// R3): `Some(position)` of a signaled handle, `None` on timeout. The
+/// 64-handle `WaitForMultipleObjects` cap is absorbed here: up to 64
+/// handles use one true blocking wait; beyond that, 64-sized chunks are
+/// swept with zero-timeout waits on a 10ms tick until the deadline —
+/// the documented Win32 limit, not one this crate invents.
+/// Raw handles because the caller (the trait impl layer) collects them
+/// through `&mut` children it continues to hold across this call — the
+/// borrow that guarantees every handle stays open for the duration.
+pub fn wait_many(raw: &[w::HANDLE], timeout: Option<std::time::Duration>) -> Result<Option<usize>> {
+    let wait_chunk = |chunk: &[w::HANDLE], ms: u32| -> Result<Option<usize>> {
+        // SAFETY: `chunk` is a valid array of at most 64 open process
+        // handles (borrowed for the duration of this call).
+        let r = unsafe { w::WaitForMultipleObjects(chunk.len() as u32, chunk.as_ptr(), 0, ms) };
+        if r == w::WAIT_TIMEOUT {
+            return Ok(None);
+        }
+        let idx = r.wrapping_sub(w::WAIT_OBJECT_0) as usize;
+        if idx < chunk.len() {
+            return Ok(Some(idx));
+        }
+        Err(errmap::last_win32_err(
+            "WaitForMultipleObjects",
+            OsStr::new(""),
+        ))
+    };
+
+    if raw.len() <= MAXIMUM_WAIT_OBJECTS {
+        let ms = timeout.map_or(w::INFINITE, |t| {
+            t.as_millis().min(u128::from(w::INFINITE - 1)) as u32
+        });
+        return wait_chunk(raw, ms);
+    }
+
+    let deadline = timeout.map(|t| std::time::Instant::now() + t);
+    loop {
+        for (chunk_index, chunk) in raw.chunks(MAXIMUM_WAIT_OBJECTS).enumerate() {
+            if let Some(hit) = wait_chunk(chunk, 0)? {
+                return Ok(Some(chunk_index * MAXIMUM_WAIT_OBJECTS + hit));
+            }
+        }
+        if let Some(d) = deadline {
+            if std::time::Instant::now() >= d {
+                return Ok(None);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Terminate every process in `job` (kill-tree). Exit code 1 — Windows
 /// has no signal identity to encode (divergence 001).
 pub fn terminate_job(job: &OwnedWinHandle) -> Result<()> {
