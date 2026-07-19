@@ -26,6 +26,14 @@ fn assert_fs_behavior(root: &dyn Dir) {
     let mut buf = [0u8; 64];
     let n = f.read(&mut buf).expect("read");
     assert_eq!(&buf[..n], b"one \xff two");
+    // Drop this read handle now: "a.bin" gets renamed forward to b.bin,
+    // then c.bin, then d.bin later in this function (rename just relinks
+    // the name, same underlying file), and on Windows a lingering open
+    // handle keeps whatever name the file currently has visible in
+    // directory enumeration even after remove_file marks it for
+    // deletion. Shadowing `f` below does not drop this binding early —
+    // only an explicit drop, or end of scope, does.
+    drop(f);
 
     // metadata: type and length agree with what was written
     let md = root.metadata(OsStr::new("a.bin")).expect("metadata");
