@@ -69,7 +69,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      - run: cargo miri test -p platform -p platform-mock -p coreutils --lib
+      # platform-windows's lib on a Linux host is just the pure winargv
+      # module — exactly the kind of logic Miri should cover.
+      - run: cargo miri test -p platform -p platform-mock -p platform-windows -p coreutils --lib
 
   # Fast Windows feedback without waiting on a windows-latest runner: a
   # cross-compile check from Linux catches most platform-windows compile

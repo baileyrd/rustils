@@ -19,3 +19,8 @@ pub use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_DATA, OPEN_EXISTING, SYNCHRONIZE,
 };
 pub use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+// Oracle for the winargv tests only: parse a command line the way MSVCRT
+// argv splitting does, to round-trip what `winargv` builds. Not used by
+// backend code.
+pub use windows_sys::Win32::Foundation::LocalFree;
+pub use windows_sys::Win32::UI::Shell::CommandLineToArgvW;

@@ -10,20 +10,31 @@
 //! lifetimes, error mapping, and (post-R2-hoist) the `winargv` quoting
 //! module, which is this crate's security boundary.
 //!
-//! ## Status: Dir/File landed (R1)
+//! ## Status: Dir/File landed (R1); winargv landed (R2 extraction step 1)
 //!
 //! The `Dir`/`File` impls run over `NtCreateFile` handle-relative opens
 //! (`sys::nt`; the admission rationale lives in `ffi::nt_surface`) with
 //! Win32 handle-based APIs for everything after the open. Developed from a
 //! Linux host against `cargo check --target x86_64-pc-windows-gnu`; CI's
-//! Windows leg is where the tests actually run.
+//! Windows leg is where the OS-touching tests actually run.
+//!
+//! The backend modules are `cfg(windows)`-gated individually rather than
+//! at the crate root: [`winargv`] is pure string logic with no OS calls,
+//! and compiling + testing it on every host puts it under the Linux CI
+//! leg and Miri as well as the Windows leg (its oracle test against
+//! `CommandLineToArgvW` remains Windows-only).
 
-#![cfg(windows)]
 #![deny(unsafe_code)] // opted back in, narrowly, inside sys/ modules only
 
+#[cfg(windows)]
 pub mod ffi;
+#[cfg(windows)]
 pub mod fs;
+#[cfg(windows)]
 pub mod sys;
+#[cfg(windows)]
 pub mod util;
+pub mod winargv;
 
+#[cfg(windows)]
 pub use fs::WindowsDir;

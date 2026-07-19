@@ -146,6 +146,11 @@ them.
 
 1. **`winargv`** with cmd-rules escaping and refuse-unrepresentable
    (D3) — highest security value; fuzzed per §9.5; hand back to rush.
+   **Landed:** `platform-windows/src/winargv.rs` (pure `&[u16]` core,
+   tested on both CI legs + Miri) with a `CommandLineToArgvW` round-trip
+   oracle incl. an exhaustive adversarial-alphabet sweep on the Windows
+   leg (`tests/winargv_oracle.rs`). The §9.5 argv-echo fuzz job and the
+   rush handback remain open.
 2. **Spawn + groups** behind the `Spawner` trait: Unix (D1) and Windows
    suspended-spawn/jobs (D2), with `behavior/process.md` grown to match
    and D8's divergence entries recorded.
