@@ -353,3 +353,22 @@ fn windows_wait_any_many_children() {
         .iter()
         .all(|st| matches!(st, ExitStatus::Code(c) if *c < 8)));
 }
+
+/// Deferred signals (D6, Windows side). Deliberately NOT asserted here:
+/// actual Ctrl-C/Ctrl-Break delivery — GitHub's runners execute tests
+/// without an interactive console, and GenerateConsoleCtrlEvent
+/// addresses console process groups this harness does not control; a
+/// false green from a self-signal that never arrives would be worse
+/// than the narrow pin below (extraction map D7's "document what is not
+/// asserted" discipline). What IS pinned: installation succeeds and the
+/// slot starts (and stays) empty without a delivery.
+#[test]
+fn windows_signal_source_installs() {
+    use platform::events::{SignalEvent, SignalSource};
+
+    let signals = platform_windows::WindowsSignalSource;
+    signals
+        .install(&[SignalEvent::Interrupt, SignalEvent::Terminate])
+        .expect("install");
+    assert_eq!(signals.take(), None);
+}

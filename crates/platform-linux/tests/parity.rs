@@ -349,3 +349,60 @@ fn linux_process_pipes() {
     assert_eq!(got, b"round trip");
     assert!(child.wait().expect("wait").success());
 }
+
+/// Deferred signals (D6, Linux side): a child delivers SIGTERM to this
+/// test process; the handler's one atomic store is consumed at the next
+/// safe point. Also pins take-consumes and burst coalescing semantics.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_signal_source_defers_and_coalesces() {
+    use platform::events::{SignalEvent, SignalSource};
+    use platform::process::{Command, Spawner};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_linux::LinuxSpawner;
+    let signals = platform_linux::LinuxSignalSource;
+    signals
+        .install(&[SignalEvent::Terminate, SignalEvent::Hangup])
+        .expect("install");
+    assert_eq!(signals.take(), None);
+
+    // A real delivery: the child TERMs its parent (this process), which
+    // must survive (deferral, not default disposition) and observe the
+    // event at this safe point.
+    let c = Command::new("sh", tmp.clone())
+        .arg("-c")
+        .arg("kill -TERM $PPID");
+    assert!(s.spawn(&c).expect("spawn").wait().expect("wait").success());
+    let mut seen = None;
+    for _ in 0..100 {
+        if let Some(e) = signals.take() {
+            seen = Some(e);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(seen, Some(SignalEvent::Terminate));
+    assert_eq!(signals.take(), None, "take consumes");
+
+    // Burst: HUP then TERM before a take — single slot, latest wins.
+    let c = Command::new("sh", tmp)
+        .arg("-c")
+        .arg("kill -HUP $PPID; kill -TERM $PPID");
+    assert!(s.spawn(&c).expect("spawn").wait().expect("wait").success());
+    let mut seen = None;
+    for _ in 0..100 {
+        if let Some(e) = signals.take() {
+            seen = Some(e);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Two rapid deliveries may coalesce to the latest (single slot) or,
+    // if this process consumed between them, arrive as just the first —
+    // what is pinned: at least one arrives and it is one of the two.
+    assert!(matches!(
+        seen,
+        Some(SignalEvent::Terminate) | Some(SignalEvent::Hangup)
+    ));
+}

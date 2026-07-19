@@ -19,6 +19,8 @@ pub mod sys;
 
 mod fs;
 mod process;
+mod signals;
 
 pub use fs::{LinuxDir, LinuxFile};
 pub use process::{LinuxChild, LinuxSpawner};
+pub use signals::LinuxSignalSource;

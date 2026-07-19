@@ -33,6 +33,8 @@ pub mod fs;
 #[cfg(windows)]
 mod process;
 #[cfg(windows)]
+mod signals;
+#[cfg(windows)]
 pub mod sys;
 #[cfg(windows)]
 pub mod util;
@@ -42,3 +44,5 @@ pub mod winargv;
 pub use fs::{WindowsDir, WindowsFile};
 #[cfg(windows)]
 pub use process::{WindowsChild, WindowsSpawner};
+#[cfg(windows)]
+pub use signals::WindowsSignalSource;
