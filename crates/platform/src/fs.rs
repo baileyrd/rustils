@@ -90,6 +90,30 @@ pub struct Metadata {
     pub len: u64,
 }
 
+/// POSIX mode bits and ownership (`test -u/-g/-k/-O/-G`'s donor material,
+/// D11) — `setuid`/`setgid`/`sticky` and the owning `uid`/`gid`. Windows
+/// has no analog for any of this (NTFS security descriptors are a wholly
+/// different model, not a POSIX-mode-bit superset); [`Dir::unix_mode`]
+/// returns `Ok(None)` there rather than fabricating zeroed-out values —
+/// "this OS has no such concept" is a real answer, not an error.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnixMode {
+    pub setuid: bool,
+    pub setgid: bool,
+    pub sticky: bool,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+/// An opaque per-OS file identity, equality-comparable only (`test -ef`'s
+/// donor material, D11) — POSIX's `(dev, ino)` pair on Linux, `(volume
+/// serial, file index)` on Windows via `GetFileInformationByHandle`. Two
+/// [`FileId`]s are equal exactly when they name the same underlying file
+/// object, which — unlike [`UnixMode`] — both backends can answer, so
+/// there is no `Option` here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileId(pub u64, pub u64);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FileType {
@@ -164,6 +188,17 @@ pub trait Dir {
     /// actual operation this probe predicts, not a separate ACL query
     /// that could disagree with it.
     fn access(&self, rel: &OsStr, mode: AccessMode) -> Result<()>;
+
+    /// [`UnixMode`] for `rel`, or `Ok(None)` on a backend with no such
+    /// concept (Windows). Does not follow a terminal symlink, matching
+    /// [`Dir::metadata`]'s lstat-style contract — the same object, not
+    /// its target.
+    fn unix_mode(&self, rel: &OsStr) -> Result<Option<UnixMode>>;
+
+    /// [`FileId`] for `rel` — same-file identity, `test -ef`'s donor
+    /// material. Does not follow a terminal symlink, matching
+    /// [`Dir::metadata`].
+    fn file_id(&self, rel: &OsStr) -> Result<FileId>;
 
     /// List this directory's entries.
     ///

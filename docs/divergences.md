@@ -113,3 +113,34 @@ implementation convenience.
   opposites for the identical setup.
 - **Accepted**: 2026-07-19, with the faccessat slice (D11, convergence
   roadmap).
+
+## 006 — no POSIX mode-bit/ownership model on Windows
+
+- **Linux**: `Dir::unix_mode` returns real `setuid`/`setgid`/`sticky`
+  bits and the owning `uid`/`gid` (`fstatat`'s `st_mode`/`st_uid`/
+  `st_gid`) — `test -u/-g/-k/-O/-G`'s donor material (D11).
+- **Windows**: there is no POSIX mode-bit or uid/gid concept at all —
+  NTFS security descriptors (DACLs of per-trustee access-control
+  entries keyed by SID) are a wholly different ownership and permission
+  model, not a superset or subset representable as mode bits.
+  `Dir::unix_mode` returns `Ok(None)` rather than a fabricated
+  zeroed-out `Some(UnixMode)`, which would misrepresent "not modeled"
+  as "modeled and empty."
+- **OS limitation**: there is no `setuid`/`setgid`/sticky-bit analog in
+  an NTFS ACL, and Windows security principals are SIDs, not small
+  integer uid/gid values — there is no lossless mapping either
+  direction.
+- **Pinning test**: `windows_unix_mode_is_always_none` in
+  `platform-windows/tests/parity.rs`; the mock's own
+  `unix_mode_is_a_deterministic_default_not_none` pins the opposite
+  choice mock makes (a real `Some`, deliberately not mirroring the
+  Windows `None` — the mock still has no permission model, but "not
+  modeled" isn't the same claim as "this OS has no such concept").
+- **Not a divergence**: `Dir::file_id` (`test -ef`'s donor material) —
+  both backends answer this one identically in contract (equality means
+  same underlying file), even though the wire representation differs
+  ((dev, ino) via `fstatat` vs. (volume serial, file index) via
+  `GetFileInformationByHandle`); `FileId` is opaque specifically so that
+  difference never surfaces to a consumer.
+- **Accepted**: 2026-07-19, with the faccessat slice's sibling
+  (`test`-predicates donor material, D11, convergence roadmap).

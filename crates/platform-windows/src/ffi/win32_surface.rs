@@ -17,14 +17,19 @@ pub use windows_sys::Win32::Foundation::{
 pub use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 pub use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileBasicInfo, FileDispositionInfo, FileFullDirectoryInfo, FlushFileBuffers,
-    GetFileInformationByHandleEx, ReadFile, SetFileInformationByHandle, WriteFile, DELETE,
-    FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_DISPOSITION_INFO,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, ReadFile, SetFileInformationByHandle,
+    WriteFile, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_DISPOSITION_INFO,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_DATA, MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
     OPEN_EXISTING, SYNCHRONIZE,
 };
+// test -ef's donor material (D11, faccessat slice's sibling):
+// GetFileInformationByHandle's legacy 32-bit volume-serial +
+// 64-bit file-index pair is the same same-file identity
+// std::os::windows::fs::MetadataExt::file_index historically exposed —
+// no new windows-sys feature needed, already Win32_Storage_FileSystem.
 // Symlink slice: DeviceIoControl is Win32_System_IO (already enabled below
 // for IO_STATUS_BLOCK); FSCTL_{SET,GET}_REPARSE_POINT need the separate
 // Win32_System_Ioctl feature, and IO_REPARSE_TAG_SYMLINK needs

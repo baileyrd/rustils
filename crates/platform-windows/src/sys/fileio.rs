@@ -136,6 +136,28 @@ pub fn metadata_by_handle(handle: &OwnedWinHandle, path: &OsStr) -> Result<(File
     Ok((file_type, len))
 }
 
+/// `(dwVolumeSerialNumber, fileIndex)` via `GetFileInformationByHandle`
+/// — `test -ef`'s donor material (D11, faccessat slice's sibling),
+/// wrapped into the opaque `platform::fs::FileId` by the `Dir` impl. The
+/// same legacy 32-bit-serial + 64-bit-index pair
+/// `std::os::windows::fs::MetadataExt::file_index` historically exposed
+/// — good enough for equality comparison, this type's only contract.
+pub fn file_id_by_handle(handle: &OwnedWinHandle, path: &OsStr) -> Result<(u64, u64)> {
+    // SAFETY: `info` is a valid out-buffer of exactly
+    // `BY_HANDLE_FILE_INFORMATION`'s size, outliving the call; the
+    // handle is open with at least `FILE_READ_ATTRIBUTES` access.
+    let info: w::BY_HANDLE_FILE_INFORMATION = unsafe {
+        let mut info = std::mem::zeroed::<w::BY_HANDLE_FILE_INFORMATION>();
+        let ok = w::GetFileInformationByHandle(handle.as_raw(), &mut info);
+        if ok == 0 {
+            return Err(errmap::last_win32_err("GetFileInformationByHandle", path));
+        }
+        info
+    };
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Ok((u64::from(info.dwVolumeSerialNumber), index))
+}
+
 fn end_of_file(handle: &OwnedWinHandle, path: &OsStr) -> Result<u64> {
     // FILE_STANDARD_INFO is not in the curated surface; EndOfFile is also
     // available as GetFileSizeEx, but that widens the surface for one

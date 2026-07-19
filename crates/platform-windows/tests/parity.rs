@@ -236,6 +236,27 @@ fn assert_fs_behavior(root: &dyn Dir) {
     root.access(OsStr::new("also-missing"), AccessMode::default())
         .expect("empty mode never fails, even for a name that doesn't exist");
 
+    // unix_mode/file_id (test predicates' donor material, D11's
+    // faccessat-slice sibling): unix_mode is a real answer on Linux/mock,
+    // `None` on Windows (no such concept) — both are valid per the
+    // contract, so only check contents when `Some`. file_id is
+    // answerable on every backend: the same entry queried twice yields
+    // equal ids, and two distinct entries yield different ones.
+    if let Some(um) = root.unix_mode(OsStr::new("atomic.txt")).unwrap() {
+        assert!(!um.setuid);
+        assert!(!um.setgid);
+        assert!(!um.sticky);
+    }
+    let id_a = root.file_id(OsStr::new("atomic.txt")).unwrap();
+    let id_a_again = root.file_id(OsStr::new("atomic.txt")).unwrap();
+    assert_eq!(id_a, id_a_again, "same entry, same id");
+    root.create_dir(OsStr::new("otherdir"))
+        .expect("mkdir otherdir");
+    let id_b = root.file_id(OsStr::new("otherdir")).unwrap();
+    assert_ne!(id_a, id_b, "different entries, different ids");
+    root.remove_dir(OsStr::new("otherdir"))
+        .expect("rm otherdir");
+
     let names: Vec<_> = root
         .read_dir()
         .expect("read_dir")
@@ -279,6 +300,20 @@ fn windows_access_grants_execute_unconditionally() {
         .expect("create f");
     root.access(OsStr::new("f"), AccessMode::execute())
         .expect("Windows has no execute bit to deny on a plain data file");
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// `unix_mode` has no Windows analog at all (NTFS security descriptors,
+/// not POSIX mode bits/uid/gid) — pinning the honest `None` answer, not
+/// a fabricated zeroed-out `Some`.
+#[test]
+fn windows_unix_mode_is_always_none() {
+    let tmp = std::env::temp_dir().join(format!("rustils-unixmode-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mk tempdir");
+    let root = platform_windows::WindowsDir::open_ambient(&tmp).expect("open ambient");
+    root.open(OsStr::new("f"), &OpenOptions::create_truncate())
+        .expect("create f");
+    assert_eq!(root.unix_mode(OsStr::new("f")).unwrap(), None);
     std::fs::remove_dir_all(&tmp).ok();
 }
 
