@@ -386,6 +386,7 @@ fn poll_once(fds: &mut [PollEntry], timeout_ms: c::c_int) -> Result<usize> {
 
 /// `SIGKILL` the whole process group led by `pid` (which must have been
 /// spawned with `GroupSpec::NewGroup`, making pid == pgid).
+#[cfg(not(feature = "track-p"))]
 pub fn kill_group(pid: c::pid_t) -> Result<()> {
     // SAFETY: kill has no pointer arguments; the negative-pid form
     // targets the process group `pid` leads.
@@ -397,7 +398,16 @@ pub fn kill_group(pid: c::pid_t) -> Result<()> {
     Ok(())
 }
 
+/// `SIGKILL` the process group — Track P: raw `SYS_kill` via `killpg`
+/// (the negative-pid form, named).
+#[cfg(feature = "track-p")]
+pub fn kill_group(pid: c::pid_t) -> Result<()> {
+    rusty_libc::process::killpg(pid, rusty_libc::signal::SIGKILL)
+        .map_err(|e| errno_err("kill", e.0, OsStr::new("")))
+}
+
 /// `SIGKILL` the single process `pid`.
+#[cfg(not(feature = "track-p"))]
 pub fn kill_single(pid: c::pid_t) -> Result<()> {
     // SAFETY: kill has no pointer arguments.
     let r = unsafe { c::kill(pid, c::SIGKILL) };
@@ -408,6 +418,14 @@ pub fn kill_single(pid: c::pid_t) -> Result<()> {
     Ok(())
 }
 
+/// `SIGKILL` the single process `pid` — Track P: raw `SYS_kill`.
+#[cfg(feature = "track-p")]
+pub fn kill_single(pid: c::pid_t) -> Result<()> {
+    rusty_libc::process::kill(pid, rusty_libc::signal::SIGKILL)
+        .map_err(|e| errno_err("kill", e.0, OsStr::new("")))
+}
+
+#[cfg(not(feature = "track-p"))]
 fn decode(status: c::c_int) -> ExitStatus {
     if c::WIFEXITED(status) {
         ExitStatus::Code(c::WEXITSTATUS(status))
@@ -420,8 +438,26 @@ fn decode(status: c::c_int) -> ExitStatus {
     }
 }
 
+/// Track P status decode: same W* bit tests, rusty_libc's plain-fn
+/// versions of what libc ships as macros. The raw status word is the
+/// kernel's in both cases — the decoders agree bit for bit.
+#[cfg(feature = "track-p")]
+fn decode(status: c::c_int) -> ExitStatus {
+    use rusty_libc::wait as rw;
+    if rw::wifexited(status) {
+        ExitStatus::Code(rw::wexitstatus(status))
+    } else if rw::wifsignaled(status) {
+        ExitStatus::Signaled(rw::wtermsig(status))
+    } else {
+        // Stop/continue events are impossible without WUNTRACED/
+        // WCONTINUED flags; classify defensively rather than panic.
+        ExitStatus::Code(1)
+    }
+}
+
 /// Blocking `waitpid` on `pid`, decoding the raw status word into the
 /// uniform [`ExitStatus`] (B-5: the raw word never crosses this boundary).
+#[cfg(not(feature = "track-p"))]
 pub fn wait(pid: c::pid_t) -> Result<ExitStatus> {
     let mut status: c::c_int = 0;
     loop {
@@ -441,9 +477,24 @@ pub fn wait(pid: c::pid_t) -> Result<ExitStatus> {
     Ok(decode(status))
 }
 
+/// Blocking wait — Track P: raw `SYS_wait4` (the kernel has no `waitpid`
+/// syscall; libc's waitpid IS wait4 with a null rusage, and rusty_libc
+/// makes that explicit).
+#[cfg(feature = "track-p")]
+pub fn wait(pid: c::pid_t) -> Result<ExitStatus> {
+    loop {
+        match rusty_libc::wait::waitpid(pid, 0) {
+            Ok((_, status)) => return Ok(decode(status)),
+            Err(e) if e == rusty_libc::Errno::EINTR => continue,
+            Err(e) => return Err(errno_err("waitpid", e.0, OsStr::new(""))),
+        }
+    }
+}
+
 /// Non-blocking `waitpid(WNOHANG)`: `Some(decoded)` if `pid` terminated
 /// (the zombie is reaped — the caller must stash the result), `None` if
 /// still running.
+#[cfg(not(feature = "track-p"))]
 pub fn try_wait(pid: c::pid_t) -> Result<Option<ExitStatus>> {
     let mut status: c::c_int = 0;
     loop {
@@ -462,5 +513,19 @@ pub fn try_wait(pid: c::pid_t) -> Result<Option<ExitStatus>> {
             continue;
         }
         return Err(errno_err("waitpid", code, OsStr::new("")));
+    }
+}
+
+/// Non-blocking wait — Track P: raw `SYS_wait4` with `WNOHANG`; a
+/// returned pid of 0 means "still running".
+#[cfg(feature = "track-p")]
+pub fn try_wait(pid: c::pid_t) -> Result<Option<ExitStatus>> {
+    loop {
+        match rusty_libc::wait::waitpid(pid, rusty_libc::wait::WNOHANG) {
+            Ok((0, _)) => return Ok(None),
+            Ok((_, status)) => return Ok(Some(decode(status))),
+            Err(e) if e == rusty_libc::Errno::EINTR => continue,
+            Err(e) => return Err(errno_err("waitpid", e.0, OsStr::new(""))),
+        }
     }
 }

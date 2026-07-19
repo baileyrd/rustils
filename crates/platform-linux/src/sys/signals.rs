@@ -23,6 +23,7 @@ extern "C" fn record(signum: c::c_int) {
 }
 
 /// Install [`record`] for `signum`.
+#[cfg(not(feature = "track-p"))]
 pub fn install(signum: c::c_int) -> Result<()> {
     let handler: extern "C" fn(c::c_int) = record;
     // SAFETY: `handler` is an async-signal-safe extern "C" routine (one
@@ -38,6 +39,27 @@ pub fn install(signum: c::c_int) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Install [`record`] for `signum` — Track P: raw `rt_sigaction`.
+///
+/// The kernel has no `signal` syscall worth using; rusty_libc's `signal`
+/// is `rt_sigaction` with `SA_RESTART` (glibc BSD semantics, matching the
+/// libc arm) — and on x86_64 it installs its own hand-written
+/// `SA_RESTORER` signal-return trampoline, the D4 landmine that makes a
+/// raw-syscall signal layer hard (wrong = crash on first delivery). That
+/// asm lives in the dependency; parity's delivered-signal test crosses it.
+#[cfg(feature = "track-p")]
+pub fn install(signum: c::c_int) -> Result<()> {
+    let handler: extern "C" fn(c::c_int) = record;
+    // SAFETY: `handler` is an async-signal-safe extern "C" routine (one
+    // atomic store) with static lifetime, satisfying rusty_libc's
+    // handler contract.
+    let r = unsafe { rusty_libc::signal::signal(signum, handler as usize) };
+    r.map(|_prev| ()).map_err(|e| {
+        PlatformError::new(ErrorKind::InvalidInput, OsCode::Errno(e.0), "signal")
+            .with_path(OsStr::new(""))
+    })
 }
 
 /// Consume the pending signal number, if any (atomic swap with 0).
