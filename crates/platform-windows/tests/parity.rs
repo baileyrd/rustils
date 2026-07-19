@@ -372,3 +372,19 @@ fn windows_signal_source_installs() {
         .expect("install");
     assert_eq!(signals.take(), None);
 }
+
+/// The redirected-streams contract (`docs/behavior/term.md`): same
+/// assertions as the Linux leg — false everywhere, Err for size,
+/// refuse raw mode, leave_raw an Ok no-op.
+#[cfg(windows)]
+#[test]
+fn windows_terminal_honest_when_redirected() {
+    use platform::term::{TermStream, Terminal};
+    let mut t = platform_windows::WindowsTerminal::new();
+    assert!(!t.is_tty(TermStream::Stdin));
+    assert!(!t.is_tty(TermStream::Stdout));
+    assert!(!t.is_tty(TermStream::Stderr));
+    assert!(t.window_size().is_err(), "no tty: size must be Err");
+    assert!(t.enter_raw().is_err(), "no tty: raw mode must refuse");
+    t.leave_raw().expect("leave without enter is an Ok no-op");
+}

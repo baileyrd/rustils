@@ -39,5 +39,9 @@ path = "src/bin/rpar.rs"
 name = "rtee"
 path = "src/bin/rtee.rs"
 
+[[bin]]
+name = "rterm"
+path = "src/bin/rterm.rs"
+
 [lints]
 workspace = true

@@ -4,3 +4,4 @@
 pub mod fdio;
 pub mod signals;
 pub mod spawn;
+pub mod termios;
