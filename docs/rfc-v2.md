@@ -1,7 +1,7 @@
 # RFC v2 — rustils (Rust Platform Core)
 ## A hand-rolled, Rust-native platform personality layer for Windows and Linux
 
-**Status:** Proposed — supersedes `docs/rfc.md`, `docs/roadmap.md`, and the architecture docs generated in the original Copilot scaffold. **Amended:** A1 (2026-07-19) re-grounds §7/§8-R2 — see the amendment note in §7 and `docs/extraction-map.md`. A2 (2026-07-19) closes every §7.3 open item and the license question — decisions D-11..D-14.
+**Status:** Proposed — supersedes `docs/rfc.md`, `docs/roadmap.md`, and the architecture docs generated in the original Copilot scaffold. **Amended:** A1 (2026-07-19) re-grounds §7/§8-R2 — see the amendment note in §7 and `docs/extraction-map.md`. A2 (2026-07-19) closes every §7.3 open item and the license question — decisions D-11..D-14. A3 (2026-07-19) adopts the four-layer target architecture and ecosystem convergence map — `docs/architecture.md`.
 **Date:** 2026-07-18
 **Sponsor:** Nano
 **Companion document:** ~~`rush-shell-plan.md` v1.2 (ADR-011)~~ — superseded by Amendment A1: the plan described an alternate rush never built; the real contract material is `docs/extraction-map.md`
@@ -103,6 +103,16 @@ rust-platform-core/
 ### 4.2 CI (kept from v1, extended)
 
 The Windows+Linux matrix from day one was v1's best practice and is retained, adding: MSRV leg, `cargo-deny`, unsafe-scope lint (unsafe outside `sys/` fails CI), Miri job for `platform_mock`-driven logic and any unsafe-adjacent code it can execute, nightly fuzz job (§9), and the parity-ratchet (a passing parity case may never regress).
+
+### 4.3 Target state (Amendment A3)
+
+> **Amendment A3 (2026-07-19).** The owner adopted the four-layer target
+> picture — Layer 0 kernel, Layer 1 per-OS implementation, Layer 2 PAL,
+> Layer 3 applications — including the placement of every ecosystem repo
+> and the gated future surfaces (Terminal, Net, Windowing,
+> Registry/Config, Security) with their forcing consumers named. The
+> record is `docs/architecture.md`; §3's gate still governs when each
+> surface unparks, and §8's R5+ row is read through that map.
 
 ---
 
