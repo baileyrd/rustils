@@ -296,6 +296,30 @@ pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
     Ok((ft, st.stx_size))
 }
 
+/// `faccessat(dirfd, rel, mode, 0)` — real, not effective, uid/gid (the
+/// bare syscall's own semantics; `libc_surface`'s doc comment has the
+/// track-p-consistency rationale for not requesting `AT_EACCESS`).
+#[cfg(not(feature = "track-p"))]
+pub fn access(dirfd: RawFd, rel: &OsStr, mode: i32) -> Result<()> {
+    let c_rel = to_cstring(rel, "faccessat")?;
+    // SAFETY: valid NUL-terminated path outliving the call; valid dirfd.
+    let r = unsafe { c::faccessat(dirfd, c_rel.as_ptr(), mode, 0) };
+    if r < 0 {
+        return Err(os_err("faccessat", rel));
+    }
+    Ok(())
+}
+
+/// `faccessat(dirfd, rel, mode)` — Track P: `rusty_libc::fs::faccessat`,
+/// which has no flags parameter at all (real ids only), matching the
+/// non-track-p arm's explicit `0`.
+#[cfg(feature = "track-p")]
+pub fn access(dirfd: RawFd, rel: &OsStr, mode: i32) -> Result<()> {
+    let c_rel = to_cstring(rel, "faccessat")?;
+    rusty_libc::fs::faccessat(dirfd, &c_rel, mode)
+        .map_err(|e| trackp_err("faccessat", e).with_path(rel))
+}
+
 /// `renameat2(olddirfd, old, newdirfd, new, flags)` — same directory on
 /// both ends (D11's Fs second wave). `flags` is `0` (replace) or
 /// `RENAME_NOREPLACE`.

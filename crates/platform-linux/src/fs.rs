@@ -5,7 +5,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::fs::{Dir, DirEntry, File, Metadata, OpenOptions};
+use platform::fs::{AccessMode, Dir, DirEntry, File, Metadata, OpenOptions};
 
 use crate::ffi::libc_surface as c;
 use crate::sys::fdio;
@@ -155,6 +155,28 @@ impl Dir for LinuxDir {
     fn metadata(&self, rel: &OsStr) -> Result<Metadata> {
         let (file_type, len) = fdio::statat(self.fd.as_raw_fd(), rel)?;
         Ok(Metadata { file_type, len })
+    }
+
+    fn access(&self, rel: &OsStr, mode: AccessMode) -> Result<()> {
+        // An empty mode is a vacuous yes, not F_OK: bits == 0 is what
+        // faccessat's mode parameter uses to mean "check existence
+        // only" (F_OK's own value), so this can't fall through to the
+        // syscall with bits left at 0 without silently becoming a
+        // different check than the one documented.
+        if !(mode.read || mode.write || mode.execute) {
+            return Ok(());
+        }
+        let mut bits = 0;
+        if mode.read {
+            bits |= c::R_OK;
+        }
+        if mode.write {
+            bits |= c::W_OK;
+        }
+        if mode.execute {
+            bits |= c::X_OK;
+        }
+        fdio::access(self.fd.as_raw_fd(), rel, bits)
     }
 
     fn read_dir(&self) -> Result<Vec<DirEntry>> {

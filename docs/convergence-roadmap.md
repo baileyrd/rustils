@@ -167,11 +167,28 @@ deferred. Added to `platform::fs`:
   creation — is a registered divergence (`docs/divergences.md` #004),
   not papered over.
 
-`faccessat`-style permission probing and `test`-style file predicates +
-PATH-resolution unification (rush donor) stay deferred: `faccessat`
-needs its own design pass on what a cross-platform permission predicate
-even means (Windows ACLs have no POSIX mode-bit analog); the `test`/PATH
-work has no second consumer yet.
+**Landed (faccessat slice) 2026-07-19.** The design pass this phase's
+own predecessor said it needed. Added to `platform::fs`:
+
+- `Dir::access` (`faccessat(2)`) — probes `read`/`write`/`execute`
+  (`AccessMode`), `Err(PermissionDenied)` if any requested bit is
+  refused; an empty mode is a vacuous yes, existence being `metadata`'s
+  job. Linux: the plain `faccessat` wrapper with real, not effective,
+  uid/gid — deliberately not glibc's `AT_EACCESS` emulation, since
+  Track P's `rusty_libc::fs::faccessat` has no flags parameter at all
+  and this keeps both configurations answering the identical question.
+  Windows: a trial open with the matching access mask, immediately
+  closed — the actual operation the probe predicts. The cross-platform
+  permission-predicate question the design pass needed to answer:
+  Windows has no execute-permission bit on a regular file at all, so
+  `execute` is granted unconditionally once existence is confirmed — a
+  registered divergence (`docs/divergences.md` #005), pinned by
+  dedicated backend-only tests (the two backends' correct answers are
+  opposites for the identical setup) rather than a shared assertion.
+
+`test`-style file predicates (`-x/-u/-g/-k`, owner uid/gid, same-file by
+dev+ino) + PATH-resolution unification (rush donor) stay deferred: no
+second consumer yet.
 
 ## Phase 4 — Track P completion
 

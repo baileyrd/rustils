@@ -245,9 +245,15 @@ rusty_lines' host. Windows fg/bg absence is already characterized (D8).
 > `REPARSE_DATA_BUFFER`, a third ntdll-adjacent admission), plus a
 > registered divergence for the file-vs-directory decision NT forces at
 > creation time that POSIX doesn't (`docs/divergences.md` #004).
-> `faccessat` remains deferred — needs its own design pass on what a
-> cross-platform permission predicate even means (Windows ACLs have no
-> POSIX mode-bit analog).
+>
+> **Landed (faccessat slice, 2026-07-19):** `Dir::access` — `faccessat`
+> on Linux (real, not effective, uid/gid, matching what Track P's
+> flags-less `rusty_libc::fs::faccessat` can support); a trial open on
+> Windows. The design pass this slice's predecessor said it needed
+> resolved to: Windows has no execute-permission bit on a regular file
+> at all, so `execute` is granted unconditionally once existence is
+> confirmed — a registered divergence (`docs/divergences.md` #005)
+> rather than a forced-uniform answer.
 
 ### D12 — Small process/events donors (each waits for its consumer)
 

@@ -7,7 +7,7 @@ use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
 use std::path::Path;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::fs::{Dir, DirEntry, File, FileType, Metadata, OpenOptions};
+use platform::fs::{AccessMode, Dir, DirEntry, File, FileType, Metadata, OpenOptions};
 
 use crate::ffi::nt_surface as nt;
 use crate::ffi::win32_surface as w;
@@ -182,6 +182,41 @@ impl Dir for WindowsDir {
         )?;
         let (file_type, len) = fileio::metadata_by_handle(&handle, rel)?;
         Ok(Metadata { file_type, len })
+    }
+
+    fn access(&self, rel: &OsStr, mode: AccessMode) -> Result<()> {
+        // An empty mode is a vacuous yes: no probe at all, matching the
+        // Linux backend's short-circuit (there, calling through with
+        // bits == 0 would silently become an F_OK existence check
+        // instead — the same trap applies here in spirit, so both
+        // backends special-case it explicitly rather than relying on
+        // "no access bits requested" happening to be harmless).
+        if !(mode.read || mode.write || mode.execute) {
+            return Ok(());
+        }
+        // No POSIX execute-bit analog for a regular file: FILE_READ_ATTRIBUTES
+        // alone confirms existence (and is what an execute-only probe
+        // resolves to), unioned with GENERIC read/write when requested
+        // — a trial open, immediately dropped, is the actual operation
+        // this probe predicts rather than a separate ACL query that
+        // could disagree with it (this trait method's own doc comment,
+        // divergence #005). No FILE_OPEN_REPARSE_POINT: like `open`,
+        // this follows a terminal symlink.
+        let mut access_mask = w::SYNCHRONIZE | w::FILE_READ_ATTRIBUTES;
+        if mode.read {
+            access_mask |= w::FILE_GENERIC_READ;
+        }
+        if mode.write {
+            access_mask |= w::FILE_GENERIC_WRITE;
+        }
+        ntsys::open_relative(
+            &self.handle,
+            rel,
+            access_mask,
+            nt::FILE_OPEN,
+            nt::FILE_SYNCHRONOUS_IO_NONALERT,
+        )?;
+        Ok(())
     }
 
     fn read_dir(&self) -> Result<Vec<DirEntry>> {

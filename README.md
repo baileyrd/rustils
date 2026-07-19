@@ -99,8 +99,14 @@ strace-verified to fsync before it publishes. A follow-on slice added
 `FSCTL_SET_REPARSE_POINT`/`FSCTL_GET_REPARSE_POINT` over a hand-built
 `REPARSE_DATA_BUFFER`), with the one thing Windows requires that POSIX
 doesn't — declaring file-vs-directory at creation — registered as a
-divergence rather than papered over (`docs/divergences.md` #004).
-`faccessat`-style permission probing stays deferred.
+divergence rather than papered over (`docs/divergences.md` #004). A
+further slice closed out the Fs surface's last deferred item,
+`Dir::access` (`faccessat`, real not effective uid/gid on Linux; a
+trial open on Windows): Windows has no execute-permission bit on a
+regular file at all, so `execute` is granted unconditionally once
+existence is confirmed, pinned as a second registered divergence
+(`docs/divergences.md` #005) with dedicated backend-only tests rather
+than a forced-uniform assertion.
 
 ## License
 
