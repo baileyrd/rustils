@@ -93,13 +93,24 @@ fn assert_fs_behavior(root: &dyn Dir) {
         ErrorKind::NotFound
     );
 
-    // ...but rename_no_replace refuses when the destination exists,
-    // atomically (no partial move: "c.bin" is untouched, "d.bin" never
-    // existed to begin with).
+    // ...but rename_no_replace refuses when the destination is a
+    // DIFFERENT existing entry, atomically (no partial move: "c.bin"
+    // and "e.bin" are both untouched). Deliberately not "rename c.bin
+    // onto its own name" — that degenerate case is a real, harmless
+    // cross-OS divergence (Linux's renameat2(RENAME_NOREPLACE) refuses
+    // it with EEXIST; Windows' NtSetInformationFile treats renaming a
+    // file onto its own current name as a no-op success), not the
+    // atomic-refuse-if-exists contract this assertion means to pin.
+    root.open(OsStr::new("e.bin"), &OpenOptions::create_truncate())
+        .expect("create e");
     let e = root
-        .rename_no_replace(OsStr::new("c.bin"), OsStr::new("c.bin"))
-        .expect_err("must refuse: c.bin already exists");
+        .rename_no_replace(OsStr::new("c.bin"), OsStr::new("e.bin"))
+        .expect_err("must refuse: e.bin already exists");
     assert_eq!(e.kind, ErrorKind::AlreadyExists);
+    assert_eq!(root.metadata(OsStr::new("c.bin")).unwrap().len, 9);
+    assert_eq!(root.metadata(OsStr::new("e.bin")).unwrap().len, 0);
+    root.remove_file(OsStr::new("e.bin")).expect("rm e.bin");
+
     root.rename_no_replace(OsStr::new("c.bin"), OsStr::new("d.bin"))
         .expect("no existing destination: must succeed");
     root.remove_file(OsStr::new("d.bin")).expect("rm d.bin");
