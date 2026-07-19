@@ -83,9 +83,13 @@ process control (kill, wait4, the signal trampoline) — parity-verified
 in both configurations on every CI run. A full-ecosystem donor survey
 (`docs/extraction-map.md` D9–D16) then unparked the **Terminal**
 surface: is_tty, window size, and raw-mode enter/leave over termios
-(Linux) and console modes (Windows), consumed by `rterm`, with
-`rusty_term` as the design oracle and PTY hosting/resize-notification
-recorded as gated follow-ons.
+(Linux) and console modes (Windows), with `rusty_term` as the design
+oracle. Convergence roadmap Phase 2 (`docs/convergence-roadmap.md`)
+added slice 2 — a live `is_raw` probe, `poll_readable`/`read_chunk`,
+and `set_echo` — all consumed and live-verified by `rterm`, with
+bracketed paste and suspend/resume deliberately needing no further
+surface (they're already expressible with what landed). PTY hosting,
+resize-notification, and job-control handoff remain gated follow-ons.
 
 ## License
 

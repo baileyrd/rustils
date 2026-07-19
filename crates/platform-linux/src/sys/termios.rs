@@ -1,10 +1,13 @@
 //! Terminal primitives (extraction map D9): isatty, window size, raw
-//! mode with saved-state restore. Both floors: libc (`tcgetattr` /
-//! `cfmakeraw` / `ioctl(TIOCGWINSZ)`) and rusty_libc raw syscalls under
-//! `track-p` (kernel-shape `Termios`, NCCS=19 — the D4 layout landmine
-//! lives in the dependency, not here).
+//! mode with saved-state restore, and (slice 2, roadmap Phase 2) live
+//! raw-mode probing, poll/read on stdin, and echo toggling. Both
+//! floors: libc (`tcgetattr` / `cfmakeraw` / `ioctl(TIOCGWINSZ)`) and
+//! rusty_libc raw syscalls under `track-p` (kernel-shape `Termios`,
+//! NCCS=19 — the D4 layout landmine lives in the dependency, not here).
 
 #![allow(unsafe_code)]
+
+use std::time::Duration;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 
@@ -131,4 +134,127 @@ pub fn restore(fd: i32, saved: &SavedTermios) -> Result<()> {
 pub fn restore(fd: i32, saved: &SavedTermios) -> Result<()> {
     rusty_libc::termios::tcsetattr_with(fd, rusty_libc::termios::TCSADRAIN, &saved.0)
         .map_err(|e| term_err("tcsetattr", e.0))
+}
+
+/// Live probe: does `fd`'s *current* attributes look raw (no `ICANON`,
+/// no `ECHO`)? Swallows errors as "not raw" — this is a best-effort
+/// probe, not a fallible operation; a stream that cannot be queried at
+/// all is not usefully "raw".
+#[cfg(not(feature = "track-p"))]
+pub fn is_raw(fd: i32) -> bool {
+    // SAFETY: `termios` is plain-old-data; zeroed is valid scratch that
+    // tcgetattr overwrites on success.
+    let mut cur: c::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: valid fd; `cur` is a valid out-pointer outliving the call.
+    if unsafe { c::tcgetattr(fd, &mut cur) } != 0 {
+        return false;
+    }
+    let mask = (c::ICANON | c::ECHO) as libc::tcflag_t;
+    cur.c_lflag & mask == 0
+}
+
+/// Live raw-mode probe — Track P.
+#[cfg(feature = "track-p")]
+pub fn is_raw(fd: i32) -> bool {
+    match rusty_libc::termios::tcgetattr(fd) {
+        Ok(cur) => cur.c_lflag & (rusty_libc::termios::ICANON | rusty_libc::termios::ECHO) == 0,
+        Err(_) => false,
+    }
+}
+
+/// Toggle `ECHO` on `fd` without touching any other flag, returning the
+/// previous on/off state.
+#[cfg(not(feature = "track-p"))]
+pub fn set_echo(fd: i32, on: bool) -> Result<bool> {
+    // SAFETY: `termios` is plain-old-data; zeroed is valid scratch that
+    // tcgetattr overwrites on success.
+    let mut cur: c::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: valid fd; `cur` is a valid out-pointer outliving the call.
+    if unsafe { c::tcgetattr(fd, &mut cur) } != 0 {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(term_err("tcgetattr", code));
+    }
+    let mask = c::ECHO as libc::tcflag_t;
+    let was_on = cur.c_lflag & mask != 0;
+    if on {
+        cur.c_lflag |= mask;
+    } else {
+        cur.c_lflag &= !mask;
+    }
+    // SAFETY: valid fd; `cur` is a fully initialized termios (read back
+    // above, one field mutated) outliving the call.
+    if unsafe { c::tcsetattr(fd, c::TCSADRAIN, &cur) } != 0 {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(term_err("tcsetattr", code));
+    }
+    Ok(was_on)
+}
+
+/// Toggle echo — Track P.
+#[cfg(feature = "track-p")]
+pub fn set_echo(fd: i32, on: bool) -> Result<bool> {
+    use rusty_libc::termios as rt;
+    let mut cur = rt::tcgetattr(fd).map_err(|e| term_err("tcgetattr", e.0))?;
+    let was_on = cur.c_lflag & rt::ECHO != 0;
+    if on {
+        cur.c_lflag |= rt::ECHO;
+    } else {
+        cur.c_lflag &= !rt::ECHO;
+    }
+    rt::tcsetattr_with(fd, rt::TCSADRAIN, &cur).map_err(|e| term_err("tcsetattr", e.0))?;
+    Ok(was_on)
+}
+
+/// `poll(fd, POLLIN, timeout_ms)`; `None` timeout blocks forever.
+#[cfg(not(feature = "track-p"))]
+pub fn poll_readable(fd: i32, timeout: Option<Duration>) -> Result<bool> {
+    let timeout_ms: c::c_int = match timeout {
+        None => -1,
+        Some(d) => d.as_millis().min(i32::MAX as u128) as c::c_int,
+    };
+    let mut pfd = c::pollfd {
+        fd,
+        events: c::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: `pfd` is a single valid pollfd entry outliving the call.
+    let r = unsafe { c::poll(&mut pfd, 1, timeout_ms) };
+    if r < 0 {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(term_err("poll", code));
+    }
+    Ok(r > 0)
+}
+
+/// Poll for readability — Track P: raw `SYS_poll`/`SYS_ppoll`.
+#[cfg(feature = "track-p")]
+pub fn poll_readable(fd: i32, timeout: Option<Duration>) -> Result<bool> {
+    let timeout_ms: c::c_int = match timeout {
+        None => -1,
+        Some(d) => d.as_millis().min(i32::MAX as u128) as c::c_int,
+    };
+    let mut pfd = rusty_libc::fd::PollFd::new(fd, rusty_libc::fd::POLLIN);
+    let n = rusty_libc::fd::poll(std::slice::from_mut(&mut pfd), timeout_ms)
+        .map_err(|e| term_err("poll", e.0))?;
+    Ok(n > 0)
+}
+
+/// `read(fd, buf)` — one call, batched, `Ok(0)` = EOF.
+#[cfg(not(feature = "track-p"))]
+pub fn read_chunk(fd: i32, buf: &mut [u8]) -> Result<usize> {
+    // SAFETY: `buf` is a valid, writable region of exactly `buf.len()`
+    // bytes for the duration of the call; `fd` is a valid open
+    // descriptor (a standard stream, alive for the process lifetime).
+    let n = unsafe { c::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+    if n < 0 {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(term_err("read", code));
+    }
+    Ok(n as usize)
+}
+
+/// Read a chunk — Track P: raw `SYS_read`.
+#[cfg(feature = "track-p")]
+pub fn read_chunk(fd: i32, buf: &mut [u8]) -> Result<usize> {
+    rusty_libc::fd::read(fd, buf).map_err(|e| term_err("read", e.0))
 }

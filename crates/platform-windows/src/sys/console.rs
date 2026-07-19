@@ -1,5 +1,7 @@
 //! Console terminal primitives (extraction map D9, via the rusty_win32
-//! donor): tty probe, viewport size, raw mode over console modes.
+//! donor): tty probe, viewport size, raw mode over console modes, and
+//! (slice 2, roadmap Phase 2) live raw-mode probing, poll/read on
+//! stdin, and echo toggling.
 //!
 //! The isatty analog IS `GetConsoleMode` succeeding — a redirected
 //! (pipe/file) std handle fails the call. Raw mode clears the cooked
@@ -10,6 +12,7 @@
 #![allow(unsafe_code)]
 
 use std::ffi::OsStr;
+use std::time::Duration;
 
 use platform::error::Result;
 use platform::term::TermStream;
@@ -130,4 +133,85 @@ pub fn restore(saved: &SavedModes) -> Result<()> {
         unsafe { w::SetConsoleMode(hout, out_mode) };
     }
     Ok(())
+}
+
+/// Live probe: does stdin's *current* mode look raw (no `ENABLE_ECHO_INPUT`,
+/// no `ENABLE_LINE_INPUT`)? A handle that cannot be queried is not
+/// usefully "raw" — same best-effort contract as the Linux arm.
+pub fn is_raw() -> bool {
+    let hin = std_handle(TermStream::Stdin);
+    if hin.is_null() || hin == w::INVALID_HANDLE_VALUE {
+        return false;
+    }
+    let mut mode: w::CONSOLE_MODE = 0;
+    // SAFETY: `hin` is a live process-owned std handle; `mode` is a
+    // valid out-pointer for the duration of the call.
+    if unsafe { w::GetConsoleMode(hin, &mut mode) } == 0 {
+        return false;
+    }
+    mode & (w::ENABLE_ECHO_INPUT | w::ENABLE_LINE_INPUT) == 0
+}
+
+/// Toggle `ENABLE_ECHO_INPUT` on stdin without touching any other bit,
+/// returning the previous on/off state.
+pub fn set_echo(on: bool) -> Result<bool> {
+    let hin = std_handle(TermStream::Stdin);
+    let mut mode: w::CONSOLE_MODE = 0;
+    // SAFETY: live std handle; valid out-pointer.
+    if unsafe { w::GetConsoleMode(hin, &mut mode) } == 0 {
+        return Err(errmap::last_win32_err("GetConsoleMode", OsStr::new("")));
+    }
+    let was_on = mode & w::ENABLE_ECHO_INPUT != 0;
+    let next = if on {
+        mode | w::ENABLE_ECHO_INPUT
+    } else {
+        mode & !w::ENABLE_ECHO_INPUT
+    };
+    // SAFETY: live console handle (GetConsoleMode above succeeded); no
+    // pointer arguments.
+    if unsafe { w::SetConsoleMode(hin, next) } == 0 {
+        return Err(errmap::last_win32_err("SetConsoleMode", OsStr::new("")));
+    }
+    Ok(was_on)
+}
+
+/// `WaitForSingleObject(stdin, timeout_ms)`; `None` timeout blocks
+/// forever. A console input handle is "signaled" when an unread input
+/// record is queued — coarser than "a byte is ready" (any input event,
+/// not just keystrokes, wakes it), but `ReadFile` afterward blocks
+/// correctly on whatever was actually queued, so a spurious wake costs
+/// one extra round trip, never a wrong read.
+pub fn poll_readable(timeout: Option<Duration>) -> Result<bool> {
+    let hin = std_handle(TermStream::Stdin);
+    let timeout_ms: u32 = match timeout {
+        None => w::INFINITE,
+        Some(d) => u32::try_from(d.as_millis()).unwrap_or(u32::MAX),
+    };
+    // SAFETY: `hin` is a live, waitable std handle.
+    let r = unsafe { w::WaitForSingleObject(hin, timeout_ms) };
+    if r == w::WAIT_OBJECT_0 {
+        Ok(true)
+    } else if r == w::WAIT_TIMEOUT {
+        Ok(false)
+    } else {
+        Err(errmap::last_win32_err(
+            "WaitForSingleObject",
+            OsStr::new(""),
+        ))
+    }
+}
+
+/// `ReadFile(stdin, buf)` — one call, batched, `Ok(0)` = EOF.
+pub fn read_chunk(buf: &mut [u8]) -> Result<usize> {
+    let hin = std_handle(TermStream::Stdin);
+    let mut n: u32 = 0;
+    let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+    // SAFETY: `buf` is a valid writable region of at least `len` bytes
+    // and `n` a valid out-pointer, both outliving the call; the handle
+    // is synchronous (no OVERLAPPED), so the null overlapped is valid.
+    let ok = unsafe { w::ReadFile(hin, buf.as_mut_ptr(), len, &mut n, std::ptr::null_mut()) };
+    if ok == 0 {
+        return Err(errmap::last_win32_err("ReadFile", OsStr::new("")));
+    }
+    Ok(n as usize)
 }

@@ -1,5 +1,7 @@
 //! `Terminal` impl over `sys::console` (extraction map D9).
 
+use std::time::Duration;
+
 use platform::error::Result;
 use platform::term::{TermStream, Terminal, WinSize};
 
@@ -42,5 +44,21 @@ impl Terminal for WindowsTerminal {
             console::restore(&saved)?;
         }
         Ok(())
+    }
+
+    fn is_raw(&self) -> bool {
+        console::is_raw()
+    }
+
+    fn poll_readable(&self, timeout: Option<Duration>) -> Result<bool> {
+        console::poll_readable(timeout)
+    }
+
+    fn read_chunk(&self, buf: &mut [u8]) -> Result<usize> {
+        console::read_chunk(buf)
+    }
+
+    fn set_echo(&mut self, on: bool) -> Result<bool> {
+        console::set_echo(on)
     }
 }
