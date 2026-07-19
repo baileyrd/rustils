@@ -145,6 +145,82 @@ no `fg`/`bg`/Ctrl-Z (no `tcsetpgrp` equivalent); no fd table beyond the
 three std slots; completion by polling (no SIGCHLD analog); the ambient-
 Job-Object caveat that makes detach-from-job unreliable under CI runners.
 
+### D9 — The Terminal cluster: three donors, one surface (second wave, 2026-07-19)
+
+The strongest signal in the second-wave survey: **three donors
+independently hand-rolled the same terminal personality**, which is the
+evidence the gated Terminal surface (architecture.md, Layer 2) was
+waiting for.
+
+- **Raw mode**: `rusty_libc/termios.rs` (`make_raw`, kernel-shape
+  `Termios` NCCS=19, `tcgetattr`/`tcsetattr_with`, `tcflush`/`tcdrain`)
+  and `rusty_win32/console.rs` (`Get/SetConsoleMode` with the
+  `ENABLE_VIRTUAL_TERMINAL_INPUT`/`_PROCESSING` bits) — the two halves
+  of one trait.
+- **Window size**: `rusty_libc/tty.rs` (`TIOCGWINSZ`) and
+  `rusty_win32/console.rs` (`GetConsoleScreenBufferInfo`, viewport not
+  scrollback) — cleanly portable.
+- **isatty**: `rush/sys.rs` + `builtins.rs` (`test -t`; Unix syscall vs
+  Windows `IsTerminal`).
+- **Job-control terminal handoff** (Unix): `rush/job.rs`
+  `give_terminal`/`reclaim_terminal` over `tcsetpgrp`, sound only with
+  SIGTTOU ignored — the *mechanism* half of D1 (the job tables stay
+  policy); plus SIGTSTP/SIGCONT suspend-resume plumbing.
+- **Test harness for free**: `rusty_win32/console.rs`
+  `write_char_events`/`WriteConsoleInputW` — synthetic keystrokes, the
+  Windows analog of writing into a pty master; drives a raw-mode reader
+  end-to-end in CI.
+
+Consumers per architecture.md: rusty_naner, rush interactive (Phase 5),
+rusty_lines' host. Windows fg/bg absence is already characterized (D8).
+
+### D10 — Wait-status completion: `waitid`/WNOWAIT + stopped/continued
+
+- `rusty_libc/wait.rs`: `waitid` with `WNOWAIT` and a structured
+  `Siginfo` (`P_ALL/P_PID/P_PGID`, `CLD_*`) — peek-without-reap,
+  strictly richer than the adopted `wait4`; what a job table uses to
+  inspect a child and still reap it later.
+- `rush/sys.rs` + `job.rs`: `WUNTRACED`/`WCONTINUED` flags and
+  `WIFSTOPPED`/`WIFCONTINUED` decode — the Ctrl-Z/fg/bg half of the
+  status set; the landed `ExitStatus` covers exit+signal only.
+  Unix-only (Windows divergence already in D8's list).
+
+### D11 — Fs second wave: mutation layer, predicates, memfd
+
+- `rusty_libc/fs.rs`: the directory-mutation and symlink layer —
+  `renameat2` (`RENAME_NOREPLACE`/`EXCHANGE`), `symlinkat`/`readlinkat`,
+  `faccessat` — only the read/stat side was adopted in Track P.
+- `rush/builtins.rs`: `test`'s file-mode predicates (`-x/-u/-g/-k`,
+  owner uid/gid, same-file by dev+ino) and the PATH-resolution logic
+  duplicated across `command -v`/`type`/completion — a *unification*
+  onto `Spawner::resolve`, not just an extraction.
+- **`memfd_create`** (`rush/sys.rs` `memfd_heredoc` +
+  `rusty_libc/fd.rs`): the thread-free here-doc — the load-bearing
+  invariant that makes a raw `clone(SIGCHLD)` fork sound
+  (single-threaded at every fork point). Cited as D4 *rationale*, never
+  surfaced as an API. **Lands first if the fork/execve decision goes
+  raw.**
+- `rusty_libc/fd.rs`: `fcntl`/`dup` family (CLOEXEC and NONBLOCK
+  toggling, `F_DUPFD_CLOEXEC`, per-fd pipe-capacity get/set),
+  `pread`/`pwrite`; `rusty_win32/handle.rs` pipe/dup/inheritability as
+  the Windows counterparts. Feeds D5's remaining fd-3+ engine.
+
+### D12 — Small process/events donors (each waits for its consumer)
+
+- Single-fd `poll_readable` (`rush/sys.rs`, zero-timeout poll — the
+  `read -t 0` primitive; distinct from the multiplexed reactor).
+- `umask`, rlimit/ulimit (`rush/sys.rs`+`builtins.rs`,
+  `rusty_libc/rlimit.rs`/`umask.rs`) — self-contained, park until a
+  builtin-shaped consumer.
+- uid/gid getters (`rusty_libc/process.rs`) — brushes the gated
+  Security surface.
+- `rusty_win32/process.rs` `environment_block` (double-NUL UTF-16,
+  order-preserving) — reusable spawn primitive.
+- **Time** (`rusty_libc/time.rs`+`vdso.rs`; `rusty_win32/time.rs`): the
+  two donors deliberately share a `Timespec` shape — a portable Time
+  trait is pre-aligned and nearly free; park until a consumer (e.g. a
+  `time` builtin) arrives.
+
 ## Not extracted (shell policy, stays in rush)
 
 Expansion, globbing, aliases, trap registry semantics, pipefail /
