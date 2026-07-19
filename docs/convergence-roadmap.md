@@ -186,9 +186,30 @@ own predecessor said it needed. Added to `platform::fs`:
   dedicated backend-only tests (the two backends' correct answers are
   opposites for the identical setup) rather than a shared assertion.
 
-`test`-style file predicates (`-x/-u/-g/-k`, owner uid/gid, same-file by
-dev+ino) + PATH-resolution unification (rush donor) stay deferred: no
-second consumer yet.
+**Landed (test-predicates slice) 2026-07-19.** `test`'s `-u/-g/-k/-O/-G`
+(mode bits, ownership) and `-ef` (same-file identity) — `-x` was already
+`Dir::access(rel, AccessMode::execute())`, no new surface needed. Added
+to `platform::fs`:
+
+- `Dir::unix_mode` — `setuid`/`setgid`/`sticky` and owning `uid`/`gid`
+  where the OS has the concept (real `fstatat` data on Linux); `Ok(None)`
+  — not a fabricated zeroed-out `Some` — where it doesn't (Windows has
+  no POSIX mode-bit/uid-gid model at all, a registered divergence,
+  `docs/divergences.md` #006).
+- `Dir::file_id` — an opaque, equality-only per-OS file identity (POSIX
+  `(dev, ino)`; Windows `(volume serial, file index)` via
+  `GetFileInformationByHandle`) both backends answer in the same
+  contract, unlike `unix_mode`: this one has no Windows gap.
+
+**PATH-resolution unification, corrected scope**: this donor item
+turned out to already be done — `Spawner::resolve` (mechanism-level
+PATH+exec-bit on Linux, PATH+PATHEXT on Windows) has existed in
+`platform::process` since the process-surface work landed, and
+`WindowsSpawner::spawn` already calls it internally. What remains is
+entirely ecosystem-side: rush swapping its own three duplicated
+PATH-walking implementations (`command -v`/`type`/completion) over to
+call this already-existing API — out of scope here without `rush`'s
+actual code in hand to unify against.
 
 ## Phase 4 — Track P completion
 

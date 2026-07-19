@@ -8,7 +8,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::fs::FileType;
+use platform::fs::{FileType, UnixMode};
 
 use crate::ffi::libc_surface as c;
 
@@ -294,6 +294,90 @@ pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
         _ => FileType::Other,
     };
     Ok((ft, st.stx_size))
+}
+
+/// `S_ISUID`/`S_ISGID`/`S_ISVTX` decoded from `fstatat`'s `st_mode`, plus
+/// owning `st_uid`/`st_gid` — `test`'s `-u/-g/-k/-O/-G` donor material
+/// (D11). `AT_SYMLINK_NOFOLLOW`, matching `statat`'s lstat-style
+/// contract (the object itself, not a followed target).
+#[cfg(not(feature = "track-p"))]
+pub fn unix_mode(dirfd: RawFd, rel: &OsStr) -> Result<UnixMode> {
+    let c_rel = to_cstring(rel, "fstatat")?;
+    // SAFETY: `stat` is a plain-old-data struct for which the all-zeroes
+    // bit pattern is a valid (if meaningless) value; the kernel overwrites
+    // it on success.
+    let mut st: c::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: valid path pointer and out-pointer to a properly sized
+    // `stat` struct, both outliving the call; valid dirfd.
+    let r = unsafe { c::fstatat(dirfd, c_rel.as_ptr(), &mut st, c::AT_SYMLINK_NOFOLLOW) };
+    if r < 0 {
+        return Err(os_err("fstatat", rel));
+    }
+    Ok(UnixMode {
+        setuid: st.st_mode & c::S_ISUID != 0,
+        setgid: st.st_mode & c::S_ISGID != 0,
+        sticky: st.st_mode & c::S_ISVTX != 0,
+        uid: st.st_uid,
+        gid: st.st_gid,
+    })
+}
+
+/// `S_ISUID`/`S_ISGID`/`S_ISVTX` — Track P: raw `SYS_statx`, the same
+/// call `statat`'s track-p arm makes.
+#[cfg(feature = "track-p")]
+pub fn unix_mode(dirfd: RawFd, rel: &OsStr) -> Result<UnixMode> {
+    use rusty_libc::fs as rfs;
+    let c_rel = to_cstring(rel, "statx")?;
+    let st = rfs::statx(
+        dirfd,
+        &c_rel,
+        rfs::AT_SYMLINK_NOFOLLOW,
+        rfs::STATX_BASIC_STATS,
+    )
+    .map_err(|e| trackp_err("statx", e).with_path(rel))?;
+    let mode = u32::from(st.stx_mode);
+    Ok(UnixMode {
+        setuid: mode & c::S_ISUID != 0,
+        setgid: mode & c::S_ISGID != 0,
+        sticky: mode & c::S_ISVTX != 0,
+        uid: st.stx_uid,
+        gid: st.stx_gid,
+    })
+}
+
+/// `(dev, ino)` from `fstatat` — `test -ef`'s donor material (D11),
+/// wrapped into the opaque `platform::fs::FileId` by the `Dir` impl.
+/// `AT_SYMLINK_NOFOLLOW`, matching `statat`.
+#[cfg(not(feature = "track-p"))]
+pub fn file_id(dirfd: RawFd, rel: &OsStr) -> Result<(u64, u64)> {
+    let c_rel = to_cstring(rel, "fstatat")?;
+    // SAFETY: see `unix_mode`.
+    let mut st: c::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: see `unix_mode`.
+    let r = unsafe { c::fstatat(dirfd, c_rel.as_ptr(), &mut st, c::AT_SYMLINK_NOFOLLOW) };
+    if r < 0 {
+        return Err(os_err("fstatat", rel));
+    }
+    Ok((st.st_dev, st.st_ino))
+}
+
+/// `(dev, ino)` — Track P: raw `SYS_statx`. The major/minor device
+/// numbers `statx` reports separately are bit-packed into one `u64` —
+/// only equality within a single running process matters for `test
+/// -ef`, not a stable cross-process or cross-config encoding.
+#[cfg(feature = "track-p")]
+pub fn file_id(dirfd: RawFd, rel: &OsStr) -> Result<(u64, u64)> {
+    use rusty_libc::fs as rfs;
+    let c_rel = to_cstring(rel, "statx")?;
+    let st = rfs::statx(
+        dirfd,
+        &c_rel,
+        rfs::AT_SYMLINK_NOFOLLOW,
+        rfs::STATX_BASIC_STATS,
+    )
+    .map_err(|e| trackp_err("statx", e).with_path(rel))?;
+    let dev = (u64::from(st.stx_dev_major) << 32) | u64::from(st.stx_dev_minor);
+    Ok((dev, st.stx_ino))
 }
 
 /// `faccessat(dirfd, rel, mode, 0)` — real, not effective, uid/gid (the

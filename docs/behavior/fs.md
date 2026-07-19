@@ -78,10 +78,23 @@ convenience.
   `docs/divergences.md` #005, pinned by dedicated backend-only tests
   rather than a shared assertion (the two backends' correct answers are
   opposites for the identical setup).
+- `unix_mode`/`file_id` (`test`'s `-u/-g/-k/-O/-G/-ef` donor material,
+  D11's faccessat-slice sibling): `unix_mode` returns real
+  `setuid`/`setgid`/`sticky` bits and owning `uid`/`gid` where the OS
+  has the concept at all (`Ok(None)` where it doesn't — Windows,
+  `docs/divergences.md` #006 — not a fabricated zeroed-out value).
+  `file_id` is an opaque, equality-only per-OS file identity (POSIX
+  `(dev, ino)`; Windows `(volume serial, file index)` via
+  `GetFileInformationByHandle`) every backend answers identically in
+  contract: the same entry queried twice yields equal ids, two distinct
+  entries yield different ones. Neither follows a terminal symlink,
+  matching `metadata`.
 
 ## Deliberately unspecified
 
 - `read_dir` ordering. Backends differ (mock: name order as an accident of
   BTreeMap; Linux: directory order). Consumers sort — see `coreutils::ls`.
-- Permission/mode semantics beyond PermissionDenied classification (R1
-  scope, jointly with the Windows Dir implementation).
+- Fine-grained NTFS ACL semantics beyond `access`'s coarse
+  read/write/execute probe and `unix_mode`'s `Ok(None)` — this spec
+  stops at "can I do this" and "does this OS have mode bits at all,"
+  not "what does this file's full ACL say."

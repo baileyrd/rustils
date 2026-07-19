@@ -100,13 +100,19 @@ strace-verified to fsync before it publishes. A follow-on slice added
 `REPARSE_DATA_BUFFER`), with the one thing Windows requires that POSIX
 doesn't — declaring file-vs-directory at creation — registered as a
 divergence rather than papered over (`docs/divergences.md` #004). A
-further slice closed out the Fs surface's last deferred item,
-`Dir::access` (`faccessat`, real not effective uid/gid on Linux; a
-trial open on Windows): Windows has no execute-permission bit on a
-regular file at all, so `execute` is granted unconditionally once
-existence is confirmed, pinned as a second registered divergence
-(`docs/divergences.md` #005) with dedicated backend-only tests rather
-than a forced-uniform assertion.
+further slice added `Dir::access` (`faccessat`, real not effective
+uid/gid on Linux; a trial open on Windows): Windows has no
+execute-permission bit on a regular file at all, so `execute` is
+granted unconditionally once existence is confirmed, pinned as a second
+registered divergence (`docs/divergences.md` #005) with dedicated
+backend-only tests rather than a forced-uniform assertion. A final
+slice rounded out `test`'s donor predicates with `Dir::unix_mode`
+(`-u/-g/-k/-O/-G`, real mode bits + ownership on Linux, honest `None` —
+not fabricated — on Windows) and `Dir::file_id` (`-ef`, an opaque
+same-file identity every backend answers identically). The
+PATH-resolution half of that donor item turned out to already exist as
+`Spawner::resolve`; what's left is ecosystem-side (rush adopting it),
+out of scope here.
 
 ## License
 

@@ -7,7 +7,9 @@ use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
 use std::path::Path;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::fs::{AccessMode, Dir, DirEntry, File, FileType, Metadata, OpenOptions};
+use platform::fs::{
+    AccessMode, Dir, DirEntry, File, FileId, FileType, Metadata, OpenOptions, UnixMode,
+};
 
 use crate::ffi::nt_surface as nt;
 use crate::ffi::win32_surface as w;
@@ -217,6 +219,26 @@ impl Dir for WindowsDir {
             nt::FILE_SYNCHRONOUS_IO_NONALERT,
         )?;
         Ok(())
+    }
+
+    fn unix_mode(&self, _rel: &OsStr) -> Result<Option<UnixMode>> {
+        // No POSIX mode bits, setuid/setgid/sticky, or uid/gid ownership
+        // concept on Windows at all (NTFS security descriptors are a
+        // wholly different model) — `None` is the honest answer, not a
+        // zeroed-out fabrication.
+        Ok(None)
+    }
+
+    fn file_id(&self, rel: &OsStr) -> Result<FileId> {
+        let handle = ntsys::open_relative(
+            &self.handle,
+            rel,
+            w::FILE_READ_ATTRIBUTES | w::SYNCHRONIZE,
+            nt::FILE_OPEN,
+            nt::FILE_SYNCHRONOUS_IO_NONALERT | nt::FILE_OPEN_REPARSE_POINT,
+        )?;
+        let (serial, index) = fileio::file_id_by_handle(&handle, rel)?;
+        Ok(FileId(serial, index))
     }
 
     fn read_dir(&self) -> Result<Vec<DirEntry>> {

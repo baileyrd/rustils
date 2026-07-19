@@ -254,6 +254,19 @@ rusty_lines' host. Windows fg/bg absence is already characterized (D8).
 > at all, so `execute` is granted unconditionally once existence is
 > confirmed — a registered divergence (`docs/divergences.md` #005)
 > rather than a forced-uniform answer.
+>
+> **Landed (test-predicates slice, 2026-07-19):** `Dir::unix_mode`/
+> `file_id` — `test`'s `-u/-g/-k/-O/-G` (real mode bits + ownership on
+> Linux, `Ok(None)` on Windows: no POSIX model there at all, registered
+> divergence `docs/divergences.md` #006) and `-ef` (an opaque, both-
+> backends-identical file identity via `fstatat`'s `(dev, ino)` /
+> `GetFileInformationByHandle`'s `(volume serial, file index)`). `-x`
+> needed nothing new (`Dir::access(rel, AccessMode::execute())` already
+> covers it). The PATH-resolution half of this donor item turned out to
+> already be done: `Spawner::resolve` has existed in `platform::process`
+> since the process-surface work landed; what remains — rush swapping
+> its own three duplicated PATH-walkers over to it — is ecosystem-side,
+> out of scope here without `rush`'s code in hand.
 
 ### D12 — Small process/events donors (each waits for its consumer)
 

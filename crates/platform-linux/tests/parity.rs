@@ -234,6 +234,27 @@ fn assert_fs_behavior(root: &dyn Dir) {
     root.access(OsStr::new("also-missing"), AccessMode::default())
         .expect("empty mode never fails, even for a name that doesn't exist");
 
+    // unix_mode/file_id (test predicates' donor material, D11's
+    // faccessat-slice sibling): unix_mode is a real answer on Linux/mock,
+    // `None` on Windows (no such concept) — both are valid per the
+    // contract, so only check contents when `Some`. file_id is
+    // answerable on every backend: the same entry queried twice yields
+    // equal ids, and two distinct entries yield different ones.
+    if let Some(um) = root.unix_mode(OsStr::new("atomic.txt")).unwrap() {
+        assert!(!um.setuid);
+        assert!(!um.setgid);
+        assert!(!um.sticky);
+    }
+    let id_a = root.file_id(OsStr::new("atomic.txt")).unwrap();
+    let id_a_again = root.file_id(OsStr::new("atomic.txt")).unwrap();
+    assert_eq!(id_a, id_a_again, "same entry, same id");
+    root.create_dir(OsStr::new("otherdir"))
+        .expect("mkdir otherdir");
+    let id_b = root.file_id(OsStr::new("otherdir")).unwrap();
+    assert_ne!(id_a, id_b, "different entries, different ids");
+    root.remove_dir(OsStr::new("otherdir"))
+        .expect("rm otherdir");
+
     let names: Vec<_> = root
         .read_dir()
         .expect("read_dir")

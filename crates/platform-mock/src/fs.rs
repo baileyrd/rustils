@@ -5,7 +5,9 @@ use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::fs::{AccessMode, Dir, DirEntry, File, FileType, Metadata, OpenOptions};
+use platform::fs::{
+    AccessMode, Dir, DirEntry, File, FileId, FileType, Metadata, OpenOptions, UnixMode,
+};
 
 #[derive(Debug, Default)]
 enum Node {
@@ -226,6 +228,24 @@ impl Dir for MockDir {
         // can honestly answer, same limitation `open` already has for
         // symlink-following (never implemented; see `Node::Symlink`).
         self.child(rel, "access").map(drop)
+    }
+
+    fn unix_mode(&self, rel: &OsStr) -> Result<Option<UnixMode>> {
+        self.child(rel, "unix_mode")?;
+        // No real permission model — a deterministic all-default
+        // answer, not `None`: `None` means "this OS has no such
+        // concept" (Windows's contract), not "not modeled here."
+        Ok(Some(UnixMode::default()))
+    }
+
+    fn file_id(&self, rel: &OsStr) -> Result<FileId> {
+        let node = self.child(rel, "file_id")?;
+        // The node's own address is a stable, distinct-per-object
+        // identity for as long as the mock tree lives — as good an
+        // opaque analog for "same underlying file" as a real
+        // (dev, ino)/(volume, index) pair.
+        let addr = Arc::as_ptr(&node) as usize as u64;
+        Ok(FileId(0, addr))
     }
 
     fn read_dir(&self) -> Result<Vec<DirEntry>> {
@@ -493,6 +513,34 @@ mod tests {
         // exist.
         root.access(OsStr::new("also-missing"), AccessMode::default())
             .expect("empty mode never fails");
+    }
+
+    #[test]
+    fn unix_mode_is_a_deterministic_default_not_none() {
+        let root = MockDir::root().with_file("f.txt", "hi");
+        // `None` would mean "this OS has no such concept" (Windows's
+        // contract); the mock always answers `Some`, just with no real
+        // permission model behind it.
+        assert_eq!(
+            root.unix_mode(OsStr::new("f.txt")).unwrap(),
+            Some(UnixMode::default())
+        );
+        assert_eq!(
+            root.unix_mode(OsStr::new("missing")).unwrap_err().kind,
+            ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn file_id_is_stable_per_entry_and_distinct_across_entries() {
+        let root = MockDir::root()
+            .with_file("a.txt", "one")
+            .with_file("b.txt", "two");
+        let id_a = root.file_id(OsStr::new("a.txt")).unwrap();
+        let id_a_again = root.file_id(OsStr::new("a.txt")).unwrap();
+        assert_eq!(id_a, id_a_again);
+        let id_b = root.file_id(OsStr::new("b.txt")).unwrap();
+        assert_ne!(id_a, id_b);
     }
 
     #[test]

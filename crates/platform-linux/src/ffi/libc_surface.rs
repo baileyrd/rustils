@@ -16,9 +16,16 @@ pub use libc::{
     DT_LNK, DT_REG, O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC,
     O_WRONLY, POLLIN, POSIX_SPAWN_SETPGROUP, RENAME_NOREPLACE, R_OK, SIGHUP, SIGINT, SIGKILL,
     SIGTERM, SIG_ERR, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO, S_IFDIR, S_IFLNK, S_IFMT,
-    S_IFREG, TCSADRAIN, TIOCGWINSZ, WEXITSTATUS, WIFEXITED, WIFSIGNALED, WNOHANG, WTERMSIG, W_OK,
-    X_OK,
+    S_IFREG, S_ISGID, S_ISUID, S_ISVTX, TCSADRAIN, TIOCGWINSZ, WEXITSTATUS, WIFEXITED, WIFSIGNALED,
+    WNOHANG, WTERMSIG, W_OK, X_OK,
 };
+
+// `test`'s file-mode predicates (faccessat slice's sibling, D11):
+// S_ISUID/S_ISGID/S_ISVTX decode `st_mode` for `-u/-g/-k`; `st_uid`/
+// `st_gid` (already reachable off `stat`, no separate admission needed)
+// are `-O`/`-G`'s owner check. Used identically in both track-p
+// configurations — plain POSIX mode-bit constants, not a syscall this
+// crate's own libc-vs-raw-syscall split applies to.
 
 // D11 Fs second wave: renameat2 has no libc wrapper on the glibc x86_64
 // target at this repo's MSRV baseline (same situation as pidfd_open) —
