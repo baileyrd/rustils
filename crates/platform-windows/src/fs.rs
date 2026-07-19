@@ -73,6 +73,14 @@ impl From<std::fs::File> for WindowsFile {
     }
 }
 
+/// Any readable/writable handle works as a [`WindowsFile`] — pipe ends
+/// included (the process backend hands captured-stdio ends out this way).
+impl From<OwnedWinHandle> for WindowsFile {
+    fn from(handle: OwnedWinHandle) -> Self {
+        Self { handle }
+    }
+}
+
 impl File for WindowsFile {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         fileio::read(&self.handle, buf)

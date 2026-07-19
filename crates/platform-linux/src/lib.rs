@@ -20,5 +20,5 @@ pub mod sys;
 mod fs;
 mod process;
 
-pub use fs::LinuxDir;
+pub use fs::{LinuxDir, LinuxFile};
 pub use process::{LinuxChild, LinuxSpawner};

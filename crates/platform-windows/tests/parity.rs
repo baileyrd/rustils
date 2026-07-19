@@ -262,3 +262,55 @@ fn windows_wait_any_and_try_wait() {
     children[0].kill_single().expect("kill");
     children.remove(0).wait().expect("wait");
 }
+
+/// Pipes (extraction map step 4, Windows side): capture with EOF at child
+/// exit (BROKEN_PIPE decoded as end-of-file), and stdin feeding with
+/// EOF-by-drop through findstr.
+#[test]
+fn windows_process_pipes() {
+    use platform::process::{Command, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_windows::WindowsSpawner;
+
+    // stdout capture: bytes arrive, then EOF at child exit.
+    let mut c = Command::new("cmd", tmp.clone())
+        .arg("/c")
+        .arg("echo captured");
+    c.stdout = Stdio::Pipe;
+    let mut child = s.spawn(&c).expect("spawn");
+    let mut pipe = child.take_stdout().expect("piped stdout");
+    assert!(child.take_stdout().is_none(), "take is once");
+    let mut got = Vec::new();
+    let mut buf = [0u8; 64];
+    loop {
+        let n = pipe.read(&mut buf).expect("read");
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&buf[..n]);
+    }
+    // cmd's echo appends \r\n.
+    assert_eq!(got, b"captured\r\n");
+    assert!(child.wait().expect("wait").success());
+
+    // stdin feeding: findstr "^" echoes every stdin line after EOF.
+    let mut c = Command::new("findstr", tmp).arg("^");
+    c.stdin = Stdio::Pipe;
+    c.stdout = Stdio::Pipe;
+    let mut child = s.spawn(&c).expect("spawn");
+    let mut stdin = child.take_stdin().expect("piped stdin");
+    let mut stdout = child.take_stdout().expect("piped stdout");
+    stdin.write(b"round trip\r\n").expect("write");
+    drop(stdin); // EOF — findstr exits only once stdin closes (D5)
+    let mut got = Vec::new();
+    loop {
+        let n = stdout.read(&mut buf).expect("read");
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&buf[..n]);
+    }
+    assert_eq!(got, b"round trip\r\n");
+    assert!(child.wait().expect("wait").success());
+}

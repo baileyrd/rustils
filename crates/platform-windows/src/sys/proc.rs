@@ -91,6 +91,46 @@ fn inheritable_nul(read: bool) -> Result<SlotHandle> {
         .ok_or_else(|| errmap::last_win32_err("CreateFileW", OsStr::new("NUL")))
 }
 
+/// An anonymous pipe whose *child* end is inheritable and whose *parent*
+/// end is explicitly not — the parent end must never leak into any child,
+/// or a reader waits for an EOF that cannot come (extraction map D5).
+/// Returns (child end, parent end); `stdin_slot` decides which side is
+/// which.
+fn make_pipe(stdin_slot: bool) -> Result<(OwnedWinHandle, OwnedWinHandle)> {
+    let sa = w::SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<w::SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: std::ptr::null_mut(),
+        bInheritHandle: 1,
+    };
+    let mut read: w::HANDLE = std::ptr::null_mut();
+    let mut write: w::HANDLE = std::ptr::null_mut();
+    // SAFETY: `read`/`write` are valid out-pointers and `sa` a fully
+    // initialized SECURITY_ATTRIBUTES, all outliving the call.
+    let ok = unsafe { w::CreatePipe(&mut read, &mut write, &sa, 0) };
+    if ok == 0 {
+        return Err(errmap::last_win32_err("CreatePipe", OsStr::new("")));
+    }
+    let read = OwnedWinHandle::from_raw(read)
+        .ok_or_else(|| PlatformError::new(ErrorKind::Other, OsCode::None, "CreatePipe"))?;
+    let write = OwnedWinHandle::from_raw(write)
+        .ok_or_else(|| PlatformError::new(ErrorKind::Other, OsCode::None, "CreatePipe"))?;
+    let (child, parent) = if stdin_slot {
+        (read, write)
+    } else {
+        (write, read)
+    };
+    // SAFETY: `parent` is a valid open handle; clearing its inherit flag
+    // has no other precondition.
+    let ok = unsafe { w::SetHandleInformation(parent.as_raw(), w::HANDLE_FLAG_INHERIT, 0) };
+    if ok == 0 {
+        return Err(errmap::last_win32_err(
+            "SetHandleInformation",
+            OsStr::new(""),
+        ));
+    }
+    Ok((child, parent))
+}
+
 fn inheritable_dup_of_std(slot: u32) -> Result<Option<SlotHandle>> {
     // SAFETY: `GetStdHandle` takes a documented slot constant and has no
     // other preconditions.
@@ -153,26 +193,31 @@ fn create_kill_on_close_job() -> Result<OwnedWinHandle> {
     Ok(job)
 }
 
+/// Parent-side pipe ends for piped stdio slots: `[stdin write, stdout
+/// read, stderr read]`.
+pub type ParentPipes = [Option<OwnedWinHandle>; 3];
+
 /// Spawn `command_line` (winargv-built, not yet NUL-terminated) with
 /// working directory `cwd`. With `new_group`, the child starts
 /// `CREATE_SUSPENDED`, joins a fresh kill-on-close Job Object, and only
 /// then resumes — job membership is guaranteed before the child (or
 /// anything it later spawns) executes a single instruction (extraction
 /// map D2's proven sequence). Returns (process handle, job handle if
-/// grouped, pid).
+/// grouped, pid, parent pipe ends).
 pub fn spawn(
     command_line: &[u16],
     cwd: &OsStr,
     env: &EnvSpec,
     stdio: [Stdio; 3],
     new_group: bool,
-) -> Result<(OwnedWinHandle, Option<OwnedWinHandle>, u32)> {
+) -> Result<(OwnedWinHandle, Option<OwnedWinHandle>, u32, ParentPipes)> {
     let mut line: Vec<u16> = command_line.to_vec();
     line.push(0);
     let cwd_w = to_wide_nul(cwd);
     let block = env_block(env);
 
-    let use_handles = stdio.iter().any(|s| matches!(s, Stdio::Null));
+    let use_handles = stdio.iter().any(|s| matches!(s, Stdio::Null | Stdio::Pipe));
+    let mut parent_pipes: ParentPipes = [None, None, None];
     let mut slot_handles: [Option<SlotHandle>; 3] = [None, None, None];
     // SAFETY: STARTUPINFOW is plain-old-data for which all-zeroes is a
     // valid starting value; `cb` is set before use.
@@ -188,6 +233,11 @@ pub fn spawn(
             slot_handles[i] = match spec {
                 Stdio::Null => Some(inheritable_nul(i == 0)?),
                 Stdio::Inherit => inheritable_dup_of_std(slots[i])?,
+                Stdio::Pipe => {
+                    let (child, parent) = make_pipe(i == 0)?;
+                    parent_pipes[i] = Some(parent);
+                    Some(SlotHandle::Owned(child))
+                }
             };
         }
         si.dwFlags |= w::STARTF_USESTDHANDLES;
@@ -250,7 +300,7 @@ pub fn spawn(
     if !new_group {
         // The main thread runs immediately; its handle is not retained.
         drop(thread);
-        return Ok((process, None, pi.dwProcessId));
+        return Ok((process, None, pi.dwProcessId, parent_pipes));
     }
 
     // Suspended → assign → resume. On any failure the suspended child
@@ -278,7 +328,7 @@ pub fn spawn(
         Ok(job)
     })();
     match sequence {
-        Ok(job) => Ok((process, Some(job), pi.dwProcessId)),
+        Ok(job) => Ok((process, Some(job), pi.dwProcessId, parent_pipes)),
         Err(e) => {
             // SAFETY: `process` is the valid handle of the still-suspended
             // (or at worst just-assigned) child this call created; it is

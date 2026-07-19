@@ -7,12 +7,38 @@ use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, GroupSpec, Spawner};
+use platform::process::{Child, Command, ExitStatus, GroupSpec, Spawner, Stdio};
 
 /// A scripted response for a program name.
 #[derive(Debug, Clone)]
 pub struct Script {
     pub status: ExitStatus,
+    /// Bytes served through `take_stdout` when the spawn piped stdout.
+    pub stdout: Vec<u8>,
+}
+
+/// In-memory pipe end: reads drain the buffer; writes are accepted and
+/// discarded (a scripted child consumes stdin without observable effect).
+struct MemPipe {
+    data: Vec<u8>,
+    pos: usize,
+}
+
+impl platform::fs::File for MemPipe {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let n = buf.len().min(self.data.len() - self.pos);
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Spawner whose children terminate exactly as scripted.
@@ -30,7 +56,30 @@ impl MockSpawner {
 
     #[must_use]
     pub fn script(mut self, program: impl Into<OsString>, status: ExitStatus) -> Self {
-        self.scripts.insert(program.into(), Script { status });
+        self.scripts.insert(
+            program.into(),
+            Script {
+                status,
+                stdout: Vec::new(),
+            },
+        );
+        self
+    }
+
+    #[must_use]
+    pub fn script_with_output(
+        mut self,
+        program: impl Into<OsString>,
+        status: ExitStatus,
+        stdout: impl Into<Vec<u8>>,
+    ) -> Self {
+        self.scripts.insert(
+            program.into(),
+            Script {
+                status,
+                stdout: stdout.into(),
+            },
+        );
         self
     }
 }
@@ -38,6 +87,9 @@ impl MockSpawner {
 struct MockChild {
     status: ExitStatus,
     own_group: bool,
+    stdin: Option<Box<dyn platform::fs::File>>,
+    stdout: Option<Box<dyn platform::fs::File>>,
+    stderr: Option<Box<dyn platform::fs::File>>,
 }
 
 impl Child for MockChild {
@@ -73,6 +125,22 @@ impl Child for MockChild {
     fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
         Ok(Some(self.status))
     }
+
+    fn take_stdin(&mut self) -> Option<Box<dyn platform::fs::File>> {
+        self.stdin.take()
+    }
+
+    fn take_stdout(&mut self) -> Option<Box<dyn platform::fs::File>> {
+        self.stdout.take()
+    }
+
+    fn take_stderr(&mut self) -> Option<Box<dyn platform::fs::File>> {
+        self.stderr.take()
+    }
+}
+
+fn mem_pipe(data: Vec<u8>) -> Box<dyn platform::fs::File> {
+    Box::new(MemPipe { data, pos: 0 })
 }
 
 impl Spawner for MockSpawner {
@@ -85,6 +153,9 @@ impl Spawner for MockSpawner {
         Ok(Box::new(MockChild {
             status: script.status,
             own_group: cmd.group == GroupSpec::NewGroup,
+            stdin: (cmd.stdin == Stdio::Pipe).then(|| mem_pipe(Vec::new())),
+            stdout: (cmd.stdout == Stdio::Pipe).then(|| mem_pipe(script.stdout.clone())),
+            stderr: (cmd.stderr == Stdio::Pipe).then(|| mem_pipe(Vec::new())),
         }))
     }
 

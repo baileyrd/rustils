@@ -181,6 +181,21 @@ them.
    its contract.
 4. **Stdio/handle model** (D5) — decide std-slot-swap vs STARTUPINFO
    lists on the record.
+   **Landed, with the decision recorded:** `Stdio::Pipe` +
+   `Child::take_stdin/stdout/stderr` on all three backends, consumed by
+   `rtee`. **Decision: STARTUPINFO handle lists, not rush's std-slot
+   swap.** rush swapped the process-global std slots because
+   `rusty_win32::spawn_suspended` exposes no per-spawn handle override;
+   this backend owns its `CreateProcessW` call, so per-spawn
+   `STARTF_USESTDHANDLES` avoids mutating process-global state and the
+   restore ordering it forces (winstdio's swap-save-restore-drop guard).
+   D5's transferable lessons are kept: only this spawn's handles are
+   inheritable (fresh pipes created inheritable-child-end-only via
+   `SetHandleInformation`; Inherit slots get inheritable *duplicates*
+   closed after the snapshot), CLOEXEC/non-inheritance on every parent
+   end so no leaked write end starves a reader of EOF, and
+   `ERROR_BROKEN_PIPE`-is-EOF on pipe reads. Remaining from D5: fd-3+/
+   extra-handle wiring (`FdAction`-style), which waits for a consumer.
 5. **Track P at R4** via D4.
 
 Each step: port semantics + tests, not code links; rush's suites are the

@@ -67,7 +67,10 @@ with `kill_tree`/`kill_single` (`setpgid`-at-spawn; suspended-spawn into
 a kill-on-close Job Object), with the registry's first divergence
 entries (001/002) recorded. Step 3's seed is in: `Child::try_wait` and
 portable `wait_any` (consumed by `rpar`, the parallel runner); the
-OS-multiplexed reactor internals and signal source are R3.
+OS-multiplexed reactor internals and signal source are R3. Step 4 is
+in: `Stdio::Pipe` capture/feeding with inheritance control on every
+backend (consumed by `rtee`), with the STARTUPINFO-vs-slot-swap
+decision recorded in the extraction map.
 
 ## License
 

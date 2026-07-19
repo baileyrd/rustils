@@ -27,6 +27,8 @@ pub struct WindowsChild {
     job: Option<OwnedWinHandle>,
     pid: u32,
     reaped: Option<ExitStatus>,
+    /// Parent pipe ends for `Stdio::Pipe` slots, until taken.
+    pipes: proc::ParentPipes,
 }
 
 impl Child for WindowsChild {
@@ -64,6 +66,24 @@ impl Child for WindowsChild {
             self.reaped = proc::try_wait(&self.process)?;
         }
         Ok(self.reaped)
+    }
+
+    fn take_stdin(&mut self) -> Option<Box<dyn platform::fs::File>> {
+        self.pipes[0]
+            .take()
+            .map(|h| Box::new(crate::fs::WindowsFile::from(h)) as Box<dyn platform::fs::File>)
+    }
+
+    fn take_stdout(&mut self) -> Option<Box<dyn platform::fs::File>> {
+        self.pipes[1]
+            .take()
+            .map(|h| Box::new(crate::fs::WindowsFile::from(h)) as Box<dyn platform::fs::File>)
+    }
+
+    fn take_stderr(&mut self) -> Option<Box<dyn platform::fs::File>> {
+        self.pipes[2]
+            .take()
+            .map(|h| Box::new(crate::fs::WindowsFile::from(h)) as Box<dyn platform::fs::File>)
     }
 }
 
@@ -111,7 +131,7 @@ impl Spawner for WindowsSpawner {
         // (.bat/.cmd get cmd-rules quoting or refusal) and builds the one
         // command line handed to CreateProcessW.
         let line = winargv::build_command_line(&resolved, &args)?;
-        let (process, job, pid) = proc::spawn(
+        let (process, job, pid, pipes) = proc::spawn(
             &line,
             &cmd.cwd,
             &cmd.env,
@@ -123,6 +143,7 @@ impl Spawner for WindowsSpawner {
             job,
             pid,
             reaped: None,
+            pipes,
         }))
     }
 

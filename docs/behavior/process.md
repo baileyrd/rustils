@@ -53,6 +53,16 @@ assertions.
   poll-over-`try_wait` tick — the contract stays fixed when the R3
   reactor replaces the internals with pidfd+poll /
   `WaitForMultipleObjects`.)
+- `Stdio::Pipe` + `take_stdin`/`take_stdout`/`take_stderr`: each yields
+  `Some` exactly once. Reads on a captured end return 0 at end-of-file —
+  which arrives when every write-side copy has closed (on Windows,
+  `ERROR_BROKEN_PIPE` on a pipe read *is* EOF and is decoded as 0, not
+  an error). Dropping the stdin end delivers EOF to the child. **The
+  deadlock contract**: drain captured output to EOF (or drop it) before
+  blocking in `wait` — a child blocked writing a full pipe never exits —
+  and never let a parent-side copy of a write end leak into another
+  child (the backends guarantee their own ends don't: CLOEXEC on unix,
+  explicit non-inheritance on Windows).
 
 ## Deliberately unspecified (until the R2 hoist supplies them)
 
