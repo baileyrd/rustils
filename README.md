@@ -76,5 +76,6 @@ decision recorded in the extraction map.
 
 ## License
 
-Not yet chosen (tracked as an open question; MIT OR Apache-2.0 is the
-expected default). Until a LICENSE file lands, all rights reserved.
+MIT — matching the sibling crates (`rush`, `rusty_win32`, `rusty_libc`,
+`rusty_lines`) so code flows both directions (extraction in, handback
+out) under one license. See [`LICENSE`](LICENSE).

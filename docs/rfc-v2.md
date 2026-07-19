@@ -1,7 +1,7 @@
 # RFC v2 — rustils (Rust Platform Core)
 ## A hand-rolled, Rust-native platform personality layer for Windows and Linux
 
-**Status:** Proposed — supersedes `docs/rfc.md`, `docs/roadmap.md`, and the architecture docs generated in the original Copilot scaffold. **Amended:** A1 (2026-07-19) re-grounds §7/§8-R2 — see the amendment note in §7 and `docs/extraction-map.md`.
+**Status:** Proposed — supersedes `docs/rfc.md`, `docs/roadmap.md`, and the architecture docs generated in the original Copilot scaffold. **Amended:** A1 (2026-07-19) re-grounds §7/§8-R2 — see the amendment note in §7 and `docs/extraction-map.md`. A2 (2026-07-19) closes every §7.3 open item and the license question — decisions D-11..D-14.
 **Date:** 2026-07-18
 **Sponsor:** Nano
 **Companion document:** ~~`rush-shell-plan.md` v1.2 (ADR-011)~~ — superseded by Amendment A1: the plan described an alternate rush never built; the real contract material is `docs/extraction-map.md`
@@ -195,11 +195,32 @@ rust-platform-core owns **mechanisms**: spawn/quoting, process groups & kill-tre
 3. PTY hoists at rush Phase 5. Track P (§2) may begin only after R2.
 4. Between rush phase gates, this repo's consumed API surface is **frozen** (semver-honored); evolution happens at gates. This bounds the two-repo debugging cost of a solo maintainer.
 
-### 7.3 Open items (decide at R2, jointly with rush)
+### 7.3 Open items — all decided 2026-07-19 (Amendment A2)
 
-- **O-1:** the shared byte-string type — `OsStr`-only vs a common `bstr`-backed newtype crate both projects depend on.
-- **O-2:** whether rush's rustix-based unix `sys` layer transfers here as-is or stays rush-side until Track P matures.
-- **O-3:** divergence-registry mechanics — one shared registry vs two cross-referencing ones (default: two, cross-referenced; revisit if entries duplicate heavily).
+- **O-1 — decided: `OsStr`-only.** The entire extraction (Dir, Command,
+  resolve, six consumers, both parity suites) shipped on
+  `OsStr`/`OsString` without a boundary-level byte-manipulation need
+  ever appearing; the one place raw units matter (`winargv`) correctly
+  uses `&[u16]`, which a byte newtype would not have served. §5.1's
+  std-interop works *because* `OsStr` is std's own boundary type. Byte
+  manipulation is consumer policy (rush's expansion is `String`-based
+  and converts at its own edges). Revisit only if a real byte-indexed
+  boundary consumer appears. → D-11.
+- **O-2 — decided: rusty_libc becomes rustils's Track P backend now.**
+  R2/R3 having landed, the Track P gate is open; rather than staying
+  rush-side until R4 "matures", `rusty_libc` is adopted as the
+  raw-syscall floor behind the `track-p` feature (pinned git dependency,
+  one source of truth — not a vendored fork), replaced call-by-call per
+  §2's original plan with tests and learning notes per replacement.
+  → D-12.
+- **O-3 — decided: two registries, cross-referenced** (the recorded
+  default, confirmed): mechanism divergences live in this repo's
+  `docs/divergences.md` (001–003 so far), shell-behavior divergences in
+  rush's docs, each citing the other where related. Revisit only if
+  entries duplicate heavily; none do. → D-13.
+- **License — decided: MIT**, matching every sibling crate so code flows
+  both directions (extraction in, `winargv` handback out) under one
+  license. → D-14.
 
 ---
 
@@ -244,6 +265,10 @@ Promoted from v1's single parity test to the governing regime:
 - **D-8** Two-axis error model. (§5.5)
 - **D-9** Mechanism/policy split with rush; hoist at rush Phase 2 gate; frozen-between-gates API. (§7)
 - **D-10** Parity-as-product regime. (§9)
+- **D-11** `OsStr`-only byte boundary — O-1 closed. (§7.3, A2)
+- **D-12** `rusty_libc` adopted as the Track P backend behind the `track-p` feature, pinned by rev — O-2 closed. (§7.3, A2)
+- **D-13** Two cross-referenced divergence registries — O-3 closed. (§7.3, A2)
+- **D-14** License is MIT, family-wide consistency. (§7.3, A2)
 
 ---
 
