@@ -14,6 +14,8 @@
 
 pub mod fs;
 pub mod process;
+pub mod signals;
 
 pub use fs::MockDir;
 pub use process::MockSpawner;
+pub use signals::MockSignalSource;

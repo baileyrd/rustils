@@ -42,13 +42,40 @@ fn main() -> std::process::ExitCode {
         }
     }
 
+    // Deferred signals (D6): the handler stores one atomic; this loop is
+    // the safe point that consumes it — the reactor pattern of RFC §5.6
+    // (children ∪ signals ∪ timeout) assembled from its pieces.
+    use platform::events::SignalEvent;
+    let signals = coreutils::native::signal_source();
+    if let Err(e) = signals.install(&[SignalEvent::Interrupt, SignalEvent::Terminate]) {
+        eprintln!("rpar: {e}");
+    }
+
     // Completion-order reporting: the backend's multiplexed wait_any
     // (pidfd+poll / WaitForMultipleObjects) names whichever finished;
-    // the consuming wait releases it.
+    // the consuming wait releases it. The wait ticks so a pending signal
+    // is noticed within 200ms even while every child keeps running.
     while !children.is_empty() {
-        let idx = match spawner.wait_any(&mut children, None) {
+        if let Some(event) = signals.take() {
+            eprintln!(
+                "rpar: interrupted; stopping {} running command(s)",
+                children.len()
+            );
+            for child in &children {
+                let _ = child.kill_single();
+            }
+            for child in children {
+                let _ = child.wait();
+            }
+            return std::process::ExitCode::from(match event {
+                SignalEvent::Interrupt => 130,
+                _ => 143,
+            });
+        }
+        let tick = std::time::Duration::from_millis(200);
+        let idx = match spawner.wait_any(&mut children, Some(tick)) {
             Ok(Some(i)) => i,
-            Ok(None) => unreachable!("no timeout was given"),
+            Ok(None) => continue, // tick elapsed — recheck signals
             Err(e) => {
                 eprintln!("rpar: {e}");
                 return std::process::ExitCode::FAILURE;

@@ -39,3 +39,20 @@ implementation convenience.
   arrives with the detach API (whose absence is what makes an explicit
   test of the current behavior redundant with 001's kill test).
 - **Accepted**: 2026-07-19, same slice.
+
+## 003 — signal identities are console control events on Windows
+
+- **Linux**: `SignalSource` events are real signals — `SIGINT`,
+  `SIGTERM`, `SIGHUP` — delivered to any process.
+- **Windows**: the deliverable identities are console control events
+  (`CTRL_C_EVENT` → Interrupt, `CTRL_BREAK_EVENT` → Terminate,
+  `CTRL_CLOSE_EVENT` → Hangup), delivered only to console processes; a
+  detached or service process receives none, and there is no SIGTERM
+  analog at all (Ctrl-Break is the nearest deliverable identity).
+- **OS limitation**: Windows has no signal mechanism; console control
+  events are the only asynchronous termination-adjacent notifications
+  the OS delivers to user code.
+- **Pinning tests**: `linux_signal_source_defers_and_coalesces`
+  (behavioral) and `windows_signal_source_installs` (installation-level;
+  the test documents why delivery is not asserted on headless CI).
+- **Accepted**: 2026-07-19, with the D6 extraction.

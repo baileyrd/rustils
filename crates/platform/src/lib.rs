@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod events;
 pub mod fs;
 pub mod process;
 

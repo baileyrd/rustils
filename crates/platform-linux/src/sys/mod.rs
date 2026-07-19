@@ -2,4 +2,5 @@
 //! this module tree, one documented invariant per block.
 
 pub mod fdio;
+pub mod signals;
 pub mod spawn;

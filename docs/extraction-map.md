@@ -183,8 +183,16 @@ them.
    in `sys::proc::wait_many` (≤64: one true blocking wait; beyond:
    64-chunk zero-timeout sweeps on a 10ms tick). Parity sweeps 70
    children on both legs — past the Windows cap by construction.
-   Remaining for R3: D6's signal event source (the trap-style
-   atomic-flag deferral core), which completes §5.6's reactor.
+   **D6 signal source landed, completing R3**: `platform::events::
+   SignalSource` (single-slot, coalescing, take-at-safe-points — the
+   donor's `PENDING_SIGNAL` shape verbatim in spirit), with
+   `LinuxSignalSource` (signal(2) handler = one atomic store),
+   `WindowsSignalSource` (`SetConsoleCtrlHandler` mapping console
+   control events — divergence 003), and the mock. `rpar` assembles the
+   §5.6 reactor from the pieces: multiplexed wait ∪ deferred signals ∪
+   timeout tick, killing its children and exiting 130/143 on
+   Interrupt/Terminate. Policy (trap tables, `$?` preservation,
+   re-entrancy guards) stays rush-side per D6's own classification.
 4. **Stdio/handle model** (D5) — decide std-slot-swap vs STARTUPINFO
    lists on the record.
    **Landed, with the decision recorded:** `Stdio::Pipe` +

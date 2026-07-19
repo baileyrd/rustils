@@ -43,4 +43,14 @@ pub mod native {
     pub fn spawner() -> Box<dyn platform::process::Spawner> {
         Box::new(platform_windows::WindowsSpawner)
     }
+
+    #[cfg(target_os = "linux")]
+    pub fn signal_source() -> Box<dyn platform::events::SignalSource> {
+        Box::new(platform_linux::LinuxSignalSource)
+    }
+
+    #[cfg(windows)]
+    pub fn signal_source() -> Box<dyn platform::events::SignalSource> {
+        Box::new(platform_windows::WindowsSignalSource)
+    }
 }
