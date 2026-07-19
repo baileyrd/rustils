@@ -22,4 +22,6 @@ jobs:
       - name: model self-check (deterministic differential tests)
         run: cargo test --manifest-path fuzz/Cargo.toml
       - name: fuzz winargv round-trip (5 minutes)
-        run: cargo fuzz run winargv_roundtrip --fuzz-dir fuzz -- -max_total_time=300
+        # Pin the gnu triple: cargo-fuzz defaults to musl on Linux, and the
+        # runner has no musl C++ toolchain for libfuzzer's runtime.
+        run: cargo fuzz run winargv_roundtrip --fuzz-dir fuzz --target x86_64-unknown-linux-gnu -- -max_total_time=300
