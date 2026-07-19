@@ -19,10 +19,15 @@
 //! Windows leg is where the OS-touching tests actually run.
 //!
 //! The backend modules are `cfg(windows)`-gated individually rather than
-//! at the crate root: [`winargv`] is pure string logic with no OS calls,
-//! and compiling + testing it on every host puts it under the Linux CI
-//! leg and Miri as well as the Windows leg (its oracle test against
-//! `CommandLineToArgvW` remains Windows-only).
+//! at the crate root. [`winargv`] is re-exported from its own standalone
+//! crate (convergence roadmap Phase 1c) rather than defined here: it is
+//! pure string logic with no OS calls, and a handback consumer (rush,
+//! rusty_naner) has no reason to depend on this crate's Windows-only
+//! Dir/Spawner/console modules just for command-line quoting. It still
+//! builds and tests on every host, under the Linux CI leg and Miri as
+//! well as the Windows leg (its oracle test against
+//! `CommandLineToArgvW` remains Windows-only, here in this crate's
+//! `tests/`).
 
 #![deny(unsafe_code)] // opted back in, narrowly, inside sys/ modules only
 
@@ -40,7 +45,7 @@ pub mod sys;
 mod term;
 #[cfg(windows)]
 pub mod util;
-pub mod winargv;
+pub use winargv;
 
 #[cfg(windows)]
 pub use fs::{WindowsDir, WindowsFile};
