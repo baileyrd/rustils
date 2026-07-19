@@ -28,6 +28,17 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
+      # D-12 / Track P: the whole platform-linux suite (parity included)
+      # re-runs with the rusty_libc raw-syscall path swapped in for the
+      # replaced call families. Linux + stable only: the feature is
+      # meaningless on Windows, and rusty_libc's MSRV (1.88) is above the
+      # workspace floor (1.75) — Track P is opt-in precisely so the floor
+      # holds (see platform-linux/Cargo.toml).
+      - name: test platform-linux with track-p (raw-syscall backend)
+        if: matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable'
+        run: |
+          cargo clippy -p platform-linux --features track-p --all-targets -- -D warnings
+          cargo test -p platform-linux --features track-p
 
   unsafe-scope:
     # RFC v2 §6: unsafe is confined to backend sys/ module trees. This job

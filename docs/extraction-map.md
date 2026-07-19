@@ -92,6 +92,16 @@ soundness landmines with resolutions —
 At R4, evaluate adopting `rusty_libc` as the Track P backend outright
 versus re-deriving it; either way this material is the curriculum (M1).
 
+> **Landed (first slice, D-12 supersedes the R4 wait):** O-2 resolved the
+> evaluation early — `rusty_libc` IS the backend, as a rev-pinned git
+> dependency behind platform-linux's `track-p` feature (off by default;
+> rusty_libc's 1.88 MSRV sits above the workspace's 1.75 floor, so only
+> the ubuntu+stable CI leg turns it on). First replaced family:
+> `sys::fdio::read`/`write`, with the whole platform-linux suite re-run
+> under `--features track-p` as the equivalence test and the errno-contract
+> lesson written up (`docs/learning/002-…`). Remaining families migrate
+> call-by-call in later slices.
+
 ### D5 — `rush/src/exec.rs` + `winstdio.rs`: stdio & fd mechanisms
 
 - The `FdAction`/`pre_exec` fd-surgery engine: fd 3+ wiring applied in
