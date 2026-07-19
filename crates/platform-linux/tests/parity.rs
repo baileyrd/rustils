@@ -67,6 +67,14 @@ fn assert_fs_behavior(root: &dyn Dir) {
         .expect_err("non-empty removal must fail");
     assert_eq!(e.kind, ErrorKind::DirectoryNotEmpty);
     d.remove_file(OsStr::new("inner")).expect("rm inner");
+    // Drop the capability before removing the directory it names: on
+    // Windows, delete-on-close semantics mean a directory entry stays
+    // visible in enumeration until every open handle to it — including
+    // this one — closes, not just the handle `remove_dir` itself opens
+    // and releases. Linux would tolerate the leak (unlink/rmdir detach
+    // the name immediately regardless of open fds), but the capability
+    // model says: done with it, drop it.
+    drop(d);
     root.remove_dir(OsStr::new("d")).expect("rmdir");
 
     // rename: replaces by default, no-replace refuses (D11, roadmap
