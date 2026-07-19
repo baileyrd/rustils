@@ -406,3 +406,21 @@ fn linux_signal_source_defers_and_coalesces() {
         Some(SignalEvent::Terminate) | Some(SignalEvent::Hangup)
     ));
 }
+
+/// The redirected-streams contract (`docs/behavior/term.md`): under a
+/// test harness no std stream is a terminal, and the surface must say
+/// so honestly — false everywhere, Err for size, refuse raw mode, and
+/// keep leave_raw an Ok no-op.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_terminal_honest_when_redirected() {
+    use platform::term::{TermStream, Terminal};
+    let mut t = platform_linux::LinuxTerminal::new();
+    // cargo's test harness captures the streams; none is a tty.
+    assert!(!t.is_tty(TermStream::Stdin));
+    assert!(!t.is_tty(TermStream::Stdout));
+    assert!(!t.is_tty(TermStream::Stderr));
+    assert!(t.window_size().is_err(), "no tty: size must be Err");
+    assert!(t.enter_raw().is_err(), "no tty: raw mode must refuse");
+    t.leave_raw().expect("leave without enter is an Ok no-op");
+}

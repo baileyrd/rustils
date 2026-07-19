@@ -15,5 +15,6 @@ pub mod error;
 pub mod events;
 pub mod fs;
 pub mod process;
+pub mod term;
 
 pub use error::{ErrorKind, OsCode, PlatformError};

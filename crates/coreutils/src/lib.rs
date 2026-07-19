@@ -13,6 +13,7 @@
 
 pub mod cat;
 pub mod ls;
+pub mod term_report;
 
 /// Ambient entry point to this OS's native backend — the one place the
 /// CLI binaries touch a concrete backend type; everything else in this
@@ -52,5 +53,15 @@ pub mod native {
     #[cfg(windows)]
     pub fn signal_source() -> Box<dyn platform::events::SignalSource> {
         Box::new(platform_windows::WindowsSignalSource)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn terminal() -> Box<dyn platform::term::Terminal> {
+        Box::new(platform_linux::LinuxTerminal::new())
+    }
+
+    #[cfg(windows)]
+    pub fn terminal() -> Box<dyn platform::term::Terminal> {
+        Box::new(platform_windows::WindowsTerminal::new())
     }
 }

@@ -72,7 +72,17 @@ handlers; console-ctrl mapping on Windows, divergence 003) — `rpar`
 assembles the full §5.6 reactor from them. Step 4 is
 in: `Stdio::Pipe` capture/feeding with inheritance control on every
 backend (consumed by `rtee`), with the STARTUPINFO-vs-slot-swap
-decision recorded in the extraction map.
+decision recorded in the extraction map. Linux Track P (raw syscalls
+behind the `track-p` feature, via a pinned `rusty_libc` dependency,
+D-12) covers every migrated family in `platform-linux/src/sys`: fdio
+(read/write, the openat family, statx), the reactor's pipe2/poll, and
+process control (kill, wait4, the signal trampoline) — parity-verified
+in both configurations on every CI run. A full-ecosystem donor survey
+(`docs/extraction-map.md` D9–D16) then unparked the **Terminal**
+surface: is_tty, window size, and raw-mode enter/leave over termios
+(Linux) and console modes (Windows), consumed by `rterm`, with
+`rusty_term` as the design oracle and PTY hosting/resize-notification
+recorded as gated follow-ons.
 
 ## License
 
