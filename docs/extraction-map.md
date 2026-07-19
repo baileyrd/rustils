@@ -154,6 +154,15 @@ them.
 2. **Spawn + groups** behind the `Spawner` trait: Unix (D1) and Windows
    suspended-spawn/jobs (D2), with `behavior/process.md` grown to match
    and D8's divergence entries recorded.
+   **First slice landed:** `LinuxSpawner` (`posix_spawn` — allocation
+   entirely pre-call, no fork critical region in this crate) and
+   `WindowsSpawner` (`CreateProcessW` with the command line built
+   exclusively by `winargv`), consuming `wait` with decoded status
+   (Signaled pinned on the Linux leg), mechanism-level `resolve`
+   (PATH+execbit / PATH+PATHEXT), explicit-env and Stdio Null wiring,
+   `rrun` as the gating consumer, parity tests on both legs. Remaining
+   in step 2: groups/kill-tree (suspended spawn + Job Objects / setpgid)
+   and the D8 divergence entries that land with them.
 3. **Wait-any / reactor seed** (D2's `wait_any` + D6's signal source),
    absorbing the 64-handle limit internally per §5.6.
 4. **Stdio/handle model** (D5) — decide std-slot-swap vs STARTUPINFO

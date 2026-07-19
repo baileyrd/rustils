@@ -60,7 +60,10 @@ from rush and its satellite crates per the extraction map
 — proven donors mined deliberately, not designed here from scratch.
 Extraction step 1 is in: `winargv` (MSVCRT quoting + cmd-rules batch
 quoting with refuse-unrepresentable — closes the BatBadBut class),
-oracle-tested against `CommandLineToArgvW` on the Windows leg.
+oracle-tested against `CommandLineToArgvW` on the Windows leg. Step 2's
+first slice is in: native `Spawner`/`Child` on both OSes (`posix_spawn`;
+`CreateProcessW` over `winargv`), decoded `ExitStatus` parity-pinned,
+`rrun` as the consumer; groups/kill-tree are next.
 
 ## License
 
