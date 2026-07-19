@@ -8,6 +8,7 @@
 #![allow(unsafe_code)]
 
 use std::ffi::{CString, OsStr, OsString};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
@@ -117,13 +118,35 @@ impl Drop for SpawnAttr {
     }
 }
 
+/// `pipe2(O_CLOEXEC)` returning (read, write) as owned fds. CLOEXEC on
+/// both ends: the child's copy of its end is re-dup2'd onto 0/1/2 by a
+/// file action (which clears CLOEXEC on the target), and every other
+/// copy closes at exec — no leaked pipe ends keeping a reader from EOF
+/// (extraction map D5's deadlock class).
+fn make_pipe() -> Result<(OwnedFd, OwnedFd)> {
+    let mut fds: [c::c_int; 2] = [0; 2];
+    // SAFETY: `fds` is a valid out-array of exactly two ints.
+    let r = unsafe { c::pipe2(fds.as_mut_ptr(), c::O_CLOEXEC) };
+    if r != 0 {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(errno_err("pipe2", code, OsStr::new("")));
+    }
+    // SAFETY: both fds are freshly returned, valid, otherwise-unowned;
+    // each is wrapped exactly once.
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
+/// Parent-side pipe ends for piped stdio slots: `[stdin write, stdout
+/// read, stderr read]`.
+pub type ParentPipes = [Option<OwnedFd>; 3];
+
 /// Spawn `path` (an already-resolved program path) with `argv0` + `args`,
 /// working directory `cwd`, environment per `env`, and the given stdio
 /// wiring. `GroupSpec::NewGroup` makes the child a fresh process-group
 /// leader before it executes (`POSIX_SPAWN_SETPGROUP` with pgroup 0 — the
 /// race-free at-spawn placement; extraction map D1's double-`setpgid`
 /// lesson is subsumed by the kernel doing it during spawn). Returns the
-/// child pid.
+/// child pid and the parent ends of any pipes.
 pub fn spawn(
     path: &OsStr,
     argv0: &OsStr,
@@ -132,7 +155,7 @@ pub fn spawn(
     env: &EnvSpec,
     stdio: [Stdio; 3],
     group: GroupSpec,
-) -> Result<c::pid_t> {
+) -> Result<(c::pid_t, ParentPipes)> {
     // Every allocation happens here, before the spawn call (B-1/B-2 fix
     // standard): owned CStrings outlive the raw pointer arrays built from
     // them, and both outlive the call.
@@ -158,22 +181,56 @@ pub fn spawn(
         return Err(errno_err("posix_spawn chdir", r, cwd));
     }
     let devnull = CString::new("/dev/null").expect("no interior NUL");
+    let mut parent_ends: ParentPipes = [None, None, None];
+    // Child-side pipe ends stay alive (in this array) until after the
+    // spawn call, then close in the parent as this function returns.
+    let mut child_ends: [Option<OwnedFd>; 3] = [None, None, None];
     for (fd, spec) in stdio.iter().enumerate() {
-        if matches!(spec, Stdio::Null) {
-            let flags = if fd == 0 { c::O_RDONLY } else { c::O_WRONLY };
-            // SAFETY: `actions.0` is initialized; `devnull` is a valid
-            // NUL-terminated path outliving the spawn call.
-            let r = unsafe {
-                c::posix_spawn_file_actions_addopen(
-                    &mut actions.0,
-                    fd as c::c_int,
-                    devnull.as_ptr(),
-                    flags,
-                    0,
-                )
-            };
-            if r != 0 {
-                return Err(errno_err("posix_spawn addopen", r, OsStr::new("/dev/null")));
+        match spec {
+            Stdio::Inherit => {}
+            Stdio::Null => {
+                let flags = if fd == 0 { c::O_RDONLY } else { c::O_WRONLY };
+                // SAFETY: `actions.0` is initialized; `devnull` is a valid
+                // NUL-terminated path outliving the spawn call.
+                let r = unsafe {
+                    c::posix_spawn_file_actions_addopen(
+                        &mut actions.0,
+                        fd as c::c_int,
+                        devnull.as_ptr(),
+                        flags,
+                        0,
+                    )
+                };
+                if r != 0 {
+                    return Err(errno_err("posix_spawn addopen", r, OsStr::new("/dev/null")));
+                }
+            }
+            Stdio::Pipe => {
+                let (read, write) = make_pipe()?;
+                // stdin: child reads (read end dup2'd onto 0), parent
+                // writes; stdout/stderr: child writes, parent reads.
+                let (child, parent) = if fd == 0 {
+                    (read, write)
+                } else {
+                    (write, read)
+                };
+                use std::os::fd::AsRawFd;
+                // SAFETY: `actions.0` is initialized; `child` is a valid
+                // open fd that outlives the spawn call (held in
+                // `child_ends`); dup2 onto 0/1/2 clears CLOEXEC on the
+                // duplicate in the child.
+                let r = unsafe {
+                    c::posix_spawn_file_actions_adddup2(
+                        &mut actions.0,
+                        child.as_raw_fd(),
+                        fd as c::c_int,
+                    )
+                };
+                if r != 0 {
+                    return Err(errno_err("posix_spawn adddup2", r, OsStr::new("")));
+                }
+                child_ends[fd] = Some(child);
+                parent_ends[fd] = Some(parent);
             }
         }
     }
@@ -214,7 +271,11 @@ pub fn spawn(
     if r != 0 {
         return Err(errno_err("posix_spawn", r, path));
     }
-    Ok(pid)
+    // The child's pipe ends close here (`child_ends` drops) — the parent
+    // holding a stray copy of a write end would starve the read end of
+    // EOF forever (extraction map D5's documented deadlock).
+    drop(child_ends);
+    Ok((pid, parent_ends))
 }
 
 /// `SIGKILL` the whole process group led by `pid` (which must have been

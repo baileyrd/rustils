@@ -55,6 +55,15 @@ pub fn read(handle: &OwnedWinHandle, buf: &mut [u8]) -> Result<usize> {
         )
     };
     if ok == 0 {
+        // SAFETY: `GetLastError` takes no arguments and has no
+        // preconditions.
+        let code = unsafe { w::GetLastError() };
+        if code == w::ERROR_BROKEN_PIPE {
+            // A pipe whose write side has fully closed reports
+            // BROKEN_PIPE on read; that IS end-of-file for pipes —
+            // mirroring unix read() returning 0.
+            return Ok(0);
+        }
         return Err(errmap::last_win32_err("ReadFile", OsStr::new("")));
     }
     Ok(n as usize)

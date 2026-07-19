@@ -29,15 +29,18 @@ pub enum EnvSpec {
 }
 
 /// Stdio wiring for the child.
-///
-/// Minimal on purpose: `Inherit` and `Null` cover the reference consumer.
-/// Pipe wiring arrives with the R2 hoist alongside the reactor that makes
-/// it usable without deadlocks.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Stdio {
     #[default]
     Inherit,
     Null,
+    /// Wire this slot to a pipe whose parent end is retrieved from the
+    /// spawned child via [`Child::take_stdin`]/[`Child::take_stdout`]/
+    /// [`Child::take_stderr`] — the write end for stdin, read ends for
+    /// stdout/stderr. Deadlock contract in `docs/behavior/process.md`:
+    /// drain (or drop) captured output before blocking in `wait`, and
+    /// drop the stdin end to deliver EOF.
+    Pipe,
 }
 
 /// Process-group placement for the child (RFC v2 §5.4 — groups are
@@ -168,6 +171,19 @@ pub trait Child {
     /// result), and the consuming [`Child::wait`] afterwards returns it —
     /// polling never loses the exit status.
     fn try_wait(&mut self) -> Result<Option<ExitStatus>>;
+
+    /// The parent's write end of the child's stdin, if that slot was
+    /// [`Stdio::Pipe`]. Yields `Some` exactly once; dropping the handle
+    /// delivers EOF to the child.
+    fn take_stdin(&mut self) -> Option<Box<dyn crate::fs::File>>;
+
+    /// The parent's read end of the child's stdout, if piped. `Some`
+    /// exactly once; reads return 0 at EOF (child closed its end).
+    fn take_stdout(&mut self) -> Option<Box<dyn crate::fs::File>>;
+
+    /// The parent's read end of the child's stderr, if piped. `Some`
+    /// exactly once.
+    fn take_stderr(&mut self) -> Option<Box<dyn crate::fs::File>>;
 }
 
 /// Block until *some* child in `children` terminates, for up to `timeout`

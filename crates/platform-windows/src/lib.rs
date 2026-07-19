@@ -39,6 +39,6 @@ pub mod util;
 pub mod winargv;
 
 #[cfg(windows)]
-pub use fs::WindowsDir;
+pub use fs::{WindowsDir, WindowsFile};
 #[cfg(windows)]
 pub use process::{WindowsChild, WindowsSpawner};

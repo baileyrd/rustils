@@ -81,6 +81,14 @@ impl From<std::fs::File> for LinuxFile {
     }
 }
 
+/// Any readable/writable fd works as a [`LinuxFile`] — pipe ends included
+/// (the process backend hands captured-stdio ends out this way).
+impl From<OwnedFd> for LinuxFile {
+    fn from(fd: OwnedFd) -> Self {
+        Self { fd }
+    }
+}
+
 impl File for LinuxFile {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         fdio::read(&self.fd, buf)

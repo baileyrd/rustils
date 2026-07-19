@@ -254,3 +254,56 @@ fn linux_wait_any_and_try_wait() {
     children[0].kill_single().expect("kill");
     children.remove(0).wait().expect("wait");
 }
+
+/// Pipes (extraction map step 4, Linux side): capture, stdin feeding with
+/// EOF-by-drop, and pipe-read EOF when the child exits.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_process_pipes() {
+    use platform::process::{Command, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_linux::LinuxSpawner;
+
+    // stdout capture: bytes arrive, then EOF at child exit.
+    // \377 (octal) — POSIX printf; \x escapes are a bashism dash lacks.
+    let mut c = Command::new("sh", tmp.clone())
+        .arg("-c")
+        .arg("printf 'cap\\377 tured'");
+    c.stdout = Stdio::Pipe;
+    let mut child = s.spawn(&c).expect("spawn");
+    let mut pipe = child.take_stdout().expect("piped stdout");
+    assert!(child.take_stdout().is_none(), "take is once");
+    let mut got = Vec::new();
+    let mut buf = [0u8; 64];
+    loop {
+        let n = pipe.read(&mut buf).expect("read");
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&buf[..n]);
+    }
+    assert_eq!(got, b"cap\xff tured");
+    assert!(child.wait().expect("wait").success());
+
+    // stdin feeding: write, drop for EOF, child echoes through its own
+    // piped stdout.
+    let mut c = Command::new("cat", tmp);
+    c.stdin = Stdio::Pipe;
+    c.stdout = Stdio::Pipe;
+    let mut child = s.spawn(&c).expect("spawn");
+    let mut stdin = child.take_stdin().expect("piped stdin");
+    let mut stdout = child.take_stdout().expect("piped stdout");
+    stdin.write(b"round trip").expect("write");
+    drop(stdin); // EOF — without this, cat never exits (D5 contract)
+    let mut got = Vec::new();
+    loop {
+        let n = stdout.read(&mut buf).expect("read");
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&buf[..n]);
+    }
+    assert_eq!(got, b"round trip");
+    assert!(child.wait().expect("wait").success());
+}

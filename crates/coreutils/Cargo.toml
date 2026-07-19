@@ -34,5 +34,9 @@ path = "src/bin/rrun.rs"
 name = "rpar"
 path = "src/bin/rpar.rs"
 
+[[bin]]
+name = "rtee"
+path = "src/bin/rtee.rs"
+
 [lints]
 workspace = true

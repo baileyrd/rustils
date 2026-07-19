@@ -9,7 +9,10 @@ pub use windows_sys::Win32::Foundation::{
     STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND,
     STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SHARING_VIOLATION, STATUS_SUCCESS, UNICODE_STRING,
 };
-pub use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, WAIT_OBJECT_0};
+pub use windows_sys::Win32::Foundation::{
+    DuplicateHandle, SetHandleInformation, DUPLICATE_SAME_ACCESS, ERROR_BROKEN_PIPE,
+    HANDLE_FLAG_INHERIT, WAIT_OBJECT_0,
+};
 pub use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 pub use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileBasicInfo, FileDispositionInfo, FileFullDirectoryInfo,
@@ -28,6 +31,7 @@ pub use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+pub use windows_sys::Win32::System::Pipes::CreatePipe;
 pub use windows_sys::Win32::System::Threading::{
     CreateProcessW, GetCurrentProcess, GetExitCodeProcess, ResumeThread, TerminateProcess,
     WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, INFINITE,

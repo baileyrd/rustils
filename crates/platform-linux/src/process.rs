@@ -23,6 +23,8 @@ pub struct LinuxChild {
     /// Set by a successful `try_wait`: `WNOHANG` reaps the zombie, so the
     /// decoded status must be stashed for the eventual consuming `wait`.
     reaped: Option<ExitStatus>,
+    /// Parent pipe ends for `Stdio::Pipe` slots, until taken.
+    pipes: spawn::ParentPipes,
 }
 
 impl Child for LinuxChild {
@@ -60,6 +62,24 @@ impl Child for LinuxChild {
         }
         Ok(self.reaped)
     }
+
+    fn take_stdin(&mut self) -> Option<Box<dyn platform::fs::File>> {
+        self.pipes[0]
+            .take()
+            .map(|fd| Box::new(crate::fs::LinuxFile::from(fd)) as Box<dyn platform::fs::File>)
+    }
+
+    fn take_stdout(&mut self) -> Option<Box<dyn platform::fs::File>> {
+        self.pipes[1]
+            .take()
+            .map(|fd| Box::new(crate::fs::LinuxFile::from(fd)) as Box<dyn platform::fs::File>)
+    }
+
+    fn take_stderr(&mut self) -> Option<Box<dyn platform::fs::File>> {
+        self.pipes[2]
+            .take()
+            .map(|fd| Box::new(crate::fs::LinuxFile::from(fd)) as Box<dyn platform::fs::File>)
+    }
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -71,7 +91,7 @@ fn is_executable_file(path: &Path) -> bool {
 impl Spawner for LinuxSpawner {
     fn spawn(&self, cmd: &Command) -> Result<Box<dyn Child>> {
         let resolved = self.resolve(&cmd.program)?;
-        let pid = spawn::spawn(
+        let (pid, pipes) = spawn::spawn(
             &resolved,
             &cmd.program,
             &cmd.argv,
@@ -84,6 +104,7 @@ impl Spawner for LinuxSpawner {
             pid,
             own_group: cmd.group == GroupSpec::NewGroup,
             reaped: None,
+            pipes,
         }))
     }
 
