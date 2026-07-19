@@ -16,6 +16,14 @@ fn errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
+/// Track P error path: a raw syscall's failure comes back as the `Errno`
+/// value in the return register — the thread-local `errno` that `os_err`
+/// reads is never touched. The code must flow from the returned value.
+#[cfg(feature = "track-p")]
+fn trackp_err(op: &'static str, e: rusty_libc::Errno) -> PlatformError {
+    PlatformError::new(kind_of(e.0), OsCode::Errno(e.0), op)
+}
+
 fn kind_of(errno: i32) -> ErrorKind {
     match errno {
         libc::ENOENT => ErrorKind::NotFound,
@@ -58,6 +66,7 @@ pub fn openat(dirfd: RawFd, rel: &OsStr, flags: i32, mode: u32) -> Result<OwnedF
 }
 
 /// `read(2)` into `buf`.
+#[cfg(not(feature = "track-p"))]
 pub fn read(fd: &OwnedFd, buf: &mut [u8]) -> Result<usize> {
     // SAFETY: `buf` is a valid, writable region of exactly `buf.len()`
     // bytes for the duration of the call; `fd` is a valid open descriptor.
@@ -68,7 +77,16 @@ pub fn read(fd: &OwnedFd, buf: &mut [u8]) -> Result<usize> {
     Ok(n as usize)
 }
 
+/// `read(2)` into `buf` — Track P: raw `SYS_read`, no libc in the path.
+/// rusty_libc's safe wrapper derives the pointer/length pair from the slice
+/// itself, so no unsafe block appears at this call site.
+#[cfg(feature = "track-p")]
+pub fn read(fd: &OwnedFd, buf: &mut [u8]) -> Result<usize> {
+    rusty_libc::fd::read(fd.as_raw_fd(), buf).map_err(|e| trackp_err("read", e))
+}
+
 /// `write(2)` from `buf`.
+#[cfg(not(feature = "track-p"))]
 pub fn write(fd: &OwnedFd, buf: &[u8]) -> Result<usize> {
     // SAFETY: `buf` is a valid readable region of exactly `buf.len()`
     // bytes for the duration of the call; `fd` is a valid open descriptor.
@@ -77,6 +95,12 @@ pub fn write(fd: &OwnedFd, buf: &[u8]) -> Result<usize> {
         return Err(os_err("write", OsStr::new("")));
     }
     Ok(n as usize)
+}
+
+/// `write(2)` from `buf` — Track P: raw `SYS_write`, no libc in the path.
+#[cfg(feature = "track-p")]
+pub fn write(fd: &OwnedFd, buf: &[u8]) -> Result<usize> {
+    rusty_libc::fd::write(fd.as_raw_fd(), buf).map_err(|e| trackp_err("write", e))
 }
 
 /// `mkdirat(dirfd, rel, 0o777)` (mode filtered by umask, as usual).

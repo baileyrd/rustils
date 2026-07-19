@@ -13,3 +13,9 @@ deny = [
 
 [advisories]
 yanked = "deny"
+
+[sources]
+# D-12: rusty_libc is a deliberate rev-pinned git dependency (the Track P
+# backend). Any other git source is a policy violation, not a warning.
+unknown-git = "deny"
+allow-git = ["https://github.com/baileyrd/rusty_libc"]
