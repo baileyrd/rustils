@@ -16,6 +16,7 @@ pub mod fs;
 pub mod net;
 pub mod process;
 pub mod signals;
+mod sync;
 pub mod term;
 
 pub use fs::MockDir;

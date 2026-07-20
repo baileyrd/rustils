@@ -7,7 +7,7 @@
 
 #![allow(unsafe_code)]
 
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 
@@ -191,7 +191,14 @@ pub fn spawn(
     if r != 0 {
         return Err(errno_err("posix_spawn chdir", r, cwd));
     }
-    let devnull = CString::new("/dev/null").expect("no interior NUL");
+    // Compile-time-checked literal, not a runtime-fallible conversion: a
+    // `panic!` here can only fire if this literal is ever edited to
+    // contain a NUL, in which case it fires at compile time.
+    const DEVNULL: &CStr = match CStr::from_bytes_with_nul(b"/dev/null\0") {
+        Ok(s) => s,
+        Err(_) => panic!("DEVNULL literal must not contain an interior NUL"),
+    };
+    let devnull = DEVNULL;
     let mut parent_ends: ParentPipes = [None, None, None];
     // Child-side pipe ends stay alive (in this array) until after the
     // spawn call, then close in the parent as this function returns.
@@ -369,10 +376,13 @@ pub fn poll_pids(pids: &[c::pid_t], timeout: Option<std::time::Duration>) -> Res
         match poll_once(&mut fds, timeout_ms) {
             Ok(0) => return Ok(None),
             Ok(_) => {
-                let hit = fds
-                    .iter()
-                    .position(|p| p.revents != 0)
-                    .expect("poll reported readiness");
+                let hit = fds.iter().position(|p| p.revents != 0).ok_or_else(|| {
+                    PlatformError::new(
+                        ErrorKind::Other,
+                        OsCode::None,
+                        "poll reported readiness but no pollfd shows revents",
+                    )
+                })?;
                 return Ok(Some(hit));
             }
             Err(e) if e.os == OsCode::Errno(libc::EINTR) => continue,

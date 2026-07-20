@@ -43,7 +43,7 @@ impl MockDir {
     /// Convenience for seeding test fixtures.
     pub fn with_file(self, name: impl Into<OsString>, contents: impl Into<Vec<u8>>) -> Self {
         {
-            let mut n = self.node.lock().expect("mock lock");
+            let mut n = crate::sync::lock(&self.node);
             let Node::Dir(entries) = &mut *n else {
                 unreachable!("root is a dir")
             };
@@ -56,7 +56,7 @@ impl MockDir {
     }
 
     fn child(&self, rel: &OsStr, op: &'static str) -> Result<Arc<Mutex<Node>>> {
-        let n = self.node.lock().expect("mock lock");
+        let n = crate::sync::lock(&self.node);
         let Node::Dir(entries) = &*n else {
             return Err(err(ErrorKind::NotADirectory, op, rel));
         };
@@ -84,7 +84,7 @@ impl File for MockFile {
                 "read",
             ));
         }
-        let n = self.node.lock().expect("mock lock");
+        let n = crate::sync::lock(&self.node);
         let Node::File(data) = &*n else {
             return Err(PlatformError::new(
                 ErrorKind::IsADirectory,
@@ -107,7 +107,7 @@ impl File for MockFile {
                 "write",
             ));
         }
-        let mut n = self.node.lock().expect("mock lock");
+        let mut n = crate::sync::lock(&self.node);
         let Node::File(data) = &mut *n else {
             return Err(PlatformError::new(
                 ErrorKind::IsADirectory,
@@ -138,7 +138,7 @@ impl Dir for MockDir {
                     return Err(err(ErrorKind::AlreadyExists, "open", rel));
                 }
                 if opts.truncate {
-                    let mut n = node.lock().expect("mock lock");
+                    let mut n = crate::sync::lock(&node);
                     if let Node::File(data) = &mut *n {
                         data.clear();
                     }
@@ -148,7 +148,7 @@ impl Dir for MockDir {
             Err(e) if opts.create || opts.create_new => {
                 let _ = e;
                 let node = Arc::new(Mutex::new(Node::File(Vec::new())));
-                let mut n = self.node.lock().expect("mock lock");
+                let mut n = crate::sync::lock(&self.node);
                 let Node::Dir(entries) = &mut *n else {
                     return Err(err(ErrorKind::NotADirectory, "open", rel));
                 };
@@ -168,7 +168,7 @@ impl Dir for MockDir {
     fn open_dir(&self, rel: &OsStr) -> Result<Box<dyn Dir>> {
         let node = self.child(rel, "open_dir")?;
         {
-            let n = node.lock().expect("mock lock");
+            let n = crate::sync::lock(&node);
             if !matches!(&*n, Node::Dir(_)) {
                 return Err(err(ErrorKind::NotADirectory, "open_dir", rel));
             }
@@ -177,7 +177,7 @@ impl Dir for MockDir {
     }
 
     fn create_dir(&self, rel: &OsStr) -> Result<()> {
-        let mut n = self.node.lock().expect("mock lock");
+        let mut n = crate::sync::lock(&self.node);
         let Node::Dir(entries) = &mut *n else {
             return Err(err(ErrorKind::NotADirectory, "create_dir", rel));
         };
@@ -193,7 +193,7 @@ impl Dir for MockDir {
 
     fn metadata(&self, rel: &OsStr) -> Result<Metadata> {
         let node = self.child(rel, "metadata")?;
-        let n = node.lock().expect("mock lock");
+        let n = crate::sync::lock(&node);
         Ok(match &*n {
             Node::File(data) => Metadata {
                 file_type: FileType::File,
@@ -249,7 +249,7 @@ impl Dir for MockDir {
     }
 
     fn read_dir(&self) -> Result<Vec<DirEntry>> {
-        let n = self.node.lock().expect("mock lock");
+        let n = crate::sync::lock(&self.node);
         let Node::Dir(entries) = &*n else {
             return Err(PlatformError::new(
                 ErrorKind::NotADirectory,
@@ -260,7 +260,7 @@ impl Dir for MockDir {
         Ok(entries
             .iter()
             .map(|(name, node)| {
-                let file_type = match &*node.lock().expect("mock lock") {
+                let file_type = match &*crate::sync::lock(node) {
                     Node::File(_) => FileType::File,
                     Node::Dir(_) => FileType::Dir,
                     Node::Symlink(_) => FileType::Symlink,
@@ -283,7 +283,7 @@ impl Dir for MockDir {
     }
 
     fn symlink(&self, target: &OsStr, link_name: &OsStr) -> Result<()> {
-        let mut n = self.node.lock().expect("mock lock");
+        let mut n = crate::sync::lock(&self.node);
         let Node::Dir(entries) = &mut *n else {
             return Err(err(ErrorKind::NotADirectory, "symlink", link_name));
         };
@@ -299,7 +299,7 @@ impl Dir for MockDir {
 
     fn read_link(&self, rel: &OsStr) -> Result<OsString> {
         let node = self.child(rel, "read_link")?;
-        let n = node.lock().expect("mock lock");
+        let n = crate::sync::lock(&node);
         match &*n {
             Node::Symlink(target) => Ok(target.clone()),
             _ => Err(err(ErrorKind::InvalidInput, "read_link", rel)),
@@ -317,7 +317,7 @@ impl Dir for MockDir {
 
 impl MockDir {
     fn remove(&self, rel: &OsStr, want_dir: bool, op: &'static str) -> Result<()> {
-        let mut n = self.node.lock().expect("mock lock");
+        let mut n = crate::sync::lock(&self.node);
         let Node::Dir(entries) = &mut *n else {
             return Err(err(ErrorKind::NotADirectory, op, rel));
         };
@@ -325,7 +325,7 @@ impl MockDir {
             return Err(err(ErrorKind::NotFound, op, rel));
         };
         {
-            let child = node.lock().expect("mock lock");
+            let child = crate::sync::lock(node);
             match (&*child, want_dir) {
                 (Node::File(_), true) => return Err(err(ErrorKind::NotADirectory, op, rel)),
                 (Node::Symlink(_), true) => return Err(err(ErrorKind::NotADirectory, op, rel)),
@@ -341,7 +341,7 @@ impl MockDir {
     }
 
     fn rename_impl(&self, from: &OsStr, to: &OsStr, replace: bool) -> Result<()> {
-        let mut n = self.node.lock().expect("mock lock");
+        let mut n = crate::sync::lock(&self.node);
         let Node::Dir(entries) = &mut *n else {
             return Err(err(ErrorKind::NotADirectory, "rename", from));
         };
@@ -351,7 +351,9 @@ impl MockDir {
         if !replace && entries.contains_key(to) {
             return Err(err(ErrorKind::AlreadyExists, "rename", to));
         }
-        let node = entries.remove(from).expect("checked above");
+        let Some(node) = entries.remove(from) else {
+            return Err(err(ErrorKind::NotFound, "rename", from));
+        };
         entries.insert(to.to_os_string(), node);
         Ok(())
     }

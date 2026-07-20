@@ -577,7 +577,11 @@ pub fn read_link(dir: &OwnedWinHandle, rel: &OsStr) -> Result<OsString> {
         );
     }
 
-    let tag = u32::from_le_bytes(buf[0..4].try_into().expect("4-byte slice"));
+    // Direct indexing, not `try_into().expect(...)`: `buf` is a fixed
+    // `MAXIMUM_REPARSE_DATA_BUFFER_SIZE`-byte allocation, so these
+    // offsets are always in bounds and the array-length conversion
+    // can't fail — no fallible operation to unwrap.
+    let tag = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
     if tag != w::IO_REPARSE_TAG_SYMLINK {
         return Err(
             PlatformError::new(ErrorKind::InvalidInput, OsCode::None, "read_link").with_path(rel),
@@ -586,10 +590,8 @@ pub fn read_link(dir: &OwnedWinHandle, rel: &OsStr) -> Result<OsString> {
 
     let (payload_offset, path_buffer_offset) = reparse_offsets();
     let p = payload_offset;
-    let print_name_offset =
-        u16::from_le_bytes(buf[p + 4..p + 6].try_into().expect("2-byte slice")) as usize;
-    let print_name_length =
-        u16::from_le_bytes(buf[p + 6..p + 8].try_into().expect("2-byte slice")) as usize;
+    let print_name_offset = u16::from_le_bytes([buf[p + 4], buf[p + 5]]) as usize;
+    let print_name_length = u16::from_le_bytes([buf[p + 6], buf[p + 7]]) as usize;
 
     let start = path_buffer_offset + print_name_offset;
     let end = start + print_name_length;
