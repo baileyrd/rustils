@@ -9,6 +9,8 @@
 //! scale) the same "irreversible confinement belongs in its own process"
 //! shape nexus's own helper-binary design settled on for the real thing.
 
+#![cfg(target_os = "linux")]
+
 use std::env;
 use std::fs;
 use std::path::Path;
