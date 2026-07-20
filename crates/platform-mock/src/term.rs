@@ -143,8 +143,8 @@ impl Terminal for MockTerminal {
     fn read_chunk(&self, buf: &mut [u8]) -> Result<usize> {
         let mut pending = self.pending.borrow_mut();
         let n = pending.len().min(buf.len());
-        for slot in buf.iter_mut().take(n) {
-            *slot = pending.pop_front().expect("n <= pending.len()");
+        for (slot, byte) in buf.iter_mut().zip(pending.drain(..n)) {
+            *slot = byte;
         }
         Ok(n)
     }

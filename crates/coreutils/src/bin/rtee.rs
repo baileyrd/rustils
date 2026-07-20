@@ -45,7 +45,13 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(127);
         }
     };
-    let mut pipe = child.take_stdout().expect("stdout was piped");
+    let mut pipe = match child.take_stdout() {
+        Some(p) => p,
+        None => {
+            eprintln!("rtee: child stdout was not piped");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
     // Drain to EOF while the child runs, THEN wait — the ordering that
     // cannot deadlock regardless of how much the child writes.

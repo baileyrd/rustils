@@ -153,7 +153,7 @@ fn mem_pipe(data: Vec<u8>) -> Box<dyn platform::fs::File> {
 
 impl Spawner for MockSpawner {
     fn spawn(&self, cmd: &Command) -> Result<Box<dyn Child>> {
-        self.spawned.lock().expect("mock lock").push(cmd.clone());
+        crate::sync::lock(&self.spawned).push(cmd.clone());
         let script = self.scripts.get(&cmd.program).ok_or_else(|| {
             PlatformError::new(ErrorKind::NotFound, OsCode::None, "spawn")
                 .with_path(cmd.program.clone())
@@ -220,7 +220,7 @@ mod tests {
         spawner
             .spawn(&Command::new("prog", "/work").arg("--flag"))
             .expect("spawn");
-        let spawned = log.lock().expect("mock lock");
+        let spawned = crate::sync::lock(&log);
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].cwd, OsString::from("/work"));
     }

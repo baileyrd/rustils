@@ -65,7 +65,7 @@ pub struct MockNet;
 impl Net for MockNet {
     fn tcp_connect(&self, addr: SocketAddr) -> Result<Box<dyn TcpStream>> {
         let listener_tx = {
-            let reg = registry().lock().expect("mock lock");
+            let reg = crate::sync::lock(registry());
             reg.get(&addr)
                 .cloned()
                 .ok_or_else(|| err(ErrorKind::ConnectionRefused, "connect"))?
@@ -107,7 +107,7 @@ impl Net for MockNet {
             addr
         };
         let (tx, rx) = mpsc::channel();
-        let mut reg = registry().lock().expect("mock lock");
+        let mut reg = crate::sync::lock(registry());
         if reg.contains_key(&addr) {
             return Err(err(ErrorKind::AddrInUse, "listen"));
         }
@@ -120,7 +120,7 @@ impl Net for MockNet {
 
     fn unix_connect(&self, path: &Path) -> Result<Box<dyn UnixStream>> {
         let listener_tx = {
-            let reg = unix_registry().lock().expect("mock lock");
+            let reg = crate::sync::lock(unix_registry());
             reg.get(path)
                 .cloned()
                 .ok_or_else(|| err(ErrorKind::ConnectionRefused, "connect"))?
@@ -160,7 +160,7 @@ impl Net for MockNet {
     fn unix_listen(&self, path: &Path) -> Result<Box<dyn UnixListener>> {
         let path = path.to_path_buf();
         let (tx, rx) = mpsc::channel();
-        let mut reg = unix_registry().lock().expect("mock lock");
+        let mut reg = crate::sync::lock(unix_registry());
         if reg.contains_key(&path) {
             return Err(err(ErrorKind::AddrInUse, "listen"));
         }
@@ -178,7 +178,7 @@ impl Net for MockNet {
             addr
         };
         let (tx, rx) = mpsc::channel();
-        let mut reg = udp_registry().lock().expect("mock lock");
+        let mut reg = crate::sync::lock(udp_registry());
         if reg.contains_key(&addr) {
             return Err(err(ErrorKind::AddrInUse, "udp_bind"));
         }
@@ -274,7 +274,7 @@ pub struct MockTcpListener {
 
 impl TcpListener for MockTcpListener {
     fn accept(&self) -> Result<(Box<dyn TcpStream>, SocketAddr)> {
-        let rx = self.rx.lock().expect("mock lock");
+        let rx = crate::sync::lock(&self.rx);
         match rx.recv() {
             Ok((stream, peer)) => Ok((Box::new(stream), peer)),
             Err(_) => Err(err(ErrorKind::Other, "accept")),
@@ -290,7 +290,7 @@ impl Drop for MockTcpListener {
     fn drop(&mut self) {
         // Free the address so a later `tcp_listen` on the same addr in
         // the same test process doesn't spuriously see AddrInUse.
-        registry().lock().expect("mock lock").remove(&self.addr);
+        crate::sync::lock(registry()).remove(&self.addr);
     }
 }
 
@@ -360,7 +360,7 @@ pub struct MockUnixListener {
 
 impl UnixListener for MockUnixListener {
     fn accept(&self) -> Result<(Box<dyn UnixStream>, Option<PathBuf>)> {
-        let rx = self.rx.lock().expect("mock lock");
+        let rx = crate::sync::lock(&self.rx);
         match rx.recv() {
             Ok((stream, peer)) => Ok((Box::new(stream), peer)),
             Err(_) => Err(err(ErrorKind::Other, "accept")),
@@ -385,10 +385,7 @@ impl Drop for MockUnixListener {
         // here already reaches the same end state a real backend's
         // probe-then-unlink dance reaches, without needing to fake the
         // probe.
-        unix_registry()
-            .lock()
-            .expect("mock lock")
-            .remove(&self.path);
+        crate::sync::lock(unix_registry()).remove(&self.path);
     }
 }
 
@@ -408,14 +405,14 @@ impl UdpSocket for MockUdpSocket {
         // `addr` is not an error (there is no listen/accept handshake
         // to fail), the datagram is just dropped, exactly as it would
         // be by a real OS routing it nowhere.
-        if let Some(tx) = udp_registry().lock().expect("mock lock").get(&addr) {
+        if let Some(tx) = crate::sync::lock(udp_registry()).get(&addr) {
             let _ = tx.send((buf.to_vec(), self.local));
         }
         Ok(buf.len())
     }
 
     fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        let rx = self.rx.lock().expect("mock lock");
+        let rx = crate::sync::lock(&self.rx);
         match rx.recv() {
             Ok((data, peer)) => {
                 // Truncate to `buf`'s length, matching a real
@@ -438,10 +435,7 @@ impl Drop for MockUdpSocket {
     fn drop(&mut self) {
         // Free the address so a later `udp_bind` on the same addr in
         // the same test process doesn't spuriously see `AddrInUse`.
-        udp_registry()
-            .lock()
-            .expect("mock lock")
-            .remove(&self.local);
+        crate::sync::lock(udp_registry()).remove(&self.local);
     }
 }
 

@@ -221,17 +221,17 @@ impl Spawner for WindowsSpawner {
         // Raw handle values, one pass; the `&mut children` this method
         // holds keeps every handle open across the wait (the contract
         // `sys::proc::wait_many` documents).
-        let handles: Vec<_> = children
-            .iter_mut()
-            .map(|child| {
-                child
-                    .as_any_mut()
-                    .downcast_mut::<WindowsChild>()
-                    .expect("gated above")
-                    .process
-                    .as_raw()
-            })
-            .collect();
+        let mut handles: Vec<_> = Vec::with_capacity(children.len());
+        for child in children.iter_mut() {
+            let native = child.as_any_mut().downcast_mut::<WindowsChild>().ok_or_else(|| {
+                PlatformError::new(
+                    ErrorKind::Other,
+                    OsCode::None,
+                    "wait_any: child type changed between the gating pass and the native pass",
+                )
+            })?;
+            handles.push(native.process.as_raw());
+        }
         match proc::wait_many(&handles, timeout)? {
             Some(index) => {
                 children[index].try_wait()?;
