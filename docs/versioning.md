@@ -193,12 +193,12 @@ capability than its pinned `rusty_libc` actually has.
   cut when an external consumer is actually about to pin against that
   state. This avoids a graveyard of tags nobody ever references, while
   guaranteeing a tag exists by the time anything needs one.
-- **`CHANGELOG.md` (new, to add) records every version bump** in the
-  PAL group and in `winargv`/`coreutils` independently — one entry per
-  `y` (or `z`) bump, named for the PR/feature that caused it, in the
-  style the worked example in §2 already previews. This is the
-  practical answer to "what changed at 0.4.0 vs 0.5.0" that skimming
-  git log across a dozen PRs doesn't give a consumer for free.
+- **`CHANGELOG.md` records every version bump** in the PAL group and in
+  `winargv`/`coreutils` independently — one entry per `y` (or `z`)
+  bump, named for the PR/feature that caused it, in the style the
+  worked example in §2 already previews. This is the practical answer
+  to "what changed at 0.4.0 vs 0.5.0" that skimming git log across a
+  dozen PRs doesn't give a consumer for free.
 
 ## What this document doesn't decide
 

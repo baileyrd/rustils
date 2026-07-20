@@ -1,7 +1,10 @@
 [package]
 name = "coreutils"
 description = "Reference consumer and M1 exercise ground (RFC v2 §3). Not a uutils competitor."
-version.workspace = true
+# Independent of the PAL group's version — see docs/versioning.md §1
+# (an internal reference-consumer, not depended on outside this repo)
+# and CHANGELOG.md.
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
