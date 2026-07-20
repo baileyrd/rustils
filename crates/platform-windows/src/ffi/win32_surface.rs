@@ -69,3 +69,19 @@ pub use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 // backend code.
 pub use windows_sys::Win32::Foundation::LocalFree;
 pub use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+
+// Net surface, TCP slice (RFC v2 R5+, D16). Winsock is a distinct
+// subsystem from every other admission above: it needs its own
+// process-lifetime init/teardown (`WSAStartup`/`WSACleanup`, called
+// once and refcounted — `sys::net`'s doc comment has the lifecycle
+// story) and its own error-code space (`WSAGetLastError`, not
+// `GetLastError`).
+pub use windows_sys::Win32::Networking::WinSock::{
+    accept, bind, closesocket, connect, getpeername, getsockname, listen, recv, send, setsockopt,
+    socket, WSACleanup, WSAGetLastError, WSAStartup, AF_INET, AF_INET6, INVALID_SOCKET, IN_ADDR,
+    IN_ADDR_0, IPPROTO_TCP, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_IN6_0, SOCKET,
+    SOCK_STREAM, SOL_SOCKET, SOMAXCONN, SO_REUSEADDR, TCP_NODELAY, WSADATA, WSAEACCES,
+    WSAEADDRINUSE, WSAEADDRNOTAVAIL, WSAECONNABORTED, WSAECONNREFUSED, WSAECONNRESET, WSAEINTR,
+    WSAEINVAL, WSAENOTCONN, WSAETIMEDOUT, WSAEWOULDBLOCK,
+};
+pub use windows_sys::Win32::Networking::WinSock::{IN6_ADDR, IN6_ADDR_0};

@@ -13,11 +13,13 @@
 #![forbid(unsafe_code)]
 
 pub mod fs;
+pub mod net;
 pub mod process;
 pub mod signals;
 pub mod term;
 
 pub use fs::MockDir;
+pub use net::MockNet;
 pub use process::MockSpawner;
 pub use signals::MockSignalSource;
 pub use term::MockTerminal;

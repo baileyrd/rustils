@@ -1,0 +1,339 @@
+//! Raw TCP socket primitives over Winsock (RFC v2 R5+, D16).
+//!
+//! Winsock needs one-time process-lifetime initialization
+//! (`WSAStartup`) before any other call in this module — [`ensure_wsa_started`]
+//! does that lazily, once, via [`std::sync::Once`]. There is no matching
+//! `WSACleanup`: the OS tears down every socket and the Winsock DLL's
+//! state at process exit regardless, the same pragmatic choice std's own
+//! networking and the wider Windows-Rust ecosystem (mio, tokio) make —
+//! a `WSACleanup` racing in-flight sockets on other threads at shutdown
+//! is a real hazard `WSAStartup`-once-and-never-clean is not.
+
+#![allow(unsafe_code)]
+
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::sync::Once;
+
+use platform::error::{ErrorKind, OsCode, PlatformError, Result};
+
+use crate::ffi::win32_surface as w;
+
+fn ensure_wsa_started() {
+    static START: Once = Once::new();
+    START.call_once(|| {
+        // SAFETY: `WSADATA` is a plain-old-data struct for which
+        // all-zeroes is a valid (if meaningless) value; `WSAStartup`
+        // overwrites it on success.
+        let mut data: w::WSADATA = unsafe { std::mem::zeroed() };
+        // SAFETY: `data` is a valid out-pointer; `0x0202` requests
+        // Winsock 2.2, the only version this module's calls target.
+        let r = unsafe { w::WSAStartup(0x0202, &mut data) };
+        // A `WSAStartup` failure here is unrecoverable for this whole
+        // module (every socket call needs it); the same "this really
+        // shouldn't happen, and there is no sane fallback" territory
+        // `platform-windows` treats as a panic elsewhere it can't
+        // thread a `Result` through initialization state.
+        assert_eq!(r, 0, "WSAStartup failed with error {r}");
+    });
+}
+
+fn wsa_err(op: &'static str) -> PlatformError {
+    // SAFETY: `WSAGetLastError` takes no arguments and has no
+    // preconditions.
+    let code = unsafe { w::WSAGetLastError() };
+    let kind = match code {
+        w::WSAECONNREFUSED => ErrorKind::ConnectionRefused,
+        w::WSAECONNRESET => ErrorKind::ConnectionReset,
+        w::WSAECONNABORTED => ErrorKind::ConnectionAborted,
+        w::WSAENOTCONN => ErrorKind::NotConnected,
+        w::WSAEADDRINUSE => ErrorKind::AddrInUse,
+        w::WSAEADDRNOTAVAIL => ErrorKind::AddrNotAvailable,
+        w::WSAETIMEDOUT => ErrorKind::TimedOut,
+        w::WSAEACCES => ErrorKind::PermissionDenied,
+        w::WSAEINVAL => ErrorKind::InvalidInput,
+        w::WSAEWOULDBLOCK => ErrorKind::WouldBlock,
+        w::WSAEINTR => ErrorKind::Interrupted,
+        _ => ErrorKind::Other,
+    };
+    PlatformError::new(kind, OsCode::Win32(code as u32), op)
+}
+
+/// An owned Winsock `SOCKET`, closed on drop.
+pub struct OwnedSocket(w::SOCKET);
+
+impl Drop for OwnedSocket {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is a valid, owned socket not used again after
+        // this call.
+        unsafe {
+            w::closesocket(self.0);
+        }
+    }
+}
+
+impl OwnedSocket {
+    fn raw(&self) -> w::SOCKET {
+        self.0
+    }
+}
+
+/// Pack a [`SocketAddr`] into a `SOCKADDR_IN`/`SOCKADDR_IN6`-shaped
+/// byte buffer and its length — the pair `connect`/`bind` want. A plain
+/// byte buffer (not a `sockaddr_storage`-equivalent union type — Winsock
+/// has no single admitted one here) sized to the larger variant.
+fn to_sockaddr(addr: SocketAddr) -> ([u8; 28], i32) {
+    let mut buf = [0u8; 28];
+    let len = match addr {
+        SocketAddr::V4(v4) => {
+            let sin = w::SOCKADDR_IN {
+                sin_family: w::AF_INET,
+                sin_port: v4.port().to_be(),
+                sin_addr: w::IN_ADDR {
+                    S_un: w::IN_ADDR_0 {
+                        // Same reasoning as the Linux backend's
+                        // `to_sockaddr`: `from_ne_bytes` reproduces the
+                        // exact in-memory byte pattern the octets are,
+                        // on any host — not a byte-order conversion.
+                        S_addr: u32::from_ne_bytes(v4.ip().octets()),
+                    },
+                },
+                sin_zero: [0; 8],
+            };
+            // SAFETY: `buf` is at least `size_of::<SOCKADDR_IN>()` bytes
+            // (28 covers it, checked by the `debug_assert!` below);
+            // writing a `SOCKADDR_IN` into its start and later reading
+            // it back that way is exactly how the API pair on either
+            // side of this buffer interprets it.
+            unsafe {
+                debug_assert!(buf.len() >= std::mem::size_of::<w::SOCKADDR_IN>());
+                std::ptr::write(buf.as_mut_ptr().cast::<w::SOCKADDR_IN>(), sin);
+            }
+            std::mem::size_of::<w::SOCKADDR_IN>()
+        }
+        SocketAddr::V6(v6) => {
+            let sin6 = w::SOCKADDR_IN6 {
+                sin6_family: w::AF_INET6,
+                sin6_port: v6.port().to_be(),
+                sin6_flowinfo: v6.flowinfo(),
+                sin6_addr: w::IN6_ADDR {
+                    u: w::IN6_ADDR_0 {
+                        Byte: v6.ip().octets(),
+                    },
+                },
+                // `Anonymous.sin6_scope_id` is the only member this
+                // backend ever writes or reads back (`from_sockaddr`);
+                // the union's other view (`sin6_scope_struct`) is never
+                // touched, so writing this one is fully initializing.
+                Anonymous: w::SOCKADDR_IN6_0 {
+                    sin6_scope_id: v6.scope_id(),
+                },
+            };
+            // SAFETY: see the V4 arm above; `SOCKADDR_IN6` is also
+            // within `buf`'s 28 bytes.
+            unsafe {
+                debug_assert!(buf.len() >= std::mem::size_of::<w::SOCKADDR_IN6>());
+                std::ptr::write(buf.as_mut_ptr().cast::<w::SOCKADDR_IN6>(), sin6);
+            }
+            std::mem::size_of::<w::SOCKADDR_IN6>()
+        }
+    };
+    (buf, len as i32)
+}
+
+/// Unpack a Winsock-filled address buffer (from `accept`/`getpeername`/
+/// `getsockname`) back into a [`SocketAddr`].
+fn from_sockaddr(buf: &[u8; 28]) -> Result<SocketAddr> {
+    // SAFETY: every variant of the address family union starts with the
+    // same `sa_family`/`sin_family`-shaped `u16` at offset 0 — reading
+    // it through any one of the pointer types before deciding which
+    // variant the rest of `buf` holds is standard sockaddr practice.
+    let family = unsafe { *buf.as_ptr().cast::<u16>() };
+    match family {
+        w::AF_INET => {
+            // SAFETY: `family == AF_INET` means Winsock filled this
+            // buffer as a `SOCKADDR_IN`, which fits within `buf`'s 28
+            // bytes (the same layout `to_sockaddr`'s V4 arm writes).
+            let sin = unsafe { &*buf.as_ptr().cast::<w::SOCKADDR_IN>() };
+            // SAFETY: reading the union's `S_addr` field — the only one
+            // any of this module's code ever writes into it.
+            let s_addr = unsafe { sin.sin_addr.S_un.S_addr };
+            let ip = Ipv4Addr::from(s_addr.to_ne_bytes());
+            Ok(SocketAddr::V4(SocketAddrV4::new(
+                ip,
+                u16::from_be(sin.sin_port),
+            )))
+        }
+        w::AF_INET6 => {
+            // SAFETY: see the V4 arm above, for `SOCKADDR_IN6`.
+            let sin6 = unsafe { &*buf.as_ptr().cast::<w::SOCKADDR_IN6>() };
+            // SAFETY: reading the union's `Byte` field — the only one
+            // any of this module's code ever writes into it.
+            let octets = unsafe { sin6.sin6_addr.u.Byte };
+            let ip = Ipv6Addr::from(octets);
+            Ok(SocketAddr::V6(SocketAddrV6::new(
+                ip,
+                u16::from_be(sin6.sin6_port),
+                sin6.sin6_flowinfo,
+                // SAFETY: reading the union's scope-id-bearing member —
+                // this backend never writes the alternate view.
+                unsafe { sin6.Anonymous.sin6_scope_id },
+            )))
+        }
+        _ => Err(PlatformError::new(
+            ErrorKind::Other,
+            OsCode::None,
+            "unrecognized address family",
+        )),
+    }
+}
+
+fn new_tcp_socket(addr: SocketAddr) -> Result<OwnedSocket> {
+    ensure_wsa_started();
+    let family = match addr {
+        SocketAddr::V4(_) => w::AF_INET,
+        SocketAddr::V6(_) => w::AF_INET6,
+    };
+    // SAFETY: plain integer arguments, no memory referenced.
+    let sock = unsafe { w::socket(i32::from(family), w::SOCK_STREAM, w::IPPROTO_TCP) };
+    if sock == w::INVALID_SOCKET {
+        return Err(wsa_err("socket"));
+    }
+    Ok(OwnedSocket(sock))
+}
+
+/// `socket` + `connect`, blocking until the connection completes or
+/// fails.
+pub fn tcp_connect(addr: SocketAddr) -> Result<OwnedSocket> {
+    let sock = new_tcp_socket(addr)?;
+    let (buf, len) = to_sockaddr(addr);
+    // SAFETY: `buf` holds a valid `SOCKADDR_IN`/`SOCKADDR_IN6` for
+    // exactly the first `len` bytes (`to_sockaddr`'s contract); `sock`
+    // is a freshly created, valid socket.
+    let r = unsafe { w::connect(sock.raw(), buf.as_ptr().cast::<w::SOCKADDR>(), len) };
+    if r != 0 {
+        return Err(wsa_err("connect"));
+    }
+    Ok(sock)
+}
+
+/// `socket` + `SO_REUSEADDR` + `bind` + `listen(SOMAXCONN)`.
+pub fn tcp_listen(addr: SocketAddr) -> Result<OwnedSocket> {
+    let sock = new_tcp_socket(addr)?;
+    let reuse: i32 = 1;
+    // SAFETY: `&reuse` is a valid `i32`-sized buffer outliving the call;
+    // `sock` is a valid, freshly created socket.
+    let r = unsafe {
+        w::setsockopt(
+            sock.raw(),
+            w::SOL_SOCKET,
+            w::SO_REUSEADDR,
+            (&reuse as *const i32).cast(),
+            std::mem::size_of::<i32>() as i32,
+        )
+    };
+    if r != 0 {
+        return Err(wsa_err("setsockopt(SO_REUSEADDR)"));
+    }
+
+    let (buf, len) = to_sockaddr(addr);
+    // SAFETY: see `tcp_connect`.
+    let r = unsafe { w::bind(sock.raw(), buf.as_ptr().cast::<w::SOCKADDR>(), len) };
+    if r != 0 {
+        return Err(wsa_err("bind"));
+    }
+    // SAFETY: `sock` is a valid, bound socket.
+    let r = unsafe { w::listen(sock.raw(), w::SOMAXCONN as i32) };
+    if r != 0 {
+        return Err(wsa_err("listen"));
+    }
+    Ok(sock)
+}
+
+/// `accept`, returning the accepted connection and the peer's address.
+pub fn tcp_accept(listen_sock: &OwnedSocket) -> Result<(OwnedSocket, SocketAddr)> {
+    let mut buf = [0u8; 28];
+    let mut len = buf.len() as i32;
+    // SAFETY: `buf`/`len` are valid, exclusively borrowed out-params
+    // Winsock fills; `listen_sock` is a valid, listening socket.
+    let sock = unsafe {
+        w::accept(
+            listen_sock.raw(),
+            buf.as_mut_ptr().cast::<w::SOCKADDR>(),
+            &mut len,
+        )
+    };
+    if sock == w::INVALID_SOCKET {
+        return Err(wsa_err("accept"));
+    }
+    let peer = from_sockaddr(&buf)?;
+    Ok((OwnedSocket(sock), peer))
+}
+
+/// `setsockopt(IPPROTO_TCP, TCP_NODELAY, ...)`.
+pub fn set_nodelay(sock: &OwnedSocket, nodelay: bool) -> Result<()> {
+    let value: i32 = i32::from(nodelay);
+    // SAFETY: `&value` is a valid `i32`-sized buffer outliving the call;
+    // `sock` is caller-owned.
+    let r = unsafe {
+        w::setsockopt(
+            sock.raw(),
+            w::IPPROTO_TCP,
+            w::TCP_NODELAY,
+            (&value as *const i32).cast(),
+            std::mem::size_of::<i32>() as i32,
+        )
+    };
+    if r != 0 {
+        return Err(wsa_err("setsockopt(TCP_NODELAY)"));
+    }
+    Ok(())
+}
+
+/// `getpeername`.
+pub fn peer_addr(sock: &OwnedSocket) -> Result<SocketAddr> {
+    let mut buf = [0u8; 28];
+    let mut len = buf.len() as i32;
+    // SAFETY: `buf`/`len` are valid, exclusively borrowed out-params
+    // Winsock fills; `sock` is a valid, connected socket.
+    let r = unsafe { w::getpeername(sock.raw(), buf.as_mut_ptr().cast::<w::SOCKADDR>(), &mut len) };
+    if r != 0 {
+        return Err(wsa_err("getpeername"));
+    }
+    from_sockaddr(&buf)
+}
+
+/// `getsockname`.
+pub fn local_addr(sock: &OwnedSocket) -> Result<SocketAddr> {
+    let mut buf = [0u8; 28];
+    let mut len = buf.len() as i32;
+    // SAFETY: see `peer_addr`.
+    let r = unsafe { w::getsockname(sock.raw(), buf.as_mut_ptr().cast::<w::SOCKADDR>(), &mut len) };
+    if r != 0 {
+        return Err(wsa_err("getsockname"));
+    }
+    from_sockaddr(&buf)
+}
+
+/// `recv`.
+pub fn read(sock: &OwnedSocket, buf: &mut [u8]) -> Result<usize> {
+    let len = i32::try_from(buf.len()).unwrap_or(i32::MAX);
+    // SAFETY: `buf` is a valid writable region of at least `len` bytes
+    // outliving the call; `sock` is caller-owned.
+    let n = unsafe { w::recv(sock.raw(), buf.as_mut_ptr().cast(), len, 0) };
+    if n < 0 {
+        return Err(wsa_err("recv"));
+    }
+    Ok(n as usize)
+}
+
+/// `send`.
+pub fn write(sock: &OwnedSocket, buf: &[u8]) -> Result<usize> {
+    let len = i32::try_from(buf.len()).unwrap_or(i32::MAX);
+    // SAFETY: `buf` is a valid readable region of at least `len` bytes
+    // outliving the call; `sock` is caller-owned.
+    let n = unsafe { w::send(sock.raw(), buf.as_ptr().cast(), len, 0) };
+    if n < 0 {
+        return Err(wsa_err("send"));
+    }
+    Ok(n as usize)
+}

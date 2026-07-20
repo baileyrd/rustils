@@ -252,6 +252,42 @@ as `S` is close to a no-op. Do that convergence PR immediately after
 the surface lands, before shh/rusty_tail (which also need Phase 6/7/8
 pieces and would otherwise block the "does this trait work" signal).
 
+**Landed (TCP slice) 2026-07-19.** Scoped to TCP only this slice — UDP
+datagram and Unix sockets (mode + stale-cleanup bind) deferred, the same
+phased-slicing judgment call the Fs surface made for symlinks/`access`.
+Added:
+
+- `platform::net::{Net, TcpStream, TcpListener}` — a stateless
+  capability-factory trait, the same shape as `Spawner`/`Dir`.
+  `TcpStream`/`TcpListener` are `Send` (unlike `Dir`/`Child`): the
+  accept-then-hand-off-to-a-worker-thread pattern is this surface's
+  entire reason for existing, caught as a real compile error by a live
+  scratch test before the bound was added, not a hypothetical.
+- Linux: raw `libc` socket calls (`socket`/`bind`/`listen`/`accept4`/
+  `connect`/`getsockname`/`getpeername`/`setsockopt`). Not track-p-gated
+  at all — one implementation for both configurations, `fsync`'s
+  precedent: sockets were never in rush's required surface per
+  rusty_libc's own `DESIGN.md`, so there's nothing to route through it
+  here. Strace-verified: a real loopback round trip fires
+  `socket`→`setsockopt(SO_REUSEADDR)`→`bind`→`listen`→`getsockname` on
+  the listen side and `socket`→`connect`→`setsockopt(TCP_NODELAY)` on
+  the client side, with `accept4` on the accepting thread.
+- Windows: raw Winsock2 (`WSAStartup`/`socket`/`bind`/`listen`/`accept`/
+  `connect`/`getsockname`/`getpeername`/`setsockopt`/`recv`/`send`).
+  `WSAStartup` is called lazily, exactly once, via `std::sync::Once`,
+  deliberately with no matching `WSACleanup` — the OS tears down Winsock
+  state at process exit regardless, and racing `WSACleanup` against
+  in-flight sockets on other threads at shutdown is a real hazard
+  "never clean up" avoids (mio/tokio/std's own Windows networking make
+  the same call). Cross-compile-checked only — no windows-latest CI run
+  has exercised this path yet, unlike every other backend piece landed
+  so far.
+- Mock: an in-memory duplex-channel implementation, the same "real
+  behavior, no OS calls" contract `MockDir` has for the filesystem —
+  a process-global registry of listening addresses plus a per-connection
+  `mpsc` channel pair, with real connection-refused/addr-in-use/
+  end-of-stream semantics.
+
 ## Phase 6 — Security surface (D15)
 
 **Lands here**, staged narrow-to-wide:

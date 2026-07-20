@@ -327,6 +327,11 @@ mode-0600-with-stale-cleanup bind (rusty_tail LocalAPI, shh agent).
 plain TCP; rdp's rustls is optional and injected. rusty_rdp converges
 cheapest — its `net.rs` is already generic over `Read + Write`.
 
+**Landed (TCP slice) 2026-07-19** — `platform::net::{Net, TcpStream,
+TcpListener}`, see `docs/behavior/net.md` and the convergence roadmap's
+Phase 5 entry for the full contract and backend notes. UDP datagram and
+Unix sockets remain future slices of this same decision.
+
 ### Cross-cutting notes from the full-ecosystem survey
 
 - **nexus re-derived already-landed rustils work**: its

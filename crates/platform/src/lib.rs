@@ -14,6 +14,7 @@
 pub mod error;
 pub mod events;
 pub mod fs;
+pub mod net;
 pub mod process;
 pub mod term;
 

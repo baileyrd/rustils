@@ -36,6 +36,8 @@ pub mod ffi;
 #[cfg(windows)]
 pub mod fs;
 #[cfg(windows)]
+mod net;
+#[cfg(windows)]
 mod process;
 #[cfg(windows)]
 mod signals;
@@ -49,6 +51,8 @@ pub use winargv;
 
 #[cfg(windows)]
 pub use fs::{WindowsDir, WindowsFile};
+#[cfg(windows)]
+pub use net::{WindowsNet, WindowsTcpListener, WindowsTcpStream};
 #[cfg(windows)]
 pub use process::{WindowsChild, WindowsSpawner};
 #[cfg(windows)]

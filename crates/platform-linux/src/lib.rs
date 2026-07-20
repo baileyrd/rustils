@@ -18,11 +18,13 @@ pub mod ffi;
 pub mod sys;
 
 mod fs;
+mod net;
 mod process;
 mod signals;
 mod term;
 
 pub use fs::{LinuxDir, LinuxFile};
+pub use net::{LinuxNet, LinuxTcpListener, LinuxTcpStream};
 pub use process::{LinuxChild, LinuxSpawner};
 pub use signals::LinuxSignalSource;
 pub use term::LinuxTerminal;
