@@ -125,10 +125,15 @@ real wrapper call now, live-verified via strace (a real `read_dir`
 firing `getdents64`, a real two-child `wait_any` firing `pidfd_open`
 for each pid).
 
-Phase 5 landed the first slice of the `Net` surface (D16): `Net`,
-`TcpStream`, `TcpListener` for TCP connect/listen/accept/`set_nodelay`,
-deliberately scoped to TCP only this slice (UDP datagram and Unix
-sockets are future work on the same decision) and carrying no TLS
+Phase 5 landed the `Net` surface (D16) in two slices. The first shipped
+`Net`, `TcpStream`, `TcpListener` for TCP connect/listen/accept/
+`set_nodelay`. A follow-on slice added `Net::unix_connect`/`unix_listen`,
+`UnixStream`, `UnixListener` for Unix domain stream sockets — mode-`0600`
+bind and automatic stale-socket-file cleanup (a throwaway probe connect
+tells a dead listener's leftover file apart from a live one; Linux
+narrows via `chmod`, a registered divergence since Windows' `AF_UNIX`
+bind has no mode-bit equivalent to narrow — `docs/divergences.md` #007).
+UDP datagram sockets remain future work on the same decision. No TLS
 concept at all — the four named consumers (shh, rusty_tail, rusty_rdp,
 rusty_llama's optional server) all bring or inject their own wire
 crypto. Linux uses raw `libc` socket calls, not track-p-gated (sockets

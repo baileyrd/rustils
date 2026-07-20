@@ -1,4 +1,6 @@
-//! Raw TCP socket primitives over Winsock (RFC v2 R5+, D16).
+//! Raw TCP and Unix domain socket primitives over Winsock (RFC v2 R5+,
+//! D16; the Unix domain slice is a D16 follow-on riding the same
+//! Winsock plumbing).
 //!
 //! Winsock needs one-time process-lifetime initialization
 //! (`WSAStartup`) before any other call in this module — [`ensure_wsa_started`]
@@ -8,15 +10,28 @@
 //! networking and the wider Windows-Rust ecosystem (mio, tokio) make —
 //! a `WSACleanup` racing in-flight sockets on other threads at shutdown
 //! is a real hazard `WSAStartup`-once-and-never-clean is not.
+//!
+//! `AF_UNIX` `bind`'s `AddrInUse` doesn't distinguish a path a live
+//! listener holds from one a dead listener left behind — Winsock's
+//! `bind` can't tell the two apart any more than `bind(2)` can on Unix.
+//! `unix_listen` resolves that itself with a throwaway probe `connect`
+//! (`is_stale_socket`, below): `WSAECONNREFUSED` means nothing is
+//! listening (stale), so the leftover file is deleted and the bind
+//! retried exactly once; a successful connect means a live listener
+//! owns the path, left untouched. Mirrors the Linux backend's
+//! `sys::net::is_stale_socket` — same reasoning, same one-probe/
+//! one-retry shape, `DeleteFileW` in place of `unlinkat`.
 
 #![allow(unsafe_code)]
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::path::{Path, PathBuf};
 use std::sync::Once;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 
 use crate::ffi::win32_surface as w;
+use crate::util::wide::to_wide_nul;
 
 fn ensure_wsa_started() {
     static START: Once = Once::new();
@@ -336,4 +351,260 @@ pub fn write(sock: &OwnedSocket, buf: &[u8]) -> Result<usize> {
         return Err(wsa_err("send"));
     }
     Ok(n as usize)
+}
+
+// --- Unix domain sockets (RFC v2 R5+, D16 follow-on) -----------------
+//
+// `read`/`write`/`recv`/`send` above are already family-agnostic (a
+// connected socket's fd/`SOCKET` is just bytes in and out regardless of
+// `AF_INET`/`AF_INET6`/`AF_UNIX`), so this section only adds what is
+// actually `AF_UNIX`-specific: the `SOCKADDR_UN` <-> `Path` conversion,
+// and `connect`/`bind`+`listen`/`accept`/`getpeername`/`getsockname`
+// wired to that address type instead of `SocketAddr`'s.
+
+/// `sun_path`'s capacity in `SOCKADDR_UN` (`windows-sys`'s binding of
+/// `afunix.h`, the same 108 bytes every BSD-derived `sockaddr_un` uses).
+/// One byte of that is reserved for the NUL terminator this module
+/// always writes, so `107` is the longest path actually representable.
+const UNIX_PATH_CAP: usize = 108;
+
+/// Pack a filesystem [`Path`] into a `SOCKADDR_UN`-shaped byte buffer —
+/// the pointer `connect`/`bind` want.
+///
+/// Unlike [`to_sockaddr`], which carries any losslessly-representable
+/// `OsStr` through WTF-16, `AF_UNIX` paths travel through `sun_path`'s
+/// narrow (non-UTF-16) `i8` bytes — a real, OS-level narrowing this
+/// backend cannot route around, not an implementation shortcut. A path
+/// that is not valid UTF-8, or that does not fit `sun_path` alongside
+/// its NUL terminator, is rejected here, before any socket call.
+fn to_sockaddr_un(path: &Path) -> Result<[u8; std::mem::size_of::<w::SOCKADDR_UN>()]> {
+    let s = path.to_str().ok_or_else(|| {
+        PlatformError::new(
+            ErrorKind::InvalidInput,
+            OsCode::None,
+            "AF_UNIX path is not valid UTF-8",
+        )
+    })?;
+    let bytes = s.as_bytes();
+    if bytes.len() > UNIX_PATH_CAP - 1 {
+        return Err(PlatformError::new(
+            ErrorKind::InvalidInput,
+            OsCode::None,
+            "AF_UNIX path exceeds sun_path's 107-byte usable capacity",
+        ));
+    }
+
+    let mut sun_path = [0i8; UNIX_PATH_CAP];
+    for (dst, &b) in sun_path.iter_mut().zip(bytes) {
+        *dst = b as i8;
+    }
+    let sun = w::SOCKADDR_UN {
+        sun_family: w::AF_UNIX,
+        sun_path,
+    };
+    let mut buf = [0u8; std::mem::size_of::<w::SOCKADDR_UN>()];
+    // SAFETY: `buf` is exactly `size_of::<SOCKADDR_UN>()` bytes;
+    // writing a `SOCKADDR_UN` into its start and later reading it back
+    // that way is exactly how the API pair on either side of this
+    // buffer interprets it.
+    unsafe {
+        std::ptr::write(buf.as_mut_ptr().cast::<w::SOCKADDR_UN>(), sun);
+    }
+    Ok(buf)
+}
+
+/// Unpack a Winsock-filled `SOCKADDR_UN` buffer (from `accept`/
+/// `getpeername`/`getsockname`) back into a path, or `None` for an
+/// anonymous (unbound) peer — `len` is at most `sun_family`'s two bytes
+/// in that case, mirroring `platform::net::UnixStream::peer_addr`'s
+/// documented `Ok(None)` case.
+fn from_sockaddr_un(
+    buf: &[u8; std::mem::size_of::<w::SOCKADDR_UN>()],
+    len: i32,
+) -> Result<Option<PathBuf>> {
+    let family_size = std::mem::size_of::<u16>();
+    let len = usize::try_from(len).unwrap_or(0);
+    if len <= family_size {
+        return Ok(None);
+    }
+    // SAFETY: every variant of the address family union starts with the
+    // same `sa_family`/`sun_family`-shaped `u16` at offset 0 — reading
+    // it before trusting the rest of `buf` is standard sockaddr
+    // practice, the same `from_sockaddr` above does for `AF_INET`/
+    // `AF_INET6`.
+    let family = unsafe { *buf.as_ptr().cast::<u16>() };
+    if family != w::AF_UNIX {
+        return Err(PlatformError::new(
+            ErrorKind::Other,
+            OsCode::None,
+            "unrecognized address family",
+        ));
+    }
+    let path_end = len.min(buf.len());
+    let mut path_bytes = &buf[family_size..path_end];
+    // Winsock's `sun_path` is NUL-terminated; trim the terminator (and
+    // anything Winsock left past it, though `len` should already stop
+    // there) rather than embedding it in the returned `PathBuf`.
+    if let Some(nul_pos) = path_bytes.iter().position(|&b| b == 0) {
+        path_bytes = &path_bytes[..nul_pos];
+    }
+    if path_bytes.is_empty() {
+        return Ok(None);
+    }
+    let s = std::str::from_utf8(path_bytes).map_err(|_| {
+        PlatformError::new(
+            ErrorKind::Other,
+            OsCode::None,
+            "AF_UNIX peer path is not valid UTF-8",
+        )
+    })?;
+    Ok(Some(PathBuf::from(s)))
+}
+
+fn new_unix_socket() -> Result<OwnedSocket> {
+    ensure_wsa_started();
+    // SAFETY: plain integer arguments, no memory referenced.
+    let sock = unsafe { w::socket(i32::from(w::AF_UNIX), w::SOCK_STREAM, 0) };
+    if sock == w::INVALID_SOCKET {
+        return Err(wsa_err("socket"));
+    }
+    Ok(OwnedSocket(sock))
+}
+
+/// `socket` + `connect`, blocking until the connection completes or
+/// fails.
+pub fn unix_connect(path: &Path) -> Result<OwnedSocket> {
+    let sock = new_unix_socket()?;
+    let buf = to_sockaddr_un(path)?;
+    // SAFETY: `buf` holds a valid `SOCKADDR_UN` for its entire length
+    // (`to_sockaddr_un`'s contract); `sock` is a freshly created, valid
+    // socket.
+    let r = unsafe {
+        w::connect(
+            sock.raw(),
+            buf.as_ptr().cast::<w::SOCKADDR>(),
+            buf.len() as i32,
+        )
+    };
+    if r != 0 {
+        return Err(wsa_err("connect"));
+    }
+    Ok(sock)
+}
+
+/// Probe whether the `AF_UNIX` path at `path` is a stale leftover file
+/// (no live listener) or genuinely held by one — see this module's doc
+/// comment for why a throwaway `connect` is the only way to tell.
+fn is_stale_socket(path: &Path) -> bool {
+    let Ok(probe) = new_unix_socket() else {
+        return false;
+    };
+    let Ok(buf) = to_sockaddr_un(path) else {
+        return false;
+    };
+    // SAFETY: `buf` holds a valid `SOCKADDR_UN` for its entire length
+    // (`to_sockaddr_un`'s contract); `probe` is a freshly created,
+    // valid, otherwise-unused socket.
+    let r = unsafe {
+        w::connect(
+            probe.raw(),
+            buf.as_ptr().cast::<w::SOCKADDR>(),
+            buf.len() as i32,
+        )
+    };
+    if r == 0 {
+        // A live listener accepted the probe; `probe`'s `Drop` closes
+        // it, ending the connection without disturbing the listener.
+        return false;
+    }
+    // SAFETY: `WSAGetLastError` takes no arguments and has no
+    // preconditions.
+    (unsafe { w::WSAGetLastError() }) == w::WSAECONNREFUSED
+}
+
+/// `socket` + `bind` (stale-cleanup retried once — see this module's doc
+/// comment) + `listen(SOMAXCONN)`.
+pub fn unix_listen(path: &Path) -> Result<OwnedSocket> {
+    let sock = new_unix_socket()?;
+    let buf = to_sockaddr_un(path)?;
+    // SAFETY: see `unix_connect`.
+    let mut r = unsafe {
+        w::bind(
+            sock.raw(),
+            buf.as_ptr().cast::<w::SOCKADDR>(),
+            buf.len() as i32,
+        )
+    };
+    // SAFETY: `WSAGetLastError` takes no arguments and has no
+    // preconditions.
+    if r != 0 && unsafe { w::WSAGetLastError() } == w::WSAEADDRINUSE && is_stale_socket(path) {
+        let wide = to_wide_nul(path.as_os_str());
+        // SAFETY: `wide` is a valid, NUL-terminated UTF-16 buffer
+        // outliving the call.
+        unsafe { w::DeleteFileW(wide.as_ptr()) };
+        // SAFETY: identical call to the one above; retried at most once.
+        r = unsafe {
+            w::bind(
+                sock.raw(),
+                buf.as_ptr().cast::<w::SOCKADDR>(),
+                buf.len() as i32,
+            )
+        };
+    }
+    if r != 0 {
+        return Err(wsa_err("bind"));
+    }
+    // SAFETY: `sock` is a valid, bound socket.
+    let r = unsafe { w::listen(sock.raw(), w::SOMAXCONN as i32) };
+    if r != 0 {
+        return Err(wsa_err("listen"));
+    }
+    Ok(sock)
+}
+
+/// `accept`, returning the accepted connection and the peer's path, if
+/// it bound to one.
+pub fn unix_accept(listen_sock: &OwnedSocket) -> Result<(OwnedSocket, Option<PathBuf>)> {
+    let mut buf = [0u8; std::mem::size_of::<w::SOCKADDR_UN>()];
+    let mut len = buf.len() as i32;
+    // SAFETY: `buf`/`len` are valid, exclusively borrowed out-params
+    // Winsock fills; `listen_sock` is a valid, listening socket.
+    let sock = unsafe {
+        w::accept(
+            listen_sock.raw(),
+            buf.as_mut_ptr().cast::<w::SOCKADDR>(),
+            &mut len,
+        )
+    };
+    if sock == w::INVALID_SOCKET {
+        return Err(wsa_err("accept"));
+    }
+    let peer = from_sockaddr_un(&buf, len)?;
+    Ok((OwnedSocket(sock), peer))
+}
+
+/// `getpeername`. `Ok(None)` when the peer connected from an unnamed
+/// (anonymous) `AF_UNIX` socket.
+pub fn unix_peer_addr(sock: &OwnedSocket) -> Result<Option<PathBuf>> {
+    let mut buf = [0u8; std::mem::size_of::<w::SOCKADDR_UN>()];
+    let mut len = buf.len() as i32;
+    // SAFETY: `buf`/`len` are valid, exclusively borrowed out-params
+    // Winsock fills; `sock` is a valid, connected socket.
+    let r = unsafe { w::getpeername(sock.raw(), buf.as_mut_ptr().cast::<w::SOCKADDR>(), &mut len) };
+    if r != 0 {
+        return Err(wsa_err("getpeername"));
+    }
+    from_sockaddr_un(&buf, len)
+}
+
+/// `getsockname`. `Ok(None)` when the socket is not bound to a path.
+pub fn unix_local_addr(sock: &OwnedSocket) -> Result<Option<PathBuf>> {
+    let mut buf = [0u8; std::mem::size_of::<w::SOCKADDR_UN>()];
+    let mut len = buf.len() as i32;
+    // SAFETY: see `unix_peer_addr`.
+    let r = unsafe { w::getsockname(sock.raw(), buf.as_mut_ptr().cast::<w::SOCKADDR>(), &mut len) };
+    if r != 0 {
+        return Err(wsa_err("getsockname"));
+    }
+    from_sockaddr_un(&buf, len)
 }

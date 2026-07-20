@@ -52,7 +52,9 @@ pub use winargv;
 #[cfg(windows)]
 pub use fs::{WindowsDir, WindowsFile};
 #[cfg(windows)]
-pub use net::{WindowsNet, WindowsTcpListener, WindowsTcpStream};
+pub use net::{
+    WindowsNet, WindowsTcpListener, WindowsTcpStream, WindowsUnixListener, WindowsUnixStream,
+};
 #[cfg(windows)]
 pub use process::{WindowsChild, WindowsSpawner};
 #[cfg(windows)]

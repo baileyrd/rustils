@@ -3,9 +3,10 @@
 
 use std::net::SocketAddr;
 use std::os::fd::OwnedFd;
+use std::path::{Path, PathBuf};
 
 use platform::error::Result;
-use platform::net::{Net, TcpListener, TcpStream};
+use platform::net::{Net, TcpListener, TcpStream, UnixListener, UnixStream};
 
 use crate::sys::fdio;
 use crate::sys::net as sysnet;
@@ -24,6 +25,16 @@ impl Net for LinuxNet {
     fn tcp_listen(&self, addr: SocketAddr) -> Result<Box<dyn TcpListener>> {
         let fd = sysnet::tcp_listen(addr)?;
         Ok(Box::new(LinuxTcpListener { fd }))
+    }
+
+    fn unix_connect(&self, path: &Path) -> Result<Box<dyn UnixStream>> {
+        let fd = sysnet::unix_connect(path)?;
+        Ok(Box::new(LinuxUnixStream { fd }))
+    }
+
+    fn unix_listen(&self, path: &Path) -> Result<Box<dyn UnixListener>> {
+        let fd = sysnet::unix_listen(path)?;
+        Ok(Box::new(LinuxUnixListener { fd }))
     }
 }
 
@@ -71,5 +82,47 @@ impl TcpListener for LinuxTcpListener {
 
     fn local_addr(&self) -> Result<SocketAddr> {
         sysnet::local_addr(&self.fd)
+    }
+}
+
+/// A connected Unix domain stream socket backed by an `OwnedFd`. Public
+/// for the same std-interop reasoning `LinuxTcpStream` documents.
+pub struct LinuxUnixStream {
+    fd: OwnedFd,
+}
+
+impl UnixStream for LinuxUnixStream {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        // Same reasoning as `LinuxTcpStream::read`: a connected AF_UNIX
+        // socket's fd is read exactly like a plain fd.
+        fdio::read(&self.fd, buf)
+    }
+
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        fdio::write(&self.fd, buf)
+    }
+
+    fn peer_addr(&self) -> Result<Option<PathBuf>> {
+        sysnet::unix_peer_addr(&self.fd)
+    }
+
+    fn local_addr(&self) -> Result<Option<PathBuf>> {
+        sysnet::unix_local_addr(&self.fd)
+    }
+}
+
+/// A listening Unix domain socket backed by an `OwnedFd`.
+pub struct LinuxUnixListener {
+    fd: OwnedFd,
+}
+
+impl UnixListener for LinuxUnixListener {
+    fn accept(&self) -> Result<(Box<dyn UnixStream>, Option<PathBuf>)> {
+        let (fd, peer) = sysnet::unix_accept(&self.fd)?;
+        Ok((Box::new(LinuxUnixStream { fd }), peer))
+    }
+
+    fn local_addr(&self) -> Result<Option<PathBuf>> {
+        sysnet::unix_local_addr(&self.fd)
     }
 }

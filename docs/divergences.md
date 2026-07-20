@@ -144,3 +144,26 @@ implementation convenience.
   difference never surfaces to a consumer.
 - **Accepted**: 2026-07-19, with the faccessat slice's sibling
   (`test`-predicates donor material, D11, convergence roadmap).
+
+## 007 — no mode-bit narrowing on a Windows `AF_UNIX` bind
+
+- **Linux**: `Net::unix_listen` narrows the freshly bound socket file to
+  `0600` (owner read/write only) via `chmod`, right after `bind` — the
+  mode-0600 half of D16's agreed shape (rusty_tail's LocalAPI, shh's
+  agent socket), since a bare `bind` otherwise leaves the file at
+  whatever the process umask allows.
+- **Windows**: Winsock's `AF_UNIX` bind has no POSIX-chmod equivalent to
+  narrow the bound file with — the same underlying gap `unix_mode`
+  (#006) already registers, applied here to a socket file instead of an
+  arbitrary one. `unix_listen` still succeeds; the bound file is left at
+  the filesystem's own ACL defaults instead of forced to owner-only.
+- **OS limitation**: identical to #006's — no POSIX mode-bit model on
+  Windows at all, so there is nothing for `chmod`'s narrowing step to
+  target.
+- **Not a divergence**: the stale-cleanup-bind half of the same D16
+  shape — both backends implement it identically (a throwaway probe
+  connect distinguishes a stale leftover file from a live listener's
+  path; see `docs/behavior/net.md`'s Unix domain sockets section). Only
+  the mode-narrowing half has a real cross-backend gap.
+- **Accepted**: 2026-07-20, with the Unix sockets slice (D16, convergence
+  roadmap Phase 5).

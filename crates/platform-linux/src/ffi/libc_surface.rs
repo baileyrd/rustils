@@ -62,3 +62,13 @@ pub use libc::{
     sockaddr_in6, sockaddr_storage, socket, socklen_t, AF_INET, AF_INET6, IPPROTO_TCP,
     SOCK_CLOEXEC, SOCK_STREAM, SOL_SOCKET, SOMAXCONN, SO_REUSEADDR, TCP_NODELAY,
 };
+
+// Net surface, Unix domain socket slice (RFC v2 R5+, D16 follow-on).
+// `sockaddr_un`/`AF_UNIX` are the `AF_UNIX` counterpart to the TCP
+// slice's `sockaddr_in{,6}`/`AF_INET{,6}` above; `chmod`/`mode_t` are
+// admitted solely so `unix_listen` can narrow a freshly bound socket
+// path to the agreed mode-0600 (owner-only) permissions the LocalAPI/
+// agent consumers need — the same POSIX mode-bit territory `fs.rs`'s
+// `UnixMode` already covers, but reached here via a plain path (no `Dir`
+// borrow available at bind time).
+pub use libc::{chmod, mode_t, sockaddr_un, AF_UNIX};

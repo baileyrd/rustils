@@ -7,6 +7,8 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 
@@ -29,6 +31,13 @@ fn kind_of(errno: i32) -> ErrorKind {
         libc::EINVAL => ErrorKind::InvalidInput,
         libc::EAGAIN => ErrorKind::WouldBlock,
         libc::EINTR => ErrorKind::Interrupted,
+        // `AF_UNIX` connect/bind additions: `ENOENT` is what a `connect`
+        // to a path with no socket bound there reports (the Unix-socket
+        // counterpart of TCP's `ConnectionRefused` for "nothing there",
+        // but the kernel distinguishes "no file at all" from "a socket
+        // file exists but nothing is listening", the latter still
+        // surfacing as `ECONNREFUSED` above).
+        libc::ENOENT => ErrorKind::NotFound,
         _ => ErrorKind::Other,
     }
 }
@@ -298,4 +307,314 @@ pub fn local_addr(fd: &OwnedFd) -> Result<SocketAddr> {
         storage
     };
     from_sockaddr(&storage)
+}
+
+// --- Unix domain sockets (D16 follow-on) -----------------------------
+//
+// Mirrors the TCP block above: `sockaddr_un` in place of
+// `sockaddr_in{,6}`, `PathBuf` in place of `SocketAddr`. Two design
+// points from the agreed shape (extraction-map D16: "Unix sockets
+// incl. mode + stale-cleanup bind", the LocalAPI/agent consumers
+// rusty_tail and shh actually asked for):
+//
+// 1. Mode: `unix_listen` narrows the bound socket file to `0600`
+//    (owner read/write only) right after `bind`, since a freshly
+//    `bind`ed `AF_UNIX` path otherwise inherits whatever the process
+//    umask leaves it at.
+// 2. Stale sockets: `bind` alone can't tell a path a live listener
+//    holds apart from one a dead listener left behind — both report
+//    `EADDRINUSE` identically. `unix_listen` resolves that ambiguity
+//    itself with a throwaway probe connect (`is_stale_socket`, below):
+//    `ECONNREFUSED` means nothing is listening (stale — the socket
+//    *file* outlived its listener), so the stale path is unlinked and
+//    the bind retried exactly once; a successful probe connect means a
+//    live listener owns the path, so it's left untouched and
+//    `AddrInUse` surfaces same as ever. No unbounded retry loop: one
+//    probe, one retry, matching the daemon pattern this mirrors
+//    (nginx/docker's own stale-socket handling does the same single
+//    probe-then-retry, not a loop).
+
+/// The byte offset of `sockaddr_un::sun_path` within `sockaddr_un` —
+/// the `AF_UNIX` counterpart of `sockaddr_in`'s fixed layout, but
+/// `sun_path` is a trailing array whose own start isn't at a portable
+/// constant offset the way `sin_port` is, so it's measured once here
+/// instead of hard-coded.
+fn sun_path_offset() -> usize {
+    // SAFETY: all-zeroes is a valid (if meaningless) `sockaddr_un`, the
+    // same reasoning `to_sockaddr`'s `sockaddr_storage` zeroing relies
+    // on; nothing here is ever read before being written, only its
+    // fields' addresses are taken.
+    let addr: c::sockaddr_un = unsafe { std::mem::zeroed() };
+    let base = std::ptr::addr_of!(addr) as usize;
+    let path = std::ptr::addr_of!(addr.sun_path) as usize;
+    path - base
+}
+
+/// Pack a filesystem `path` into a kernel-layout `sockaddr_un` and the
+/// length of the filled-in prefix — the `AF_UNIX` counterpart of
+/// `to_sockaddr`. Includes the trailing NUL in `len`, matching what a C
+/// program passes to `bind`/`connect` for a pathname socket (Linux
+/// doesn't require it, but every other consumer of this address does
+/// expect it, `from_sockaddr_un` included).
+fn to_sockaddr_un(path: &Path) -> Result<(c::sockaddr_un, c::socklen_t)> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.contains(&0) {
+        return Err(PlatformError::new(
+            ErrorKind::InvalidInput,
+            OsCode::None,
+            "AF_UNIX path must not contain a NUL byte",
+        ));
+    }
+    // SAFETY: see `sun_path_offset`.
+    let mut addr: c::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = c::AF_UNIX as _;
+    if bytes.len() >= addr.sun_path.len() {
+        return Err(PlatformError::new(
+            ErrorKind::InvalidInput,
+            OsCode::None,
+            "AF_UNIX path too long (must fit in sockaddr_un::sun_path)",
+        ));
+    }
+    for (slot, byte) in addr.sun_path.iter_mut().zip(bytes.iter()) {
+        *slot = *byte as c::c_char;
+    }
+    let len = sun_path_offset() + bytes.len() + 1;
+    Ok((addr, len as c::socklen_t))
+}
+
+/// Unpack a kernel-filled `sockaddr_un` (from `accept`/`getpeername`/
+/// `getsockname`) back into a path, or `None` for an unnamed (anonymous)
+/// `AF_UNIX` endpoint — the `AF_UNIX` counterpart of `from_sockaddr`,
+/// but with a third legal outcome TCP's address family never has.
+fn from_sockaddr_un(addr: &c::sockaddr_un, len: c::socklen_t) -> Result<Option<PathBuf>> {
+    let offset = sun_path_offset();
+    let len = len as usize;
+    if len <= offset {
+        // No path at all: an unnamed socket (e.g. a `connect`ing client
+        // that never called `bind` itself).
+        return Ok(None);
+    }
+    if i32::from(addr.sun_family) != c::AF_UNIX {
+        return Err(PlatformError::new(
+            ErrorKind::Other,
+            OsCode::None,
+            "unrecognized address family",
+        ));
+    }
+    let path_len = (len - offset).min(addr.sun_path.len());
+    let mut bytes: Vec<u8> = addr.sun_path[..path_len].iter().map(|&b| b as u8).collect();
+    // Trim the trailing NUL `to_sockaddr_un` includes in `len` (and the
+    // kernel preserves) — the path itself never contains it.
+    if bytes.last() == Some(&0) {
+        bytes.pop();
+    }
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PathBuf::from(std::ffi::OsStr::from_bytes(&bytes))))
+}
+
+fn new_unix_socket() -> Result<OwnedFd> {
+    // SAFETY: plain integer arguments, no memory referenced.
+    let fd = unsafe { c::socket(c::AF_UNIX, c::SOCK_STREAM | c::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(net_err("socket"));
+    }
+    // SAFETY: `fd` is a freshly returned, valid, otherwise-unowned
+    // descriptor; wrapped exactly once.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// `socket` + `connect`, blocking until the connection completes or
+/// fails.
+pub fn unix_connect(path: &Path) -> Result<OwnedFd> {
+    use std::os::fd::AsRawFd;
+    let fd = new_unix_socket()?;
+    let (addr, len) = to_sockaddr_un(path)?;
+    // SAFETY: `addr` holds a valid `sockaddr_un` for exactly the first
+    // `len` bytes (`to_sockaddr_un`'s contract); `fd` is a freshly
+    // created, valid socket.
+    let r = unsafe {
+        c::connect(
+            fd.as_raw_fd(),
+            (&addr as *const c::sockaddr_un).cast::<c::sockaddr>(),
+            len,
+        )
+    };
+    if r < 0 {
+        return Err(net_err("connect"));
+    }
+    Ok(fd)
+}
+
+fn path_to_cstring(path: &Path) -> Result<std::ffi::CString> {
+    std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        PlatformError::new(
+            ErrorKind::InvalidInput,
+            OsCode::None,
+            "AF_UNIX path must not contain a NUL byte",
+        )
+    })
+}
+
+/// Probe whether the `AF_UNIX` path at `path` is a stale leftover (no
+/// live listener, just the socket file) or genuinely held by a live
+/// one, via a throwaway `connect` — the only way to tell, since
+/// `bind`'s `EADDRINUSE` doesn't distinguish the two. `ECONNREFUSED`
+/// means the kernel routed the connect and nothing accepted it: stale.
+/// A successful connect (immediately dropped, ending it cleanly) or
+/// any other outcome is treated as "not stale" — `unix_listen` must
+/// never unlink a path it isn't certain is dead, since guessing wrong
+/// would hijack a live listener's socket out from under it.
+fn is_stale_socket(path: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(probe) = new_unix_socket() else {
+        return false;
+    };
+    let Ok((addr, len)) = to_sockaddr_un(path) else {
+        return false;
+    };
+    // SAFETY: `addr` holds a valid `sockaddr_un` for exactly `len`
+    // bytes (`to_sockaddr_un`'s contract); `probe` is a freshly
+    // created, valid, otherwise-unused socket.
+    let r = unsafe {
+        c::connect(
+            probe.as_raw_fd(),
+            (&addr as *const c::sockaddr_un).cast::<c::sockaddr>(),
+            len,
+        )
+    };
+    if r == 0 {
+        // A live listener accepted the probe; `probe`'s `Drop` closes
+        // it, ending the connection without disturbing the listener.
+        return false;
+    }
+    errno() == libc::ECONNREFUSED
+}
+
+/// `socket` + `bind` (stale-cleanup retried once — see the module-level
+/// comment) + mode-`0600` `chmod` + `listen(SOMAXCONN)`. No
+/// `SO_REUSEADDR` equivalent: `AF_UNIX` has no such option, and the
+/// probe-then-unlink dance above is this address family's version of
+/// it.
+pub fn unix_listen(path: &Path) -> Result<OwnedFd> {
+    use std::os::fd::AsRawFd;
+    let fd = new_unix_socket()?;
+    let (addr, len) = to_sockaddr_un(path)?;
+    // SAFETY: see `unix_connect`.
+    let mut r = unsafe {
+        c::bind(
+            fd.as_raw_fd(),
+            (&addr as *const c::sockaddr_un).cast::<c::sockaddr>(),
+            len,
+        )
+    };
+    if r < 0 && errno() == libc::EADDRINUSE && is_stale_socket(path) {
+        let c_path = path_to_cstring(path)?;
+        // SAFETY: `c_path` is a valid, NUL-terminated C string
+        // outliving the call; `AT_FDCWD` is the well-known sentinel
+        // for "resolve relative to the process cwd", the same ambient
+        // resolution `bind`/`connect` above already use for `path`.
+        unsafe { c::unlinkat(c::AT_FDCWD, c_path.as_ptr(), 0) };
+        // SAFETY: identical call to the one above; retried at most once.
+        r = unsafe {
+            c::bind(
+                fd.as_raw_fd(),
+                (&addr as *const c::sockaddr_un).cast::<c::sockaddr>(),
+                len,
+            )
+        };
+    }
+    if r < 0 {
+        return Err(net_err("bind"));
+    }
+
+    // Narrow the just-created socket file to owner-only, the
+    // mode-0600-bind half of D16's agreed shape (rusty_tail's LocalAPI,
+    // shh's agent socket) — `bind` alone leaves the file at whatever the
+    // process umask allows.
+    let c_path = path_to_cstring(path)?;
+    // SAFETY: `c_path` is a valid, NUL-terminated C string outliving the
+    // call; `bind` above has just created a regular file at this exact
+    // path for us to narrow.
+    let r = unsafe { c::chmod(c_path.as_ptr(), 0o600 as c::mode_t) };
+    if r < 0 {
+        return Err(net_err("chmod"));
+    }
+
+    // SAFETY: `fd` is a valid, bound socket.
+    let r = unsafe { c::listen(fd.as_raw_fd(), c::SOMAXCONN) };
+    if r < 0 {
+        return Err(net_err("listen"));
+    }
+    Ok(fd)
+}
+
+/// `accept4` with `SOCK_CLOEXEC`, returning the accepted connection and
+/// the peer's path (`None` for a peer that connected without binding
+/// itself to one — the common case for a plain `unix_connect` client).
+pub fn unix_accept(listen_fd: &OwnedFd) -> Result<(OwnedFd, Option<PathBuf>)> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `addr`/`len` are valid, exclusively borrowed out-params
+    // the kernel fills; `listen_fd` is a valid, listening socket.
+    let (fd, addr, len) = unsafe {
+        let mut addr: c::sockaddr_un = std::mem::zeroed();
+        let mut len = std::mem::size_of::<c::sockaddr_un>() as c::socklen_t;
+        let fd = c::accept4(
+            listen_fd.as_raw_fd(),
+            (&mut addr as *mut c::sockaddr_un).cast::<c::sockaddr>(),
+            &mut len,
+            c::SOCK_CLOEXEC,
+        );
+        (fd, addr, len)
+    };
+    if fd < 0 {
+        return Err(net_err("accept4"));
+    }
+    // SAFETY: `fd` is a freshly returned, valid, otherwise-unowned
+    // descriptor; wrapped exactly once.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    let peer = from_sockaddr_un(&addr, len)?;
+    Ok((owned, peer))
+}
+
+/// `getpeername`.
+pub fn unix_peer_addr(fd: &OwnedFd) -> Result<Option<PathBuf>> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `addr`/`len` are valid, exclusively borrowed out-params
+    // the kernel fills; `fd` is a valid, connected socket.
+    let (addr, len) = unsafe {
+        let mut addr: c::sockaddr_un = std::mem::zeroed();
+        let mut len = std::mem::size_of::<c::sockaddr_un>() as c::socklen_t;
+        let r = c::getpeername(
+            fd.as_raw_fd(),
+            (&mut addr as *mut c::sockaddr_un).cast::<c::sockaddr>(),
+            &mut len,
+        );
+        if r < 0 {
+            return Err(net_err("getpeername"));
+        }
+        (addr, len)
+    };
+    from_sockaddr_un(&addr, len)
+}
+
+/// `getsockname`.
+pub fn unix_local_addr(fd: &OwnedFd) -> Result<Option<PathBuf>> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: see `unix_peer_addr`.
+    let (addr, len) = unsafe {
+        let mut addr: c::sockaddr_un = std::mem::zeroed();
+        let mut len = std::mem::size_of::<c::sockaddr_un>() as c::socklen_t;
+        let r = c::getsockname(
+            fd.as_raw_fd(),
+            (&mut addr as *mut c::sockaddr_un).cast::<c::sockaddr>(),
+            &mut len,
+        );
+        if r < 0 {
+            return Err(net_err("getsockname"));
+        }
+        (addr, len)
+    };
+    from_sockaddr_un(&addr, len)
 }
