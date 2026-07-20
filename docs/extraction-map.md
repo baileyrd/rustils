@@ -337,9 +337,9 @@ UnixListener}` + `Net::unix_connect`/`unix_listen`, the mode-0600-bind,
 automatic-stale-cleanup-bind shape rusty_tail's LocalAPI and shh's agent
 socket asked for; see the convergence roadmap's Phase 5 entry for the
 full backend notes and `docs/behavior/net.md` for the full contract
-(both updated for this slice). Unix sockets aren't yet in the shared
-`net_parity.rs` cross-backend suite — each backend has its own
-dedicated tests instead — a follow-on item, tracked but not urgent.
+(both updated for this slice). Unix sockets landed a shared
+`net_parity.rs` cross-backend assertion (`assert_unix_behavior`) on
+2026-07-20 as well, closing the gap this note originally flagged.
 
 **Landed (UDP datagram slice) 2026-07-20** — `platform::net::UdpSocket`
 + `Net::udp_bind`, the last piece of this donor's original
@@ -347,10 +347,10 @@ four-consumer shape (rusty_tail's magicsock). No listener/stream split
 unlike TCP/Unix — one connectionless socket, addressed per call via
 `send_to`/`recv_from`. See the convergence roadmap's Phase 5 entry and
 `docs/behavior/net.md` for the full contract; UDP's own assertion
-function is in the shared `net_parity.rs` suite (unlike Unix sockets
-above), strace-verified on Linux including the fire-and-forget
-send-to-nobody behavior that has no TCP/Unix equivalent. D16's Net
-surface is now fully landed across all three named slices.
+function is in the shared `net_parity.rs` suite, strace-verified on
+Linux including the fire-and-forget send-to-nobody behavior that has
+no TCP/Unix equivalent. D16's Net surface is now fully landed across
+all three named slices, with shared parity coverage for all three too.
 
 ### Cross-cutting notes from the full-ecosystem survey
 
