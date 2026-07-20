@@ -23,6 +23,6 @@ pub mod term;
 pub use fs::MockDir;
 pub use net::MockNet;
 pub use process::MockSpawner;
-pub use security::MockCsprng;
+pub use security::{MockCsprng, MockSandbox};
 pub use signals::MockSignalSource;
 pub use term::MockTerminal;

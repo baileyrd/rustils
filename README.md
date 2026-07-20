@@ -151,14 +151,31 @@ an in-memory implementation with real
 connection-refused/addr-in-use/end-of-stream/fire-and-forget semantics.
 Strace-verified on Linux throughout. See `docs/behavior/net.md`.
 
-Phase 6 started the `Security` surface (D15) with its first slice:
+Phase 6 built out the `Security` surface (D15). First slice:
 `platform::security::Csprng::fill_random`, forced by rusty_rdp's five
-hand-rolled `/dev/urandom` reads. Deliberately narrow — one method, no
-key derivation. Linux draws from the raw `getrandom(2)` syscall
-(strace-verified), Windows from `BCryptGenRandom` with the system
-preferred RNG — neither opens `/dev/urandom` as a file, so a later
-filesystem sandbox policy (this same phase's largest remaining slice)
-has no `fd` to have denied. See `docs/behavior/security.md`.
+hand-rolled `/dev/urandom` reads (all now retired, in both `krb5/kdc.rs`
+and `tls.rs`). Deliberately narrow — one method, no key derivation.
+Linux draws from the raw `getrandom(2)` syscall (strace-verified),
+Windows from `BCryptGenRandom` with the system preferred RNG — neither
+opens `/dev/urandom` as a file, so `Sandbox` confinement has no `fd` to
+have denied.
+
+Third slice: `platform::security::Sandbox` (`confine_filesystem` via raw
+Landlock syscalls, `block_inet_sockets` via a hand-written seccomp-BPF
+filter), built without a confirmed live consumer as an explicit owner
+call after an RFC-level design discussion (`docs/design-discussion-sandbox.md`)
+found nexus's and shh's "sandbox" material solve two different problems
+that don't share a trait shape — only the confinement half (nexus's
+shape) landed; shh's privilege-separation pattern doesn't fit
+`platform::process`'s current shape and stayed out of scope.
+`CredentialStore` (the middle slice) stayed held: nexus's existing
+`CredentialVault` has no live gap to converge on. `block_inet_sockets`
+is fully strace/live-verified (`x86_64` seccomp-BPF blocks
+`AF_INET`/`AF_INET6`, leaves `AF_UNIX` untouched); `confine_filesystem`'s
+Landlock syscall arguments are verified byte-correct but full kernel
+enforcement wasn't exercisable in this session's own sandboxed
+environment (`ENOSYS`, confirmed as an environment limitation via a
+raw C probe, not an implementation bug). See `docs/behavior/security.md`.
 
 Starting the rusty_rdp convergence (the roadmap's flagged cheapest
 proof of the trait) surfaced one real gap in this "done" surface

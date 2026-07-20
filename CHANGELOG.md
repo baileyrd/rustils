@@ -18,6 +18,22 @@ Three independently-versioned lines, per `docs/versioning.md` §1:
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock`)
 
+### 0.7.0
+
+- Added the Security surface's third slice: `platform::security::Sandbox`
+  (`confine_filesystem` via raw Landlock syscalls, `block_inet_sockets`
+  via a hand-written seccomp-BPF filter), mirroring nexus's
+  `os_sandbox.rs` shape exactly. Built without a confirmed live
+  consumer, an explicit owner call made after an RFC-level design
+  discussion (`docs/design-discussion-sandbox.md`) found nexus's and
+  shh's donor material solve two different problems — process
+  confinement vs. privilege-separation isolation — that don't share a
+  trait shape; only the confinement half landed. `CredentialStore`
+  (the middle slice) stayed held on the same trip: nexus's existing
+  `CredentialVault` has no live gap to converge on. `x86_64`/Linux
+  only for now; every other backend reports `SandboxStatus::Unsupported`
+  rather than silently claiming enforcement.
+
 ### 0.6.0
 
 - Added the Security surface's first slice: `platform::security::Csprng`,

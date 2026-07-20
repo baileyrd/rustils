@@ -8,9 +8,10 @@
 //! run for reproducibility across test invocations.
 
 use std::cell::Cell;
+use std::path::Path;
 
 use platform::error::Result;
-use platform::security::Csprng;
+use platform::security::{Csprng, Sandbox, SandboxStatus};
 
 /// The mock backend's [`Csprng`] capability. Not thread-safe (`Cell`,
 /// like [`crate::net::MockTcpStream`]'s `read_timeout`) — this crate's
@@ -50,5 +51,29 @@ impl Csprng for MockCsprng {
             chunk.copy_from_slice(&bytes[..chunk.len()]);
         }
         Ok(())
+    }
+}
+
+/// The mock backend's [`Sandbox`] capability. There is no in-memory
+/// equivalent of kernel-level process confinement to fake the way
+/// `MockNet`/`MockDir` fake a socket or filesystem — a mock that claimed
+/// `Enforced` here would be lying about a security property, worse than
+/// not having a mock at all. Every call reports
+/// [`SandboxStatus::Unsupported`], the same honest answer a real backend
+/// with no confinement mechanism gives (see [`crate::MockCsprng`] for the
+/// capability that *is* faithfully mockable).
+pub struct MockSandbox;
+
+impl Sandbox for MockSandbox {
+    fn confine_filesystem(
+        &self,
+        _readable_roots: &[&Path],
+        _writable_roots: &[&Path],
+    ) -> Result<SandboxStatus> {
+        Ok(SandboxStatus::Unsupported)
+    }
+
+    fn block_inet_sockets(&self) -> Result<SandboxStatus> {
+        Ok(SandboxStatus::Unsupported)
     }
 }

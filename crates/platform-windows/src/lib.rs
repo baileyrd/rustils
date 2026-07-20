@@ -61,7 +61,7 @@ pub use net::{
 #[cfg(windows)]
 pub use process::{WindowsChild, WindowsSpawner};
 #[cfg(windows)]
-pub use security::WindowsCsprng;
+pub use security::{WindowsCsprng, WindowsSandbox};
 #[cfg(windows)]
 pub use signals::WindowsSignalSource;
 #[cfg(windows)]
