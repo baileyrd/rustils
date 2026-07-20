@@ -15,10 +15,9 @@ tools — see [`docs/convergence-roadmap.md`](convergence-roadmap.md).
 │  (beside, not on top: rusty_lines · rusty_regx)              │
 ├──────────────────────────────────────────────────────────────┤
 │  LAYER 2 — Platform Abstraction Layer (platform crate)       │
-│  today: Fs · Process · Events · Net (TCP slice) · errors ·   │
-│         parity · mock                                        │
-│  gated: Terminal · Net (UDP/Unix slices) · Windowing ·       │
-│         Registry/Config · Security                           │
+│  today: Fs · Process · Events · Net (TCP/Unix/UDP, done) ·   │
+│         errors · parity · mock                               │
+│  gated: Terminal · Windowing · Registry/Config · Security    │
 ├──────────────────────────────────────────────────────────────┤
 │  LAYER 1 — OS Implementation (all unsafe lives here)         │
 │  platform-linux (libc floor · rusty_libc track-p)            │
@@ -69,8 +68,10 @@ backend.
 **Built:** `Fs` (capability Dir/File, byte OsStr boundary D-11), `Process`
 (Command/Spawner/Child, decoded ExitStatus B-5, groups/kill_tree, pipes),
 `Events` (deferred SignalSource D6, multiplexed wait_any — the §5.6
-reactor), `Net` (TCP slice only — connect/listen/accept/set_nodelay,
-D16; UDP and Unix sockets remain gated below), the two-axis error model.
+reactor), `Net` (all three D16 slices: TCP connect/listen/accept/
+set_nodelay, Unix domain sockets with mode+stale-cleanup bind, UDP
+datagram — D16's full four-consumer survey now landed), the two-axis
+error model.
 
 **Gated future surfaces** (each unparks only when its named consumer
 arrives, §3):
@@ -79,7 +80,6 @@ arrives, §3):
 |---|---|---|
 | Terminal | rusty_lines' host, shh, rush interactive, rusty_naner (console-acquisition facet) | five independent donor hand-rolls (D9); **rusty_term is the design oracle** — trait built fresh in Layer 2, rusty_term converges by swapping its backend internals |
 | PTY (Process×Terminal) | a future emulator/mux consumer | donors: shh openpty, rusty_term ConPTY (D13); divergences: ConPTY vs openpty, pollable fd vs thread bridge |
-| Net (UDP + Unix sockets) | shh, rusty_tail, rusty_rdp (+ rusty_llama's optional server) | TCP slice landed in Layer 2 already (see Built, above); UDP datagram and Unix sockets (mode + stale-cleanup bind) remain gated; **no TLS obligation** — all four consumers bring their own wire crypto (D16) |
 | Tun / virtual link | rusty_tail | /dev/net/tun ioctls vs wintun (D14) |
 | Windowing | nexus front-ends | Tauri-mediated in nexus, so it converges last and thinnest; rusty_rdp's "display" is wire-encoding, not OS windowing |
 | Registry / Config | nexus (ERP modules) | today hand-rolled JSON + dirs paths |

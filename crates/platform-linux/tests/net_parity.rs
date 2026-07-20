@@ -1,5 +1,5 @@
-//! Net parity suite (RFC v2 R5+, D16), TCP slice: one behavior-spec-derived
-//! assertion set run against every backend, the same shape the Fs suite
+//! Net parity suite (RFC v2 R5+, D16): behavior-spec-derived assertion
+//! sets run against every backend, the same shape the Fs suite
 //! established. Kept as its own file rather than folded into
 //! `parity.rs`: Net is a distinct RFC domain (R5+, gated on named
 //! consumers), not a growing corner of the Fs surface.
@@ -9,10 +9,14 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use platform::error::ErrorKind;
 use platform::net::Net;
 
-/// The shared assertions. Grows with future Net slices (Unix sockets,
-/// UDP) only if they turn out to share meaningful behavior with TCP —
-/// otherwise they get their own function, the same judgment call
-/// `assert_fs_behavior` already made once for symlinks/access.
+/// TCP's assertion set. UDP gets its own (`assert_udp_behavior`, below)
+/// rather than sharing this one — the same judgment call
+/// `assert_fs_behavior` already made once for symlinks/access, made
+/// here because UDP's behavior barely overlaps with TCP's at all.
+/// Unix domain sockets don't have a shared function yet: each backend's
+/// own dedicated unit tests (`platform-mock/src/net.rs`,
+/// `platform-linux/src/net.rs`'s live-verified round trip) cover them
+/// today; promoting that to a shared assertion here is follow-up work.
 fn assert_net_behavior(net: &dyn Net) {
     let listener = net
         .tcp_listen(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
@@ -56,13 +60,68 @@ fn assert_net_behavior(net: &dyn Net) {
     assert_eq!(e.kind, ErrorKind::ConnectionRefused);
 }
 
+/// UDP's own assertion set, kept separate from `assert_net_behavior`
+/// (the judgment call that doc comment already flags): UDP shares
+/// almost nothing behaviorally with TCP/Unix streams — no handshake, no
+/// `set_nodelay`, and critically, `send_to` to an address nothing is
+/// bound to is fire-and-forget, not a failure, the opposite of
+/// `tcp_connect`/`unix_connect`'s "nothing listening" case.
+fn assert_udp_behavior(net: &dyn Net) {
+    let server = net
+        .udp_bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .expect("bind");
+    let server_addr = server.local_addr().expect("local_addr");
+    assert_ne!(server_addr.port(), 0, "an ephemeral port was assigned");
+
+    let client = net
+        .udp_bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .expect("bind");
+    let client_addr = client.local_addr().expect("local_addr");
+
+    client.send_to(b"ping", server_addr).expect("send_to");
+    let mut buf = [0u8; 16];
+    let (n, peer) = server.recv_from(&mut buf).expect("recv_from");
+    assert_eq!(&buf[..n], b"ping");
+    assert_eq!(peer.ip(), client_addr.ip());
+    assert_eq!(peer.port(), client_addr.port());
+
+    server.send_to(b"pong", client_addr).expect("send_to");
+    let (n, peer) = client.recv_from(&mut buf).expect("recv_from");
+    assert_eq!(&buf[..n], b"pong");
+    assert_eq!(peer.ip(), server_addr.ip());
+    assert_eq!(peer.port(), server_addr.port());
+
+    // Fire-and-forget: sending to an address nothing is bound to must
+    // not error — there is no handshake to fail the way TCP/Unix
+    // connect has.
+    let nobody = net
+        .udp_bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .expect("bind");
+    let nobody_addr = nobody.local_addr().expect("local_addr");
+    drop(nobody);
+    client
+        .send_to(b"into the void", nobody_addr)
+        .expect("send_to must not fail just because nothing is bound there");
+}
+
 #[test]
 fn mock_net_conforms() {
     assert_net_behavior(&platform_mock::MockNet);
+}
+
+#[test]
+fn mock_udp_conforms() {
+    assert_udp_behavior(&platform_mock::MockNet);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_net_conforms() {
     assert_net_behavior(&platform_linux::LinuxNet);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_udp_conforms() {
+    assert_udp_behavior(&platform_linux::LinuxNet);
 }

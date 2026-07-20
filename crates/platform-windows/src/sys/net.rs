@@ -608,3 +608,92 @@ pub fn unix_local_addr(sock: &OwnedSocket) -> Result<Option<PathBuf>> {
     }
     from_sockaddr_un(&buf, len)
 }
+
+// --- UDP datagram sockets (D16 final slice) --------------------------
+//
+// Connectionless: one socket both sends and receives, addressed per
+// call via `sendto`/`recvfrom` rather than a fixed peer from
+// `connect`/`accept`. `local_addr` (above, TCP's) is already a plain
+// `getsockname` with nothing TCP-specific about it — reused as-is for
+// UDP rather than duplicated.
+
+fn new_udp_socket(addr: SocketAddr) -> Result<OwnedSocket> {
+    ensure_wsa_started();
+    let family = match addr {
+        SocketAddr::V4(_) => w::AF_INET,
+        SocketAddr::V6(_) => w::AF_INET6,
+    };
+    // SAFETY: plain integer arguments, no memory referenced.
+    let sock = unsafe { w::socket(i32::from(family), w::SOCK_DGRAM, 0) };
+    if sock == w::INVALID_SOCKET {
+        return Err(wsa_err("socket"));
+    }
+    Ok(OwnedSocket(sock))
+}
+
+/// `socket` + `bind`. No `listen`/`accept` — UDP has neither.
+pub fn udp_bind(addr: SocketAddr) -> Result<OwnedSocket> {
+    let sock = new_udp_socket(addr)?;
+    let (buf, len) = to_sockaddr(addr);
+    // SAFETY: `buf` holds a valid `SOCKADDR_IN`/`SOCKADDR_IN6` for
+    // exactly the first `len` bytes (`to_sockaddr`'s contract); `sock`
+    // is a freshly created, valid socket.
+    let r = unsafe { w::bind(sock.raw(), buf.as_ptr().cast::<w::SOCKADDR>(), len) };
+    if r != 0 {
+        return Err(wsa_err("bind"));
+    }
+    Ok(sock)
+}
+
+/// `sendto`, one datagram per call — fire-and-forget, no handshake to
+/// fail if nothing is listening at `addr`.
+pub fn udp_send_to(sock: &OwnedSocket, buf: &[u8], addr: SocketAddr) -> Result<usize> {
+    let len = i32::try_from(buf.len()).unwrap_or(i32::MAX);
+    let (addr_buf, addr_len) = to_sockaddr(addr);
+    // SAFETY: `buf` is valid for `len` bytes for the call's duration;
+    // `addr_buf` holds a valid sockaddr for exactly `addr_len` bytes;
+    // `sock` is caller-owned.
+    let n = unsafe {
+        w::sendto(
+            sock.raw(),
+            buf.as_ptr(),
+            len,
+            0,
+            addr_buf.as_ptr().cast::<w::SOCKADDR>(),
+            addr_len,
+        )
+    };
+    if n < 0 {
+        return Err(wsa_err("sendto"));
+    }
+    Ok(n as usize)
+}
+
+/// `recvfrom`, blocking until one datagram arrives. A datagram larger
+/// than `buf` is truncated to `buf`'s length, matching `WSARecvFrom`'s
+/// own truncation behavior for `SOCK_DGRAM` — not detected or reported
+/// here, since Winsock gives no signal distinguishing "exactly
+/// `buf.len()` bytes arrived" from "more arrived and got truncated".
+pub fn udp_recv_from(sock: &OwnedSocket, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+    let len = i32::try_from(buf.len()).unwrap_or(i32::MAX);
+    let mut addr_buf = [0u8; 28];
+    let mut addr_len = addr_buf.len() as i32;
+    // SAFETY: `buf` is valid for `len` bytes for the call's duration;
+    // `addr_buf`/`addr_len` are valid, exclusively borrowed out-params
+    // Winsock fills; `sock` is caller-owned.
+    let n = unsafe {
+        w::recvfrom(
+            sock.raw(),
+            buf.as_mut_ptr(),
+            len,
+            0,
+            addr_buf.as_mut_ptr().cast::<w::SOCKADDR>(),
+            &mut addr_len,
+        )
+    };
+    if n < 0 {
+        return Err(wsa_err("recvfrom"));
+    }
+    let peer = from_sockaddr(&addr_buf)?;
+    Ok((n as usize, peer))
+}

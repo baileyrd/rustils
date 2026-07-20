@@ -618,3 +618,101 @@ pub fn unix_local_addr(fd: &OwnedFd) -> Result<Option<PathBuf>> {
     };
     from_sockaddr_un(&addr, len)
 }
+
+// --- UDP datagram sockets (D16 final slice) --------------------------
+//
+// Connectionless: one socket both sends and receives, addressed per
+// call via `sendto`/`recvfrom` rather than a fixed peer from
+// `connect`/`accept`. `local_addr` (above, TCP's) is already a plain
+// `getsockname` with nothing TCP-specific about it — reused as-is for
+// UDP rather than duplicated.
+
+fn new_udp_socket(addr: SocketAddr) -> Result<OwnedFd> {
+    let family = match addr {
+        SocketAddr::V4(_) => c::AF_INET,
+        SocketAddr::V6(_) => c::AF_INET6,
+    };
+    // SAFETY: plain integer arguments, no memory referenced.
+    let fd = unsafe { c::socket(family, c::SOCK_DGRAM | c::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(net_err("socket"));
+    }
+    // SAFETY: `fd` is a freshly returned, valid, otherwise-unowned
+    // descriptor; wrapped exactly once.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// `socket` + `bind`. No `listen`/`accept` — UDP has neither.
+pub fn udp_bind(addr: SocketAddr) -> Result<OwnedFd> {
+    use std::os::fd::AsRawFd;
+    let fd = new_udp_socket(addr)?;
+    let (storage, len) = to_sockaddr(addr);
+    // SAFETY: `storage` holds a valid `sockaddr_in`/`sockaddr_in6` for
+    // exactly the first `len` bytes (`to_sockaddr`'s contract); `fd` is
+    // a freshly created, valid socket.
+    let r = unsafe {
+        c::bind(
+            fd.as_raw_fd(),
+            (&storage as *const c::sockaddr_storage).cast::<c::sockaddr>(),
+            len,
+        )
+    };
+    if r < 0 {
+        return Err(net_err("bind"));
+    }
+    Ok(fd)
+}
+
+/// `sendto`, one datagram per call — fire-and-forget, no handshake to
+/// fail if nothing is listening at `addr`.
+pub fn udp_send_to(fd: &OwnedFd, buf: &[u8], addr: SocketAddr) -> Result<usize> {
+    use std::os::fd::AsRawFd;
+    let (storage, len) = to_sockaddr(addr);
+    // SAFETY: `buf` is valid for `buf.len()` bytes for the call's
+    // duration; `storage` holds a valid sockaddr for exactly `len`
+    // bytes; `fd` is caller-owned.
+    let n = unsafe {
+        c::sendto(
+            fd.as_raw_fd(),
+            buf.as_ptr().cast(),
+            buf.len(),
+            0,
+            (&storage as *const c::sockaddr_storage).cast::<c::sockaddr>(),
+            len,
+        )
+    };
+    if n < 0 {
+        return Err(net_err("sendto"));
+    }
+    Ok(n as usize)
+}
+
+/// `recvfrom`, blocking until one datagram arrives. A datagram larger
+/// than `buf` is truncated to `buf`'s length, matching `recvfrom(2)`'s
+/// own truncation behavior for `SOCK_DGRAM` — not detected or reported
+/// here, since the kernel gives no signal distinguishing "exactly
+/// `buf.len()` bytes arrived" from "more arrived and got truncated".
+pub fn udp_recv_from(fd: &OwnedFd, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `storage`/`len` are valid, exclusively borrowed out-params
+    // the kernel fills; `buf` is valid for `buf.len()` bytes; `fd` is
+    // caller-owned.
+    let (n, storage) = unsafe {
+        let mut storage: c::sockaddr_storage = std::mem::zeroed();
+        let mut len = std::mem::size_of::<c::sockaddr_storage>() as c::socklen_t;
+        let n = c::recvfrom(
+            fd.as_raw_fd(),
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            0,
+            (&mut storage as *mut c::sockaddr_storage).cast::<c::sockaddr>(),
+            &mut len,
+        );
+        (n, storage)
+    };
+    if n < 0 {
+        return Err(net_err("recvfrom"));
+    }
+    let peer = from_sockaddr(&storage)?;
+    Ok((n as usize, peer))
+}

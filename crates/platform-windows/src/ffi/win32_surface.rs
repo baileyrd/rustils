@@ -98,3 +98,8 @@ pub use windows_sys::Win32::Networking::WinSock::{AF_UNIX, SOCKADDR_UN};
 // `AF_UNIX` addressing is inherently ambient, unlike the Fs backend's
 // single capability-rooted entry point (`open_ambient_dir`).
 pub use windows_sys::Win32::Storage::FileSystem::DeleteFileW;
+// Net surface, UDP datagram slice (RFC v2 R5+, D16, final slice) —
+// rusty_tail's magicsock. `recvfrom`/`sendto` are UDP's connectionless
+// counterpart to `recv`/`send`: the peer address travels with every
+// call instead of being fixed once at `connect`/`accept` time.
+pub use windows_sys::Win32::Networking::WinSock::{recvfrom, sendto, SOCK_DGRAM};

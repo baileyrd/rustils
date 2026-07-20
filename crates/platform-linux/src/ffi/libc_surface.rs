@@ -72,3 +72,9 @@ pub use libc::{
 // `UnixMode` already covers, but reached here via a plain path (no `Dir`
 // borrow available at bind time).
 pub use libc::{chmod, mode_t, sockaddr_un, AF_UNIX};
+
+// Net surface, UDP datagram slice (RFC v2 R5+, D16, final slice) —
+// rusty_tail's magicsock. `recvfrom`/`sendto` are UDP's connectionless
+// counterpart to `read`/`write`: the peer address travels with every
+// call instead of being fixed once at `connect`/`accept` time.
+pub use libc::{recvfrom, sendto, SOCK_DGRAM};
