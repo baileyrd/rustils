@@ -9,14 +9,13 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use platform::error::ErrorKind;
 use platform::net::Net;
 
-/// TCP's assertion set. UDP gets its own (`assert_udp_behavior`, below)
-/// rather than sharing this one — the same judgment call
-/// `assert_fs_behavior` already made once for symlinks/access, made
-/// here because UDP's behavior barely overlaps with TCP's at all.
-/// Unix domain sockets don't have a shared function yet: each backend's
-/// own dedicated unit tests (`platform-mock/src/net.rs`,
-/// `platform-linux/src/net.rs`'s live-verified round trip) cover them
-/// today; promoting that to a shared assertion here is follow-up work.
+/// TCP's assertion set. Unix sockets and UDP each get their own
+/// (`assert_unix_behavior`/`assert_udp_behavior`, below) rather than
+/// sharing this one — the same judgment call `assert_fs_behavior`
+/// already made once for symlinks/access, made here because neither
+/// shares much behavior with TCP: Unix sockets address by path instead
+/// of `SocketAddr` and have no `set_nodelay`; UDP has no handshake at
+/// all.
 fn assert_net_behavior(net: &dyn Net) {
     let listener = net
         .tcp_listen(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
@@ -58,6 +57,68 @@ fn assert_net_behavior(net: &dyn Net) {
         .err()
         .expect("must refuse: nothing listening");
     assert_eq!(e.kind, ErrorKind::ConnectionRefused);
+}
+
+/// Unix domain sockets' assertion set: connect/accept, the unnamed-peer
+/// case a plain `unix_connect` client always hits, refusal once the
+/// listener drops, and — the behavior this slice exists for —
+/// stale-cleanup bind reclaiming the leftover path afterward.
+fn assert_unix_behavior(net: &dyn Net) {
+    let path = std::env::temp_dir().join(format!("rustils-net-parity-{}.sock", std::process::id()));
+    // A leftover from a previous run (or a prior call in the same test
+    // binary) is exactly what stale-cleanup bind exists for — no
+    // manual removal needed here, but start from a known state anyway
+    // so a failed run's leftover doesn't mask a real bug on a rerun.
+    let _ = std::fs::remove_file(&path);
+
+    let listener = net.unix_listen(&path).expect("listen");
+    let local = listener.local_addr().expect("local_addr");
+    assert_eq!(local.as_deref(), Some(path.as_path()));
+
+    let handle = std::thread::spawn(move || {
+        let (mut stream, peer) = listener.accept().expect("accept");
+        // A plain `unix_connect` client never binds its own name —
+        // the accepted peer is unnamed, a legal `AF_UNIX` state with
+        // no TCP equivalent.
+        assert_eq!(peer, None, "an unbound connecting client has no peer path");
+        let mut buf = [0u8; 16];
+        let n = stream.read(&mut buf).expect("server read");
+        assert_eq!(&buf[..n], b"ping");
+        stream.write(b"pong").expect("server write");
+    });
+
+    let mut client = net.unix_connect(&path).expect("connect");
+    assert_eq!(
+        client.peer_addr().expect("peer_addr").as_deref(),
+        Some(path.as_path())
+    );
+    assert_eq!(client.local_addr().expect("local_addr"), None);
+
+    client.write(b"ping").expect("client write");
+    let mut buf = [0u8; 16];
+    let n = client.read(&mut buf).expect("client read");
+    assert_eq!(&buf[..n], b"pong");
+    handle.join().expect("server thread panicked");
+    drop(client);
+
+    // Nothing is listening at this path once the listener above drops
+    // — connecting must fail, not hang or silently succeed.
+    let e = net
+        .unix_connect(&path)
+        .err()
+        .expect("must refuse: nothing listening");
+    assert_eq!(e.kind, ErrorKind::ConnectionRefused);
+
+    // Stale-cleanup bind: the path above still names a real (if now
+    // stale) socket file — dropping a listener never unlinks it. A
+    // fresh `unix_listen` on the same path must reclaim it rather than
+    // fail `AddrInUse`.
+    let listener2 = net
+        .unix_listen(&path)
+        .expect("stale-cleanup bind must reclaim the leftover path");
+    drop(listener2);
+
+    let _ = std::fs::remove_file(&path);
 }
 
 /// UDP's own assertion set, kept separate from `assert_net_behavior`
@@ -110,6 +171,11 @@ fn mock_net_conforms() {
 }
 
 #[test]
+fn mock_unix_conforms() {
+    assert_unix_behavior(&platform_mock::MockNet);
+}
+
+#[test]
 fn mock_udp_conforms() {
     assert_udp_behavior(&platform_mock::MockNet);
 }
@@ -118,6 +184,12 @@ fn mock_udp_conforms() {
 #[test]
 fn linux_net_conforms() {
     assert_net_behavior(&platform_linux::LinuxNet);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_unix_conforms() {
+    assert_unix_behavior(&platform_linux::LinuxNet);
 }
 
 #[cfg(target_os = "linux")]

@@ -333,14 +333,18 @@ endpoint. Added:
   path succeeds — mirroring "dropping the first listener frees the
   address for reuse" from the TCP side.
 
-Not yet extended to this slice: the shared `net_parity.rs` assertion
-suite (still TCP-only for Unix sockets specifically) — the trait, both
-real backends, and the mock all implement Unix sockets today, with
-their own dedicated per-backend tests, but a shared cross-backend
-parity assertion for Unix sockets is still follow-up work.
-`docs/behavior/net.md`'s spec itself already covers Unix sockets in
-full (a correction to this note's own first draft, which mistakenly
-claimed otherwise).
+**Landed (Unix-socket parity suite) 2026-07-20.** The one follow-up
+this slice's own note above flagged as open: `net_parity.rs`
+(kept textually identical across both crates) gained
+`assert_unix_behavior` — connect/accept, the unnamed-peer case a plain
+`unix_connect` client always hits, refusal once the listener drops,
+and stale-cleanup bind reclaiming the leftover path afterward,
+strace-verified live on Linux end to end (the real `bind` →
+`EADDRINUSE` → probe `connect` → `ECONNREFUSED` → `unlinkat` → `bind`
+sequence, not just the unit-level mock/real-backend tests each already
+had). `docs/behavior/net.md`'s spec itself already covered Unix
+sockets in full before this — only the shared cross-backend assertion
+was the gap.
 
 **Landed (UDP datagram slice) 2026-07-20.** The third and final D16
 slice — `platform::net::UdpSocket` plus `Net::udp_bind`, named for
@@ -379,8 +383,10 @@ time. Added:
   with TCP's at all.
 
 This closes out D16's original four-consumer survey — TCP, Unix
-sockets, and UDP datagram all landed; only the shared Unix-socket
-parity-suite follow-up (noted above) remains open within this domain.
+sockets, and UDP datagram all landed, and with the Unix-socket parity
+suite landed too (see the note above), Net's own parity coverage is
+complete across all three slices. Nothing remains open within this
+domain.
 
 ## Phase 6 — Security surface (D15)
 

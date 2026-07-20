@@ -106,8 +106,9 @@ from the other two slices (see below).
   has nothing accepting maps to `ConnectionRefused`; a path the caller
   lacks permission to bind or connect to maps to `PermissionDenied`.
   These three are what each backend's own errno/WSA-code table already
-  maps today; the shared parity suite (still TCP-only — see Scope) does
-  not yet exercise the Unix-socket paths to pin them across backends.
+  maps today, and the shared parity suite (`assert_unix_behavior`)
+  pins `ConnectionRefused` and the stale-cleanup-bind path across every
+  backend.
 - `UnixStream: Send` and `UnixListener: Send`, for the identical
   accept-on-one-thread/hand-off-to-a-worker-thread reason
   `TcpStream`/`TcpListener` are.
