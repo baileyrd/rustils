@@ -16,8 +16,9 @@ tools — see [`docs/convergence-roadmap.md`](convergence-roadmap.md).
 ├──────────────────────────────────────────────────────────────┤
 │  LAYER 2 — Platform Abstraction Layer (platform crate)       │
 │  today: Fs · Process · Events · Net (TCP/Unix/UDP, done) ·   │
-│         Security (CSPRNG slice 1 of 3) · errors · parity ·   │
-│         mock                                                 │
+│         Security (Csprng, Sandbox confinement — 2 of 3       │
+│         slices; CredentialStore held, no live consumer) ·    │
+│         errors · parity · mock                               │
 │  gated: Terminal · Windowing · Registry/Config               │
 ├──────────────────────────────────────────────────────────────┤
 │  LAYER 1 — OS Implementation (all unsafe lives here)         │
@@ -84,7 +85,7 @@ arrives, §3):
 | Tun / virtual link | rusty_tail | /dev/net/tun ioctls vs wintun (D14) |
 | Windowing | nexus front-ends | Tauri-mediated in nexus, so it converges last and thinnest; rusty_rdp's "display" is wire-encoding, not OS windowing |
 | Registry / Config | nexus (ERP modules) | today hand-rolled JSON + dirs paths |
-| Security | nexus, shh, rusty_rdp | donors in hand (D15): Landlock/seccomp sandbox, keyring vault, privsep, CSPRNG |
+| Security — `CredentialStore` (remaining gated slice) | nexus (not yet confirmed live) | donor in hand: nexus's `CredentialVault`, checked 2026-07-20 and held — complete, working, no gap or expressed desire to migrate; revisit only if that changes |
 
 ## Layer 3 — Application
 
@@ -103,8 +104,11 @@ Consumers pull the PAL into shape; the PAL never speculates (§3).
   — Net near-term; Windowing only via a future viewer app),
   rusty_whisper and rusty_llama (compute engines; llama adds an mmap
   model load and an optional TCP server), **nexus** (the micro-frontend
-  / ERP host — forces Security and Registry/Config; its hand-rolled Job
-  Objects and Unix job control duplicate landed rustils work, making
+  / ERP host — donor for Security's `CredentialStore` slice and for
+  Registry/Config, though `CredentialStore` was checked 2026-07-20 and
+  found not to be a live forcing consumer yet — see the gated-surfaces
+  table above; its hand-rolled Job Objects and Unix job control
+  duplicate landed rustils work, making
   Process its cheapest first convergence).
 - **Beside the PAL, not on top:** rusty_lines (line editing) and
   rusty_regx (regex) are OS-independent pure-Rust libraries; they need no
