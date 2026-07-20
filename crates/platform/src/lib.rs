@@ -16,6 +16,7 @@ pub mod events;
 pub mod fs;
 pub mod net;
 pub mod process;
+pub mod security;
 pub mod term;
 
 pub use error::{ErrorKind, OsCode, PlatformError};

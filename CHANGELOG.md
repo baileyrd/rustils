@@ -18,6 +18,17 @@ Three independently-versioned lines, per `docs/versioning.md` §1:
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock`)
 
+### 0.6.0
+
+- Added the Security surface's first slice: `platform::security::Csprng`,
+  `fill_random`, forced by rusty_rdp's five hand-rolled `/dev/urandom`
+  reads (`src/krb5/kdc.rs`). Deliberately narrow — one method, no key
+  derivation, no algorithm choice. Linux draws from the raw
+  `getrandom(2)` syscall, Windows from `BCryptGenRandom` with the system
+  preferred RNG — neither opens `/dev/urandom` as a file, avoiding an
+  `fd` a later filesystem sandbox policy (this same Phase 6's largest
+  remaining slice) might otherwise deny.
+
 ### 0.5.0
 
 - Added `TcpStream::set_read_timeout` — an idle read timeout, forced

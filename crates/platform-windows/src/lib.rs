@@ -40,6 +40,8 @@ mod net;
 #[cfg(windows)]
 mod process;
 #[cfg(windows)]
+mod security;
+#[cfg(windows)]
 mod signals;
 #[cfg(windows)]
 pub mod sys;
@@ -58,6 +60,8 @@ pub use net::{
 };
 #[cfg(windows)]
 pub use process::{WindowsChild, WindowsSpawner};
+#[cfg(windows)]
+pub use security::WindowsCsprng;
 #[cfg(windows)]
 pub use signals::WindowsSignalSource;
 #[cfg(windows)]
