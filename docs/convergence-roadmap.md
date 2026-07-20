@@ -288,6 +288,59 @@ Added:
   `mpsc` channel pair, with real connection-refused/addr-in-use/
   end-of-stream semantics.
 
+**Landed (Unix sockets slice) 2026-07-20.** The deferred half of the TCP
+slice — `platform::net::{UnixStream, UnixListener}` plus
+`Net::unix_connect`/`unix_listen`, mirroring `TcpStream`/`TcpListener`'s
+shape minus `set_nodelay` (no Nagle buffering on `AF_UNIX` to toggle) and
+with `PathBuf` addresses standing in for `SocketAddr` — including a
+third, TCP-never-has legal outcome an `AF_UNIX` peer can report:
+`Ok(None)` from `peer_addr`/`local_addr` for an unnamed (anonymous)
+endpoint. Added:
+
+- Linux: `socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC)` +
+  `bind`/`connect`/`accept`/`getsockname`/`getpeername` over a hand-packed
+  `sockaddr_un` (the trailing `sun_path` array has no portable fixed
+  offset the way `sockaddr_in`'s `sin_port` does, so the offset is
+  measured once via `addr_of!`, the same technique `rename`'s
+  `FILE_RENAME_INFORMATION` construction established). `unix_listen`
+  narrows the freshly bound socket file to `0600` with a `chmod` right
+  after `bind` — the mode-0600 half of D16's agreed shape (rusty_tail's
+  LocalAPI, shh's agent socket), since a bare `bind` otherwise leaves the
+  file at whatever the process umask allows.
+- Windows: the same Winsock plumbing the TCP slice already pays for
+  (`WSAStartup` once, `SOCKADDR_UN`/`afunix.h`'s 108-byte layout) —
+  `socket(AF_UNIX, SOCK_STREAM)` + `bind`/`connect`/`accept`. No
+  mode-narrowing step: Winsock's `AF_UNIX` bind has no POSIX-chmod
+  equivalent, so the bound file is left at the filesystem's own ACL
+  defaults instead of forcing an owner-only mode nothing in Windows'
+  model enforces the same way.
+- Both backends: real stale-cleanup bind, the other half of D16's agreed
+  shape. A `bind` onto a path a live listener already holds and a path
+  left behind by a listener that died without unlinking it hit the
+  identical `AddrInUse` wall — the kernel/Winsock can't tell the two
+  cases apart at bind time — so `unix_listen` resolves the ambiguity
+  itself with a throwaway probe connect: `ECONNREFUSED`/`WSAECONNREFUSED`
+  means stale (unlink and retry the bind exactly once), a successful
+  probe means live (left untouched, `AddrInUse` surfaces normally). No
+  caller-side unlinking needed. (An earlier pass of this slice shipped
+  without this — caller-must-unlink-first — and got corrected before
+  merge once review caught that it silently dropped the exact behavior
+  D16 named this slice for.)
+- Mock: `MockUnixListener`/`MockUnixStream` extend the registry-plus-
+  channel-pair pattern `MockNet`'s TCP side already established, with the
+  same real connection-refused/addr-in-use semantics; a listener's `Drop`
+  frees its path in the registry so a later `unix_listen` on the same
+  path succeeds — mirroring "dropping the first listener frees the
+  address for reuse" from the TCP side.
+
+Not yet extended to this slice: the shared `net_parity.rs` assertion
+suite (still TCP-only) and `docs/behavior/net.md`'s spec (still scoped to
+"Slice 1 — TCP only") — the trait, both real backends, and the mock all
+implement Unix sockets today; the cross-backend behavior spec and its
+parity assertions are the next follow-on, not implied as already done by
+this note. UDP datagram remains the one undelivered piece of D16's
+original four-consumer shape.
+
 ## Phase 6 — Security surface (D15)
 
 **Lands here**, staged narrow-to-wide:

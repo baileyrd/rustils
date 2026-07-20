@@ -85,3 +85,16 @@ pub use windows_sys::Win32::Networking::WinSock::{
     WSAEINVAL, WSAENOTCONN, WSAETIMEDOUT, WSAEWOULDBLOCK,
 };
 pub use windows_sys::Win32::Networking::WinSock::{IN6_ADDR, IN6_ADDR_0};
+// Net surface, Unix domain socket slice (RFC v2 R5+, D16 follow-on).
+// `afunix.h`'s `AF_UNIX` has ridden along in Winsock since Windows 10
+// 1803 — same `socket`/`bind`/`connect`/`listen`/`accept` calls above,
+// just a different address family and a `SOCKADDR_UN` in place of
+// `SOCKADDR_IN`/`SOCKADDR_IN6`. No new Winsock feature needed; already
+// covered by `Win32_Networking_WinSock`.
+pub use windows_sys::Win32::Networking::WinSock::{AF_UNIX, SOCKADDR_UN};
+// Stale-cleanup bind's unlink step: an ambient-path delete, the same
+// carve-out `sys::net`'s `unix_listen` already makes for `bind`/`connect`
+// taking a raw `&Path` rather than a `Dir`-capability-relative name —
+// `AF_UNIX` addressing is inherently ambient, unlike the Fs backend's
+// single capability-rooted entry point (`open_ambient_dir`).
+pub use windows_sys::Win32::Storage::FileSystem::DeleteFileW;

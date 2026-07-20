@@ -332,6 +332,17 @@ TcpListener}`, see `docs/behavior/net.md` and the convergence roadmap's
 Phase 5 entry for the full contract and backend notes. UDP datagram and
 Unix sockets remain future slices of this same decision.
 
+**Landed (Unix sockets slice) 2026-07-20** — `platform::net::{UnixStream,
+UnixListener}` + `Net::unix_connect`/`unix_listen`, the mode-0600-bind,
+automatic-stale-cleanup-bind shape rusty_tail's LocalAPI and shh's agent
+socket asked for; see the convergence roadmap's Phase 5 entry for the
+full backend notes and `docs/behavior/net.md` for the full contract
+(both updated for this slice). `net_parity.rs` remains TCP-only pending
+a follow-on slice — the trait and every backend (Linux, Windows, mock)
+implement Unix sockets today, but the shared cross-backend parity
+assertions haven't caught up yet. UDP datagram is the one remaining
+piece of this donor's original four-consumer shape.
+
 ### Cross-cutting notes from the full-ecosystem survey
 
 - **nexus re-derived already-landed rustils work**: its

@@ -5,17 +5,30 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::net::{Net, TcpListener, TcpStream};
+use platform::net::{Net, TcpListener, TcpStream, UnixListener, UnixStream};
 
 type Registry = Mutex<HashMap<SocketAddr, Sender<(MockTcpStream, SocketAddr)>>>;
 
 fn registry() -> &'static Registry {
     static REGISTRY: OnceLock<Registry> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The `AF_UNIX` counterpart of [`registry`]: a process-global map from
+/// bound path to the channel `accept` blocks on. Kept as a separate map
+/// (rather than folding into one keyed by some enum) for the same
+/// reason `Net`'s two `*_listen` methods are separate — TCP and Unix
+/// addresses don't share a namespace in real backends either.
+type UnixRegistry = Mutex<HashMap<PathBuf, Sender<(MockUnixStream, Option<PathBuf>)>>>;
+
+fn unix_registry() -> &'static UnixRegistry {
+    static REGISTRY: OnceLock<UnixRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -85,6 +98,59 @@ impl Net for MockNet {
         reg.insert(addr, tx);
         Ok(Box::new(MockTcpListener {
             addr,
+            rx: Mutex::new(rx),
+        }))
+    }
+
+    fn unix_connect(&self, path: &Path) -> Result<Box<dyn UnixStream>> {
+        let listener_tx = {
+            let reg = unix_registry().lock().expect("mock lock");
+            reg.get(path)
+                .cloned()
+                .ok_or_else(|| err(ErrorKind::ConnectionRefused, "connect"))?
+        };
+        let (c2s_tx, c2s_rx) = mpsc::channel();
+        let (s2c_tx, s2c_rx) = mpsc::channel();
+        let server_end = MockUnixStream {
+            tx: s2c_tx,
+            rx: c2s_rx,
+            // The accepted end is bound to the listener's path; the
+            // connecting end below is anonymous, since this trait gives
+            // `unix_connect` no way to bind its own client socket first
+            // — the same "no address" state a real unnamed `AF_UNIX`
+            // client has.
+            local: Some(path.to_path_buf()),
+            peer: None,
+            read_buf: Vec::new(),
+            read_pos: 0,
+        };
+        let client_end = MockUnixStream {
+            tx: c2s_tx,
+            rx: s2c_rx,
+            local: None,
+            peer: Some(path.to_path_buf()),
+            read_buf: Vec::new(),
+            read_pos: 0,
+        };
+        // The listener side may have dropped (no one accepting anymore)
+        // — the same "nothing there" outcome a real refused connection
+        // gives.
+        listener_tx
+            .send((server_end, None))
+            .map_err(|_| err(ErrorKind::ConnectionRefused, "connect"))?;
+        Ok(Box::new(client_end))
+    }
+
+    fn unix_listen(&self, path: &Path) -> Result<Box<dyn UnixListener>> {
+        let path = path.to_path_buf();
+        let (tx, rx) = mpsc::channel();
+        let mut reg = unix_registry().lock().expect("mock lock");
+        if reg.contains_key(&path) {
+            return Err(err(ErrorKind::AddrInUse, "listen"));
+        }
+        reg.insert(path.clone(), tx);
+        Ok(Box::new(MockUnixListener {
+            path,
             rx: Mutex::new(rx),
         }))
     }
@@ -170,6 +236,104 @@ impl Drop for MockTcpListener {
     }
 }
 
+/// An in-memory duplex Unix domain stream: chunks written on one end
+/// arrive, in order, as `read` results on the other. Same shape as
+/// [`MockTcpStream`], with `Option<PathBuf>` addresses in place of
+/// `SocketAddr` (mirroring [`UnixStream`]'s trait signatures) and no
+/// `set_nodelay` — there is no Nagle buffering to disable in either the
+/// real `AF_UNIX` case or this in-memory one.
+pub struct MockUnixStream {
+    tx: Sender<Vec<u8>>,
+    rx: Receiver<Vec<u8>>,
+    local: Option<PathBuf>,
+    peer: Option<PathBuf>,
+    read_buf: Vec<u8>,
+    read_pos: usize,
+}
+
+impl UnixStream for MockUnixStream {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if self.read_pos >= self.read_buf.len() {
+            match self.rx.recv() {
+                Ok(chunk) => {
+                    self.read_buf = chunk;
+                    self.read_pos = 0;
+                }
+                // The peer dropped its stream: end of stream, like a
+                // real closed socket's read returning 0.
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = buf.len().min(self.read_buf.len() - self.read_pos);
+        buf[..n].copy_from_slice(&self.read_buf[self.read_pos..self.read_pos + n]);
+        self.read_pos += n;
+        Ok(n)
+    }
+
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        self.tx
+            .send(buf.to_vec())
+            .map_err(|_| err(ErrorKind::BrokenPipe, "write"))?;
+        Ok(buf.len())
+    }
+
+    fn peer_addr(&self) -> Result<Option<PathBuf>> {
+        Ok(self.peer.clone())
+    }
+
+    fn local_addr(&self) -> Result<Option<PathBuf>> {
+        Ok(self.local.clone())
+    }
+}
+
+/// An in-memory listening Unix domain "socket": a registry entry plus
+/// the channel `accept` blocks on. No mode bits to narrow and no stale
+/// socket *file* to leave behind — this backend has no filesystem
+/// backing its registry entries, unlike a real `AF_UNIX` bind, so
+/// [`platform::net::Net::unix_listen`]'s mode-0600 narrowing has
+/// nothing to do here. The one piece of that contract that *does* carry
+/// over is "a path a live listener already holds fails `AddrInUse`",
+/// which the `unix_listen` check above enforces the same way
+/// `tcp_listen`'s does.
+pub struct MockUnixListener {
+    path: PathBuf,
+    rx: Mutex<Receiver<(MockUnixStream, Option<PathBuf>)>>,
+}
+
+impl UnixListener for MockUnixListener {
+    fn accept(&self) -> Result<(Box<dyn UnixStream>, Option<PathBuf>)> {
+        let rx = self.rx.lock().expect("mock lock");
+        match rx.recv() {
+            Ok((stream, peer)) => Ok((Box::new(stream), peer)),
+            Err(_) => Err(err(ErrorKind::Other, "accept")),
+        }
+    }
+
+    fn local_addr(&self) -> Result<Option<PathBuf>> {
+        Ok(Some(self.path.clone()))
+    }
+}
+
+impl Drop for MockUnixListener {
+    fn drop(&mut self) {
+        // Free the path so a later `unix_listen` on the same path in
+        // the same test process succeeds instead of seeing `AddrInUse`
+        // — this backend's in-memory equivalent of the real backends'
+        // stale-cleanup bind (`platform::net::Net::unix_listen`'s doc
+        // comment). A real dropped listener leaves a socket *file*
+        // behind that a later `bind` must actively probe and unlink;
+        // this mock has no such file — its registry entry *is* the
+        // only trace of the listener ever existing — so plain removal
+        // here already reaches the same end state a real backend's
+        // probe-then-unlink dance reaches, without needing to fake the
+        // probe.
+        unix_registry()
+            .lock()
+            .expect("mock lock")
+            .remove(&self.path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,6 +402,77 @@ mod tests {
             // Dropped immediately: the client's next read must see EOF.
         });
         let mut client = net.tcp_connect(addr).expect("connect");
+        handle.join().expect("server thread");
+        let mut buf = [0u8; 16];
+        // The server thread has already exited and dropped its stream
+        // by the time `join` returns, so this read is deterministic,
+        // not a race against the drop.
+        let n = client.read(&mut buf).expect("read after peer close");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn unix_connect_accept_and_echo_round_trip() {
+        let net = MockNet;
+        let path = PathBuf::from("/mock/sock/echo.sock");
+        let listener = net.unix_listen(&path).expect("listen");
+        assert_eq!(listener.local_addr().unwrap(), Some(path.clone()));
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, peer) = listener.accept().expect("accept");
+            // The mock client never binds its own address, matching a
+            // real unnamed `AF_UNIX` client.
+            assert_eq!(peer, None);
+            let mut buf = [0u8; 16];
+            let n = stream.read(&mut buf).expect("read");
+            assert_eq!(&buf[..n], b"ping");
+            stream.write(b"pong").expect("write");
+        });
+
+        let mut client = net.unix_connect(&path).expect("connect");
+        assert_eq!(client.peer_addr().unwrap(), Some(path.clone()));
+        assert_eq!(client.local_addr().unwrap(), None);
+        client.write(b"ping").expect("write");
+        let mut buf = [0u8; 16];
+        let n = client.read(&mut buf).expect("read");
+        assert_eq!(&buf[..n], b"pong");
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn unix_connect_with_nothing_listening_is_connection_refused() {
+        let net = MockNet;
+        let path = PathBuf::from("/mock/sock/nobody-home.sock");
+        // Same `Box<dyn UnixStream>`-isn't-`Debug` workaround as the TCP
+        // version of this test above.
+        let e = net.unix_connect(&path).err().expect("nothing is listening");
+        assert_eq!(e.kind, ErrorKind::ConnectionRefused);
+    }
+
+    #[test]
+    fn unix_listen_twice_on_the_same_path_is_addr_in_use() {
+        let net = MockNet;
+        let path = PathBuf::from("/mock/sock/dup.sock");
+        let first = net.unix_listen(&path).expect("first listen");
+        let e = net.unix_listen(&path).err().expect("already listening");
+        assert_eq!(e.kind, ErrorKind::AddrInUse);
+        drop(first);
+        // Dropping the first listener frees the path for reuse (see
+        // `MockUnixListener`'s `Drop` doc comment for why this mock
+        // differs from a real backend here).
+        net.unix_listen(&path).expect("listen again after drop");
+    }
+
+    #[test]
+    fn unix_closing_the_peer_reports_end_of_stream() {
+        let net = MockNet;
+        let path = PathBuf::from("/mock/sock/eof.sock");
+        let listener = net.unix_listen(&path).expect("listen");
+        let handle = std::thread::spawn(move || {
+            let (_stream, _peer) = listener.accept().expect("accept");
+            // Dropped immediately: the client's next read must see EOF.
+        });
+        let mut client = net.unix_connect(&path).expect("connect");
         handle.join().expect("server thread");
         let mut buf = [0u8; 16];
         // The server thread has already exited and dropped its stream
