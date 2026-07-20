@@ -450,6 +450,15 @@ Fixed by keying the path on a per-backend label too.
    `platform_net.rs` adapter followed.
 2. `CredentialStore` (get/set/available, disabled-mode escape hatch) —
    modeled on nexus's `keyring`-backed vault.
+
+   **Checked, held 2026-07-20** — nexus's `CredentialVault`
+   (`nexus-security/src/credential.rs`) is a complete, working,
+   tested wrapper over the third-party `keyring-rs` crate. No gap, no
+   TODO referencing rustils, no expressed desire to migrate — donor
+   material only, not a live consumer. Building this now would be
+   exactly the speculative build RFC v2 §3's consumer gate exists to
+   prevent. Revisit if/when nexus (or another repo) actually needs it.
+
 3. Sandbox policy (Landlock + seccomp on Linux, `Unsupported` stubs
    elsewhere initially) — modeled on nexus's `os_sandbox.rs` and shh's
    `privsep.rs` (fork-before-runtime, `NO_NEW_PRIVS`, rlimit,
@@ -457,6 +466,44 @@ Fixed by keying the path on a per-backend label too.
    design-sensitive piece in this phase; do it last and expect an
    RFC-level discussion of the per-OS confinement story (macOS
    seatbelt and Windows restricted tokens have no donor yet).
+
+   **RFC-level discussion held 2026-07-20** — see
+   `docs/design-discussion-sandbox.md`, written after verifying both
+   donors' actual source (not their own docs' framing). Key finding:
+   nexus's and shh's "sandbox" material are two different problems —
+   nexus needs process *confinement* (narrow what a process can
+   touch), shh needs privilege-separation *isolation* (keep a secret in
+   one process while another does risky work) — that don't share a
+   trait shape. shh's pattern also doesn't fit `platform::process`'s
+   current shape at all (no raw `fork`/`setuid`/`prctl`/`socketpair`
+   exposed anywhere in this crate) and stayed out of scope.
+
+   **Landed (confinement half only) 2026-07-20** —
+   `platform::security::Sandbox::confine_filesystem`/`block_inet_sockets`,
+   built without a confirmed live consumer as an explicit owner call
+   (accepting the same speculative-build risk `CredentialStore` above
+   was held for, deliberately, since nexus's implementation is the
+   closest thing this repo has to a validated design to mirror).
+   Linux: raw Landlock syscalls (ABI v1, no libc wrapper exists) for
+   filesystem confinement — live-verified via strace that the exact
+   correct access-flag set and struct size reach the kernel
+   byte-for-byte, though full enforcement couldn't be exercised in
+   this session's own sandboxed environment (`landlock_create_ruleset`
+   returns `ENOSYS` there — confirmed via a raw C probe bypassing this
+   crate's own code entirely, so an environment limitation, not an
+   implementation bug); a hand-written seccomp-BPF filter for
+   `block_inet_sockets` — fully live-verified working (`TcpListener`/
+   `UdpSocket::bind` fail with `EPERM` after enforcement,
+   `UnixListener::bind` unaffected), `x86_64`-only for now (the
+   filter's mandatory architecture check is `AUDIT_ARCH_X86_64`-
+   specific). Both report a three-way `SandboxStatus`
+   (`Enforced`/`NotEnforced`/`Unsupported`) rather than silently
+   degrading — `NotEnforced` exists specifically because nexus's own
+   code showed nothing stops a caller from ignoring it. Windows and
+   `platform-mock` report `Unsupported` unconditionally — no donor
+   for restricted tokens/AppContainer, and no honest way to fake
+   kernel-level confinement in memory. See `docs/behavior/security.md`
+   for the full contract.
 
 ## Phase 7 — PTY surface (D13)
 

@@ -4,7 +4,9 @@
 
 #![cfg(windows)]
 
-use platform::security::Csprng;
+use std::path::Path;
+
+use platform::security::{Csprng, Sandbox, SandboxStatus};
 
 /// `fill_random` fills the whole buffer, and two consecutive calls don't
 /// return the same bytes (the one property every named consumer — a
@@ -40,4 +42,20 @@ fn mock_security_conforms() {
 #[test]
 fn windows_security_conforms() {
     assert_security_behavior(&platform_windows::WindowsCsprng);
+}
+
+/// See the Linux copy of this test for why `Unsupported`, not
+/// enforcement, is what both mock and Windows are expected to report.
+#[test]
+fn mock_sandbox_reports_unsupported() {
+    let sandbox = platform_mock::MockSandbox;
+    let root: &Path = Path::new(".");
+    assert_eq!(
+        sandbox.confine_filesystem(&[root], &[]).unwrap(),
+        SandboxStatus::Unsupported
+    );
+    assert_eq!(
+        sandbox.block_inet_sockets().unwrap(),
+        SandboxStatus::Unsupported
+    );
 }

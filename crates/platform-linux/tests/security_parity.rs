@@ -2,7 +2,9 @@
 //! assertion set run against every backend, the same shape the Fs/Net
 //! suites established.
 
-use platform::security::Csprng;
+use std::path::Path;
+
+use platform::security::{Csprng, Sandbox, SandboxStatus};
 
 /// `fill_random` fills the whole buffer, and two consecutive calls don't
 /// return the same bytes (the one property every named consumer — a
@@ -39,4 +41,25 @@ fn mock_security_conforms() {
 #[test]
 fn linux_security_conforms() {
     assert_security_behavior(&platform_linux::LinuxCsprng);
+}
+
+/// The mock `Sandbox` has no in-memory equivalent of kernel confinement
+/// to fake — see `platform-mock`'s own doc comment — so the only
+/// contract this backend has is honesty: report `Unsupported`, never
+/// silently claim enforcement. Real Landlock/seccomp enforcement is
+/// exercised separately, in `tests/security_sandbox.rs` (irreversible
+/// for the calling thread, so it needs subprocess isolation this shared
+/// parity-suite binary doesn't give it).
+#[test]
+fn mock_sandbox_reports_unsupported() {
+    let sandbox = platform_mock::MockSandbox;
+    let root: &Path = Path::new(".");
+    assert_eq!(
+        sandbox.confine_filesystem(&[root], &[]).unwrap(),
+        SandboxStatus::Unsupported
+    );
+    assert_eq!(
+        sandbox.block_inet_sockets().unwrap(),
+        SandboxStatus::Unsupported
+    );
 }

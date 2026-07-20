@@ -93,3 +93,23 @@ pub use libc::{suseconds_t, time_t, timeval, SO_RCVTIMEO};
 // which at least has one at this repo's MSRV baseline) — the raw
 // syscall via `SYS_getrandom`, same escape-hatch shape as `pidfd_open`.
 pub use libc::SYS_getrandom;
+
+// Security surface, sandbox policy slice (RFC v2 R5+, D15, Phase 6 item
+// 3 — see docs/design-discussion-sandbox.md). Landlock has no libc
+// *wrapper* functions at all (it's newer than pidfd_open/renameat2 ever
+// were) — three raw syscalls via SYS_landlock_*, same escape-hatch shape
+// as everything else in this file lacking one. `open`/`O_PATH` open each
+// confined root as a directory-or-file handle `landlock_add_rule` takes
+// as `parent_fd`. `prctl`/`PR_SET_NO_NEW_PRIVS`/`PR_SET_SECCOMP` gate
+// both the Landlock ruleset (`landlock_restrict_self` requires
+// `no_new_privs` or `CAP_SYS_ADMIN`) and the seccomp-BPF install
+// (`block_inet_sockets`). `sock_filter`/`sock_fprog` are the BPF
+// instruction/program types the seccomp-BPF filter is built from;
+// `BPF_*`/`SECCOMP_*` are its opcode and verdict constants.
+pub use libc::{
+    open, prctl, sock_filter, sock_fprog, SYS_landlock_add_rule, SYS_landlock_create_ruleset,
+    SYS_landlock_restrict_self, SYS_socket, AF_PACKET, BPF_ABS, BPF_JEQ, BPF_JMP, BPF_K, BPF_LD,
+    BPF_RET, BPF_W, ENOSYS, EOPNOTSUPP, EPERM, O_PATH, PR_SET_NO_NEW_PRIVS, PR_SET_SECCOMP,
+    SECCOMP_MODE_FILTER, SECCOMP_RET_ALLOW, SECCOMP_RET_DATA, SECCOMP_RET_ERRNO,
+    SECCOMP_RET_KILL_PROCESS,
+};

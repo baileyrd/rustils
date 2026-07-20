@@ -29,6 +29,6 @@ pub use net::{
     LinuxNet, LinuxTcpListener, LinuxTcpStream, LinuxUdpSocket, LinuxUnixListener, LinuxUnixStream,
 };
 pub use process::{LinuxChild, LinuxSpawner};
-pub use security::LinuxCsprng;
+pub use security::{LinuxCsprng, LinuxSandbox};
 pub use signals::LinuxSignalSource;
 pub use term::LinuxTerminal;

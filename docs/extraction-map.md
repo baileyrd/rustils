@@ -326,8 +326,26 @@ directly rather than opening `/dev/urandom` as a file (Linux:
 preferred RNG) — no `fd` for a future filesystem sandbox (this same
 Phase 6's item 3) to have denied. See `docs/behavior/security.md` for
 the full contract and `docs/convergence-roadmap.md`'s Phase 6 entry for
-backend notes. `CredentialStore` and sandbox policy remain future
-slices of this same decision.
+backend notes.
+
+**Landed (Sandbox slice) 2026-07-20** — `platform::security::Sandbox`,
+mirroring nexus's `os_sandbox.rs` shape exactly (`confine_filesystem` via
+raw Landlock syscalls, `block_inet_sockets` via a hand-written seccomp-BPF
+filter — two independently-degradable calls, not one, because that's
+what nexus's own implementation proved necessary). Built without a
+confirmed live consumer, an explicit owner call after
+`docs/design-discussion-sandbox.md` surfaced that neither donor's shape
+maps cleanly onto a single trait: nexus's need is process confinement,
+shh's is privilege separation via fork+socketpair to protect a secret —
+a different problem that doesn't fit `platform::process`'s current shape
+and stayed out of scope. `CredentialStore` stayed held: nexus's
+`CredentialVault` (a complete, working wrapper over the `keyring-rs`
+crate) has no gap, no TODO pointing at rustils, and no expressed desire
+to migrate — donor material only, the same conclusion
+`docs/design-discussion-sandbox.md` reached for `Sandbox`'s own
+consumer question before the owner chose to proceed anyway. See
+`docs/behavior/security.md` and `docs/design-discussion-sandbox.md`'s
+Outcome section for the full contract and reasoning.
 
 ### D16 — Net surface shape (shh, rusty_tail, rusty_rdp, rusty_llama)
 
