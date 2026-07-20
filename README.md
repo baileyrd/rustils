@@ -151,6 +151,15 @@ an in-memory implementation with real
 connection-refused/addr-in-use/end-of-stream/fire-and-forget semantics.
 Strace-verified on Linux throughout. See `docs/behavior/net.md`.
 
+Phase 6 started the `Security` surface (D15) with its first slice:
+`platform::security::Csprng::fill_random`, forced by rusty_rdp's five
+hand-rolled `/dev/urandom` reads. Deliberately narrow — one method, no
+key derivation. Linux draws from the raw `getrandom(2)` syscall
+(strace-verified), Windows from `BCryptGenRandom` with the system
+preferred RNG — neither opens `/dev/urandom` as a file, so a later
+filesystem sandbox policy (this same phase's largest remaining slice)
+has no `fd` to have denied. See `docs/behavior/security.md`.
+
 Starting the rusty_rdp convergence (the roadmap's flagged cheapest
 proof of the trait) surfaced one real gap in this "done" surface
 before any code changed in rusty_rdp's own repo: `TcpStream` had no

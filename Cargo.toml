@@ -16,7 +16,7 @@ members = [
 # independently, see docs/versioning.md §1). Bump rule: docs/versioning.md
 # §2 (any public API change bumps the middle component; nothing else
 # does). See CHANGELOG.md for what each bump was.
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.75"
 repository = "https://github.com/baileyrd/rustils"
@@ -35,6 +35,7 @@ libc = "0.2"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_IO",

@@ -16,8 +16,9 @@ tools — see [`docs/convergence-roadmap.md`](convergence-roadmap.md).
 ├──────────────────────────────────────────────────────────────┤
 │  LAYER 2 — Platform Abstraction Layer (platform crate)       │
 │  today: Fs · Process · Events · Net (TCP/Unix/UDP, done) ·   │
-│         errors · parity · mock                               │
-│  gated: Terminal · Windowing · Registry/Config · Security    │
+│         Security (CSPRNG slice 1 of 3) · errors · parity ·   │
+│         mock                                                 │
+│  gated: Terminal · Windowing · Registry/Config               │
 ├──────────────────────────────────────────────────────────────┤
 │  LAYER 1 — OS Implementation (all unsafe lives here)         │
 │  platform-linux (libc floor · rusty_libc track-p)            │

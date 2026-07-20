@@ -109,3 +109,13 @@ pub use windows_sys::Win32::Networking::WinSock::{recvfrom, sendto, SOCK_DGRAM};
 // representation difference, not a behavior one, so not a registered
 // divergence.
 pub use windows_sys::Win32::Networking::WinSock::SO_RCVTIMEO;
+
+// Security surface, CSPRNG slice (RFC v2 R5+, D15, first slice) —
+// rusty_rdp's five hand-rolled `/dev/urandom` reads. `BCryptGenRandom`
+// with the system preferred RNG (`BCRYPT_USE_SYSTEM_PREFERRED_RNG`,
+// which requires a null algorithm handle) is the modern replacement for
+// the deprecated `CryptGenRandom` — Windows' equivalent CSPRNG entry
+// point, mirroring Linux's `getrandom(2)`.
+pub use windows_sys::Win32::Security::Cryptography::{
+    BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+};

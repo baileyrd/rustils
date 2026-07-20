@@ -86,3 +86,10 @@ pub use libc::{recvfrom, sendto, SOCK_DGRAM};
 // `SO_RCVTIMEO` takes a `struct timeval` on Linux (Windows' equivalent
 // is a plain millisecond `DWORD` instead — see sys::net's doc comment).
 pub use libc::{suseconds_t, time_t, timeval, SO_RCVTIMEO};
+
+// Security surface, CSPRNG slice (RFC v2 R5+, D15, first slice) —
+// rusty_rdp's five hand-rolled `/dev/urandom` reads. No libc *wrapper*
+// function for `getrandom(2)` is admitted here (unlike `renameat2`,
+// which at least has one at this repo's MSRV baseline) — the raw
+// syscall via `SYS_getrandom`, same escape-hatch shape as `pidfd_open`.
+pub use libc::SYS_getrandom;

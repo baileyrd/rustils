@@ -429,6 +429,25 @@ Fixed by keying the path on a per-backend label too.
 1. `fill_random` / CSPRNG — trivial, self-contained. Retires
    rusty_rdp's five hand-rolled `/dev/urandom` reads. Do this first;
    it's a same-day PR with an immediate convergence.
+
+   **Landed 2026-07-20** — `platform::security::Csprng::fill_random`.
+   Linux draws from the raw `getrandom(2)` syscall (strace-verified: a
+   300-byte request returns the full buffer in one call, flags `0`,
+   distinct from glibc's own internal stack-canary `getrandom` call at
+   process start) rather than opening `/dev/urandom` as a file, so a
+   future Landlock/seccomp policy (item 3 below) has no `fd` to have
+   denied. Windows uses `BCryptGenRandom` with
+   `BCRYPT_USE_SYSTEM_PREFERRED_RNG` (a null algorithm handle), the
+   modern replacement for the deprecated `CryptGenRandom`, added a new
+   `Win32_Security_Cryptography` `windows-sys` feature. `platform-mock`'s
+   `MockCsprng` is a small seeded xorshift64* generator — deterministic
+   for reproducible tests, but still varying, so a caller that never
+   actually reads `buf` doesn't pass silently. See
+   `docs/behavior/security.md` for the full contract. The rusty_rdp
+   consumer wiring itself (retiring the five `/dev/urandom` reads in
+   `src/krb5/kdc.rs`) is a follow-up in that repo, not this PR — the
+   same two-step shape the Net surface's TCP slice and
+   `platform_net.rs` adapter followed.
 2. `CredentialStore` (get/set/available, disabled-mode escape hatch) —
    modeled on nexus's `keyring`-backed vault.
 3. Sandbox policy (Landlock + seccomp on Linux, `Unsupported` stubs

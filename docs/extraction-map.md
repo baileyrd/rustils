@@ -317,6 +317,18 @@ The gated Security surface now has concrete donor material:
 - **rusty_rdp**: hand-rolled /dev/urandom entropy reads ×5 — a PAL
   CSPRNG/`fill_random` primitive would retire them.
 
+**Landed (CSPRNG slice) 2026-07-20** — `platform::security::Csprng` +
+`fill_random`, the first Security surface slice, forced by rusty_rdp's
+five hand-rolled `/dev/urandom` reads. Deliberately narrow: one method,
+no key derivation, no algorithm choice. Backends draw from the OS CSPRNG
+directly rather than opening `/dev/urandom` as a file (Linux:
+`getrandom(2)` raw syscall; Windows: `BCryptGenRandom` with the system
+preferred RNG) — no `fd` for a future filesystem sandbox (this same
+Phase 6's item 3) to have denied. See `docs/behavior/security.md` for
+the full contract and `docs/convergence-roadmap.md`'s Phase 6 entry for
+backend notes. `CredentialStore` and sandbox policy remain future
+slices of this same decision.
+
 ### D16 — Net surface shape (shh, rusty_tail, rusty_rdp, rusty_llama)
 
 Four consumers now define Net's shape without guessing: TCP
