@@ -53,7 +53,8 @@ pub use winargv;
 pub use fs::{WindowsDir, WindowsFile};
 #[cfg(windows)]
 pub use net::{
-    WindowsNet, WindowsTcpListener, WindowsTcpStream, WindowsUnixListener, WindowsUnixStream,
+    WindowsNet, WindowsTcpListener, WindowsTcpStream, WindowsUdpSocket, WindowsUnixListener,
+    WindowsUnixStream,
 };
 #[cfg(windows)]
 pub use process::{WindowsChild, WindowsSpawner};

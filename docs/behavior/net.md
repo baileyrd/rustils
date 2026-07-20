@@ -1,4 +1,4 @@
-# Behavior Spec — net (Net / TcpStream / TcpListener)
+# Behavior Spec — net (Net / TcpStream / TcpListener / UdpSocket)
 
 The parity suite (`crates/platform-linux/tests/net_parity.rs` and
 `crates/platform-windows/tests/net_parity.rs`, kept textually identical —
@@ -7,26 +7,30 @@ every backend. A backend that cannot honor a line gets a numbered entry in
 `../divergences.md` citing the OS limitation — never implementation
 convenience.
 
-## Scope (Slice 1 — TCP, Slice 1.5 — Unix domain sockets)
+## Scope (all three D16 slices — TCP, Unix domain sockets, UDP)
 
 RFC v2 R5+, decision D16. Four named consumers (shh, rusty_tail,
 rusty_rdp, rusty_llama's optional server) define this domain's shape, and
 none of them need TLS in the trait — all four bring their own wire crypto
-or inject TLS separately, so `Net`/`TcpStream`/`TcpListener` carry no TLS
-concept at all. This slice covers TCP connect/listen/accept/
-`set_nodelay`.
+or inject TLS separately, so `Net`/`TcpStream`/`TcpListener`/`UdpSocket`
+carry no TLS concept at all. The TCP slice covers
+connect/listen/accept/`set_nodelay`.
 
-Unix domain stream sockets ride along in the same D16 survey, as a
-follow-on slice: `Net::unix_connect`/`unix_listen`, `UnixStream`,
-`UnixListener`, mirroring `TcpStream`/`TcpListener`'s shape with
-`PathBuf` addresses in place of `SocketAddr`, minus `set_nodelay` (no
-Nagle buffering on `AF_UNIX` to toggle) and with mode-bit narrowing +
-stale-cleanup bind semantics on `unix_listen` that `tcp_listen` has no
-analog for. LocalAPI/agent-socket consumers (rusty_tail, shh) are the
-named shape for this half of the slice. UDP datagram sockets remain a
-separate, later slice of the same D16 survey — deliberately not bundled
-into this one, the same phased-slicing pattern the Fs surface used for
-symlinks and `access`.
+Unix domain stream sockets rode along as a follow-on slice:
+`Net::unix_connect`/`unix_listen`, `UnixStream`, `UnixListener`,
+mirroring `TcpStream`/`TcpListener`'s shape with `PathBuf` addresses in
+place of `SocketAddr`, minus `set_nodelay` (no Nagle buffering on
+`AF_UNIX` to toggle) and with mode-bit narrowing + stale-cleanup bind
+semantics on `unix_listen` that `tcp_listen` has no analog for.
+LocalAPI/agent-socket consumers (rusty_tail, shh) are the named shape
+for this half of the slice.
+
+UDP datagram sockets are the third and final D16 slice:
+`Net::udp_bind`, `UdpSocket`, named for rusty_tail's magicsock
+transport. Unlike TCP and Unix streams, UDP has no listener/stream
+split — one connectionless socket both sends and receives, addressed
+per call — and no handshake to fail, the biggest behavioral departure
+from the other two slices (see below).
 
 ## Specified
 
@@ -112,13 +116,47 @@ symlinks and `access`.
   network — `AF_UNIX` sockets are a local, in-kernel byte pipe with no
   Nagle buffering to toggle.
 
+### UDP datagram sockets
+
+- `Net::udp_bind(addr)` binds a UDP socket at `addr` (port `0` picks a
+  real ephemeral port, same as `tcp_listen`). No `listen`/`accept`: a
+  bound `UdpSocket` immediately both sends and receives.
+- `UdpSocket::send_to(buf, addr)` sends `buf` as one datagram to `addr`.
+  **Fire-and-forget**: unlike `tcp_connect`/`unix_connect`, there is no
+  handshake to fail — sending to an address nothing is bound to (or
+  whose socket has since closed) succeeds exactly like sending to a
+  live one; UDP gives no synchronous signal either way. This is the
+  single biggest behavioral departure from the TCP/Unix slices above.
+- `UdpSocket::recv_from(buf)` blocks until one datagram arrives,
+  returning its length and the sender's address. A datagram larger
+  than `buf` is truncated to `buf`'s length (matching
+  `recvfrom(2)`/`WSARecvFrom`'s own `SOCK_DGRAM` truncation behavior)
+  — not detected or reported, since the OS gives no signal
+  distinguishing "exactly `buf.len()` bytes arrived" from "more arrived
+  and got truncated."
+- `UdpSocket::local_addr()` reports the real (possibly OS-assigned
+  ephemeral) bound address, the same contract as
+  `TcpListener::local_addr`.
+- A second `udp_bind` on an address already bound in the same process
+  fails `AddrInUse`; dropping the first socket frees the address for
+  reuse — the same contract as `tcp_listen`'s bind collision, despite
+  `send_to` having none.
+- `UdpSocket: Send`, for the identical reason every other socket type
+  here is: rusty_tail's magicsock (the named consumer) runs its send
+  and receive loops on separate threads.
+- TCP, Unix, and UDP bind spaces are independent: binding the same port
+  number for TCP and UDP (or the same numeric value as a Unix socket
+  path is never possible, since paths and ports aren't the same
+  namespace to begin with) never collides — pinned by a dedicated mock
+  test (`udp_bind_port_zero_and_tcp_listen_port_zero_can_collide_by_number`)
+  rather than the shared parity suite, since it is a cross-domain
+  assertion rather than a per-backend behavior.
+
 ## Deliberately unspecified
 
 - Any TLS/crypto behavior — out of scope for this trait by design (see
   Scope above); consumers layer their own wire security over the plain
   `TcpStream`.
-- UDP datagram socket semantics — not yet part of this surface (a
-  future slice).
 - The exact `ErrorKind` `unix_connect` reports for a `path` that never
   named any socket file at all, as opposed to a stale-but-present one —
   asserted only as "fails, not hangs," not pinned to one `ErrorKind`
@@ -140,3 +178,12 @@ symlinks and `access`.
 - Backlog size, accept queue behavior under load, and other OS-tunable
   socket options beyond `SO_REUSEADDR` (used internally by `tcp_listen`)
   and `TCP_NODELAY`.
+- Maximum practical datagram size, MTU, and fragmentation behavior for
+  `UdpSocket::send_to`/`recv_from` — asserted only as "a datagram too
+  large to send in one piece is a genuine local error," not pinned to a
+  specific size, since that varies by OS, address family, and path MTU
+  in ways no named consumer has asked this trait to abstract over.
+- Whether IPv4/IPv6 UDP sockets are independently bound (dual-stack
+  behavior) — every backend here binds the address family `addr`
+  itself names, with no dual-stack `IPV6_V6ONLY` handling either way;
+  not exercised by the parity suite, which only uses IPv4 loopback.

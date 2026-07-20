@@ -8,8 +8,10 @@
 //! Unix domain stream sockets ride along in this same slice, mirroring
 //! `TcpStream`/`TcpListener`'s shape minus `set_nodelay` (no Nagle
 //! buffering on `AF_UNIX` to toggle) and with `PathBuf` addresses in
-//! place of `SocketAddr`. UDP datagrams remain a separate, later slice
-//! of the same D16 survey — deliberately not bundled into this one.
+//! place of `SocketAddr`. UDP datagram sockets are the third and final
+//! D16 slice: `Net::udp_bind`/`UdpSocket`, one connectionless type
+//! (no listener/stream split — a UDP socket both sends and receives),
+//! named for rusty_tail's magicsock transport.
 //!
 //! `std::net::SocketAddr`/`IpAddr` are used directly in this trait's
 //! signatures: unlike `std::fs`/`std::net::TcpStream` themselves, they
@@ -97,8 +99,36 @@ pub trait UnixListener: Send {
     fn local_addr(&self) -> Result<Option<PathBuf>>;
 }
 
-/// A backend capable of creating TCP streams and listeners, and Unix
-/// domain streams and listeners. Object-safe.
+/// A UDP datagram socket. Object-safe; backends return `Box<dyn
+/// UdpSocket>`. `Send` for the same reason every other socket type
+/// here is — rusty_tail's magicsock (the named consumer, D16) runs its
+/// send and receive loops on separate threads.
+///
+/// No listener/stream split, unlike TCP and Unix: UDP is
+/// connectionless — one socket both sends and receives datagrams
+/// to/from any peer named per call — so there is only one type here.
+pub trait UdpSocket: Send {
+    /// Send `buf` as one datagram to `addr`. Like a real UDP socket,
+    /// this is fire-and-forget: it does not fail because nothing is
+    /// listening at `addr` — there is no connect/listen handshake to
+    /// fail the way TCP and Unix streams have — only for a genuine
+    /// local error (e.g. a datagram too large to send in one piece).
+    fn send_to(&self, buf: &[u8], addr: SocketAddr) -> Result<usize>;
+
+    /// Block until a datagram arrives, returning its length and the
+    /// sender's address. A datagram larger than `buf` is truncated to
+    /// `buf`'s length, the same as a real `recvfrom(2)`/`WSARecvFrom` —
+    /// sizing `buf` to the protocol's max datagram size is the
+    /// caller's job, not this trait's.
+    fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)>;
+
+    /// The address this socket is bound to — the OS-assigned port when
+    /// `udp_bind` was given port `0`.
+    fn local_addr(&self) -> Result<SocketAddr>;
+}
+
+/// A backend capable of creating TCP streams and listeners, Unix
+/// domain streams and listeners, and UDP datagram sockets. Object-safe.
 pub trait Net {
     /// Connect to `addr`, blocking until the connection completes or
     /// fails.
@@ -128,4 +158,8 @@ pub trait Net {
     /// is left untouched — the whole point of telling stale apart from
     /// live is to never risk hijacking a still-active listener's path.
     fn unix_listen(&self, path: &Path) -> Result<Box<dyn UnixListener>>;
+
+    /// Bind a UDP socket at `addr` (port `0` picks an ephemeral port —
+    /// query it back via [`UdpSocket::local_addr`]).
+    fn udp_bind(&self, addr: SocketAddr) -> Result<Box<dyn UdpSocket>>;
 }

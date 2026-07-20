@@ -334,12 +334,53 @@ endpoint. Added:
   address for reuse" from the TCP side.
 
 Not yet extended to this slice: the shared `net_parity.rs` assertion
-suite (still TCP-only) and `docs/behavior/net.md`'s spec (still scoped to
-"Slice 1 — TCP only") — the trait, both real backends, and the mock all
-implement Unix sockets today; the cross-backend behavior spec and its
-parity assertions are the next follow-on, not implied as already done by
-this note. UDP datagram remains the one undelivered piece of D16's
-original four-consumer shape.
+suite (still TCP-only for Unix sockets specifically) — the trait, both
+real backends, and the mock all implement Unix sockets today, with
+their own dedicated per-backend tests, but a shared cross-backend
+parity assertion for Unix sockets is still follow-up work.
+`docs/behavior/net.md`'s spec itself already covers Unix sockets in
+full (a correction to this note's own first draft, which mistakenly
+claimed otherwise).
+
+**Landed (UDP datagram slice) 2026-07-20.** The third and final D16
+slice — `platform::net::UdpSocket` plus `Net::udp_bind`, named for
+rusty_tail's magicsock transport. No listener/stream split unlike
+TCP/Unix: one connectionless socket both sends and receives, addressed
+per call via `send_to`/`recv_from` rather than a fixed peer from
+`connect`/`accept` — and no `set_nodelay` (Nagle's algorithm has
+nothing to do with a connectionless protocol). Designed and
+implemented directly rather than through another workflow fan-out,
+given what the Unix sockets slice's trait-design delegation cost last
+time. Added:
+
+- Linux: `socket(AF_INET/AF_INET6, SOCK_DGRAM|SOCK_CLOEXEC)` +
+  `bind`/`sendto`/`recvfrom`, reusing the TCP slice's `to_sockaddr`/
+  `from_sockaddr`/`local_addr` helpers as-is (`getsockname` and
+  sockaddr packing don't care about socket type).
+- Windows: the same Winsock plumbing (`WSAStartup` once) — `socket(...,
+  SOCK_DGRAM, 0)` + `bind`/`sendto`/`recvfrom`, same helper reuse.
+- Mock: a third process-global registry (independent from the TCP and
+  Unix ones — real OSes keep `SOCK_STREAM`/`SOCK_DGRAM`/`AF_UNIX` bind
+  spaces separate too) keyed by bound address, holding each socket's
+  `Sender` half so other sockets' `send_to` can reach it; `recv_from`
+  reads from the receiver half. `send_to` to an unbound address is a
+  genuine no-op — dropped, not an error — the in-memory analog of a
+  real fire-and-forget `sendto`.
+- **The one genuinely new behavior across the whole Net surface**:
+  `send_to` never fails because nothing is bound at the destination —
+  there is no handshake to fail the way `tcp_connect`/`unix_connect`
+  have. Strace-verified on Linux: a real `sendto` to a since-closed
+  socket's old port returns success (the full byte count), not an
+  error.
+- `docs/behavior/net.md` and both `net_parity.rs` files (kept textually
+  identical) get UDP's own assertion function, separate from TCP's —
+  the same judgment call `assert_fs_behavior` made once for
+  symlinks/access, made here because UDP's behavior barely overlaps
+  with TCP's at all.
+
+This closes out D16's original four-consumer survey — TCP, Unix
+sockets, and UDP datagram all landed; only the shared Unix-socket
+parity-suite follow-up (noted above) remains open within this domain.
 
 ## Phase 6 — Security surface (D15)
 

@@ -6,7 +6,7 @@ use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
 use platform::error::Result;
-use platform::net::{Net, TcpListener, TcpStream, UnixListener, UnixStream};
+use platform::net::{Net, TcpListener, TcpStream, UdpSocket, UnixListener, UnixStream};
 
 use crate::sys::fdio;
 use crate::sys::net as sysnet;
@@ -35,6 +35,11 @@ impl Net for LinuxNet {
     fn unix_listen(&self, path: &Path) -> Result<Box<dyn UnixListener>> {
         let fd = sysnet::unix_listen(path)?;
         Ok(Box::new(LinuxUnixListener { fd }))
+    }
+
+    fn udp_bind(&self, addr: SocketAddr) -> Result<Box<dyn UdpSocket>> {
+        let fd = sysnet::udp_bind(addr)?;
+        Ok(Box::new(LinuxUdpSocket { fd }))
     }
 }
 
@@ -124,5 +129,24 @@ impl UnixListener for LinuxUnixListener {
 
     fn local_addr(&self) -> Result<Option<PathBuf>> {
         sysnet::unix_local_addr(&self.fd)
+    }
+}
+
+/// A UDP datagram socket backed by an `OwnedFd`.
+pub struct LinuxUdpSocket {
+    fd: OwnedFd,
+}
+
+impl UdpSocket for LinuxUdpSocket {
+    fn send_to(&self, buf: &[u8], addr: SocketAddr) -> Result<usize> {
+        sysnet::udp_send_to(&self.fd, buf, addr)
+    }
+
+    fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        sysnet::udp_recv_from(&self.fd, buf)
+    }
+
+    fn local_addr(&self) -> Result<SocketAddr> {
+        sysnet::local_addr(&self.fd)
     }
 }

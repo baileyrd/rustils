@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::net::{Net, TcpListener, TcpStream, UnixListener, UnixStream};
+use platform::net::{Net, TcpListener, TcpStream, UdpSocket, UnixListener, UnixStream};
 
 type Registry = Mutex<HashMap<SocketAddr, Sender<(MockTcpStream, SocketAddr)>>>;
 
@@ -29,6 +29,19 @@ type UnixRegistry = Mutex<HashMap<PathBuf, Sender<(MockUnixStream, Option<PathBu
 
 fn unix_registry() -> &'static UnixRegistry {
     static REGISTRY: OnceLock<UnixRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The UDP counterpart of [`registry`]: a process-global map from bound
+/// address to the channel `recv_from` reads from. A third, separate map
+/// (not sharing [`registry`]'s TCP one) for the same reason `unix_registry`
+/// is separate — a real OS keeps `SOCK_STREAM` and `SOCK_DGRAM` sockets
+/// in independent bind spaces too; binding UDP `:9`, say, never collides
+/// with a TCP listener already on `:9`.
+type UdpRegistry = Mutex<HashMap<SocketAddr, Sender<(Vec<u8>, SocketAddr)>>>;
+
+fn udp_registry() -> &'static UdpRegistry {
+    static REGISTRY: OnceLock<UdpRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -151,6 +164,24 @@ impl Net for MockNet {
         reg.insert(path.clone(), tx);
         Ok(Box::new(MockUnixListener {
             path,
+            rx: Mutex::new(rx),
+        }))
+    }
+
+    fn udp_bind(&self, addr: SocketAddr) -> Result<Box<dyn UdpSocket>> {
+        let addr = if addr.port() == 0 {
+            SocketAddr::new(addr.ip(), next_ephemeral_port())
+        } else {
+            addr
+        };
+        let (tx, rx) = mpsc::channel();
+        let mut reg = udp_registry().lock().expect("mock lock");
+        if reg.contains_key(&addr) {
+            return Err(err(ErrorKind::AddrInUse, "udp_bind"));
+        }
+        reg.insert(addr, tx);
+        Ok(Box::new(MockUdpSocket {
+            local: addr,
             rx: Mutex::new(rx),
         }))
     }
@@ -334,6 +365,59 @@ impl Drop for MockUnixListener {
     }
 }
 
+/// An in-memory UDP datagram socket: a registry entry (its `Sender`
+/// half, so others' `send_to` can reach it) plus the channel
+/// `recv_from` reads from. Unlike [`MockTcpStream`]/[`MockUnixStream`],
+/// there is no peer-specific duplex pair — one socket, addressed per
+/// call, matching the real thing's connectionless shape.
+pub struct MockUdpSocket {
+    local: SocketAddr,
+    rx: Mutex<Receiver<(Vec<u8>, SocketAddr)>>,
+}
+
+impl UdpSocket for MockUdpSocket {
+    fn send_to(&self, buf: &[u8], addr: SocketAddr) -> Result<usize> {
+        // Fire-and-forget, matching a real UDP socket: nothing bound at
+        // `addr` is not an error (there is no listen/accept handshake
+        // to fail), the datagram is just dropped, exactly as it would
+        // be by a real OS routing it nowhere.
+        if let Some(tx) = udp_registry().lock().expect("mock lock").get(&addr) {
+            let _ = tx.send((buf.to_vec(), self.local));
+        }
+        Ok(buf.len())
+    }
+
+    fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        let rx = self.rx.lock().expect("mock lock");
+        match rx.recv() {
+            Ok((data, peer)) => {
+                // Truncate to `buf`'s length, matching a real
+                // `recvfrom(2)`/`WSARecvFrom`'s truncation behavior for
+                // an oversized datagram.
+                let n = buf.len().min(data.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                Ok((n, peer))
+            }
+            Err(_) => Err(err(ErrorKind::Other, "recv_from")),
+        }
+    }
+
+    fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.local)
+    }
+}
+
+impl Drop for MockUdpSocket {
+    fn drop(&mut self) {
+        // Free the address so a later `udp_bind` on the same addr in
+        // the same test process doesn't spuriously see `AddrInUse`.
+        udp_registry()
+            .lock()
+            .expect("mock lock")
+            .remove(&self.local);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,5 +564,72 @@ mod tests {
         // not a race against the drop.
         let n = client.read(&mut buf).expect("read after peer close");
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn udp_send_to_and_recv_from_round_trip() {
+        let net = MockNet;
+        let server = net
+            .udp_bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .expect("bind");
+        let server_addr = server.local_addr().expect("local_addr");
+        assert_ne!(server_addr.port(), 0, "an ephemeral port was assigned");
+
+        let client = net
+            .udp_bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .expect("bind");
+        let client_addr = client.local_addr().expect("local_addr");
+
+        client.send_to(b"ping", server_addr).expect("send_to");
+        let mut buf = [0u8; 16];
+        let (n, peer) = server.recv_from(&mut buf).expect("recv_from");
+        assert_eq!(&buf[..n], b"ping");
+        assert_eq!(peer, client_addr);
+
+        server.send_to(b"pong", client_addr).expect("send_to");
+        let (n, peer) = client.recv_from(&mut buf).expect("recv_from");
+        assert_eq!(&buf[..n], b"pong");
+        assert_eq!(peer, server_addr);
+    }
+
+    #[test]
+    fn udp_send_to_nothing_bound_is_not_an_error() {
+        // Fire-and-forget: unlike tcp_connect/unix_connect, there is no
+        // handshake to fail — a datagram to an address nothing is bound
+        // to is simply dropped, the same as a real UDP socket.
+        let net = MockNet;
+        let sender = net
+            .udp_bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .expect("bind");
+        let nobody = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 59997);
+        sender
+            .send_to(b"into the void", nobody)
+            .expect("send_to must not fail just because nothing is bound there");
+    }
+
+    #[test]
+    fn udp_bind_twice_on_the_same_addr_is_addr_in_use() {
+        let net = MockNet;
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 59996);
+        let first = net.udp_bind(addr).expect("first bind");
+        let e = net.udp_bind(addr).err().expect("already bound");
+        assert_eq!(e.kind, ErrorKind::AddrInUse);
+        drop(first);
+        // Dropping the first socket frees the address for reuse.
+        net.udp_bind(addr).expect("bind again after drop");
+    }
+
+    #[test]
+    fn udp_bind_port_zero_and_tcp_listen_port_zero_can_collide_by_number() {
+        // TCP and UDP bind spaces are independent (see `udp_registry`'s
+        // doc comment) — binding the same port number on each must not
+        // spuriously collide, unlike two `udp_bind`s on the same addr.
+        let net = MockNet;
+        let tcp = net
+            .tcp_listen(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 59995))
+            .expect("tcp listen");
+        net.udp_bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 59995))
+            .expect("udp bind on the same port number must not collide with the tcp listener");
+        drop(tcp);
     }
 }

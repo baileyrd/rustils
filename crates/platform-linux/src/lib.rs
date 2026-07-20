@@ -24,7 +24,9 @@ mod signals;
 mod term;
 
 pub use fs::{LinuxDir, LinuxFile};
-pub use net::{LinuxNet, LinuxTcpListener, LinuxTcpStream};
+pub use net::{
+    LinuxNet, LinuxTcpListener, LinuxTcpStream, LinuxUdpSocket, LinuxUnixListener, LinuxUnixStream,
+};
 pub use process::{LinuxChild, LinuxSpawner};
 pub use signals::LinuxSignalSource;
 pub use term::LinuxTerminal;

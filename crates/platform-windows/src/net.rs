@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use platform::error::Result;
-use platform::net::{Net, TcpListener, TcpStream, UnixListener, UnixStream};
+use platform::net::{Net, TcpListener, TcpStream, UdpSocket, UnixListener, UnixStream};
 
 use crate::sys::net as sysnet;
 
@@ -33,6 +33,11 @@ impl Net for WindowsNet {
     fn unix_listen(&self, path: &Path) -> Result<Box<dyn UnixListener>> {
         let sock = sysnet::unix_listen(path)?;
         Ok(Box::new(WindowsUnixListener { sock }))
+    }
+
+    fn udp_bind(&self, addr: SocketAddr) -> Result<Box<dyn UdpSocket>> {
+        let sock = sysnet::udp_bind(addr)?;
+        Ok(Box::new(WindowsUdpSocket { sock }))
     }
 }
 
@@ -116,5 +121,24 @@ impl UnixListener for WindowsUnixListener {
 
     fn local_addr(&self) -> Result<Option<PathBuf>> {
         sysnet::unix_local_addr(&self.sock)
+    }
+}
+
+/// A UDP datagram socket backed by an owned Winsock socket.
+pub struct WindowsUdpSocket {
+    sock: sysnet::OwnedSocket,
+}
+
+impl UdpSocket for WindowsUdpSocket {
+    fn send_to(&self, buf: &[u8], addr: SocketAddr) -> Result<usize> {
+        sysnet::udp_send_to(&self.sock, buf, addr)
+    }
+
+    fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        sysnet::udp_recv_from(&self.sock, buf)
+    }
+
+    fn local_addr(&self) -> Result<SocketAddr> {
+        sysnet::local_addr(&self.sock)
     }
 }

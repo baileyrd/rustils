@@ -125,25 +125,31 @@ real wrapper call now, live-verified via strace (a real `read_dir`
 firing `getdents64`, a real two-child `wait_any` firing `pidfd_open`
 for each pid).
 
-Phase 5 landed the `Net` surface (D16) in two slices. The first shipped
-`Net`, `TcpStream`, `TcpListener` for TCP connect/listen/accept/
-`set_nodelay`. A follow-on slice added `Net::unix_connect`/`unix_listen`,
-`UnixStream`, `UnixListener` for Unix domain stream sockets — mode-`0600`
-bind and automatic stale-socket-file cleanup (a throwaway probe connect
-tells a dead listener's leftover file apart from a live one; Linux
-narrows via `chmod`, a registered divergence since Windows' `AF_UNIX`
-bind has no mode-bit equivalent to narrow — `docs/divergences.md` #007).
-UDP datagram sockets remain future work on the same decision. No TLS
-concept at all — the four named consumers (shh, rusty_tail, rusty_rdp,
+Phase 5 landed the `Net` surface (D16), all three named slices. TCP
+shipped `Net`, `TcpStream`, `TcpListener` for
+connect/listen/accept/`set_nodelay`. Unix domain stream sockets added
+`Net::unix_connect`/`unix_listen`, `UnixStream`, `UnixListener` —
+mode-`0600` bind and automatic stale-socket-file cleanup (a throwaway
+probe connect tells a dead listener's leftover file apart from a live
+one; Linux narrows via `chmod`, a registered divergence since Windows'
+`AF_UNIX` bind has no mode-bit equivalent to narrow —
+`docs/divergences.md` #007). UDP datagram sockets closed the surface
+out with `Net::udp_bind`/`UdpSocket` for rusty_tail's magicsock — no
+listener/stream split, one connectionless socket addressed per call via
+`send_to`/`recv_from`, and the one genuinely new behavior across the
+whole surface: `send_to` never fails just because nothing is bound at
+the destination (no handshake to fail the way TCP/Unix connect have),
+strace-verified on a real closed-socket send. No TLS concept anywhere
+in any slice — the four named consumers (shh, rusty_tail, rusty_rdp,
 rusty_llama's optional server) all bring or inject their own wire
 crypto. Linux uses raw `libc` socket calls, not track-p-gated (sockets
 were never in rush's required surface, so there's nothing to route
 through `rusty_libc` — `fsync`'s precedent); Windows uses raw Winsock2
 with a lazily-started, deliberately never-cleaned-up `WSAStartup`
 (matching mio/tokio/std's own Windows networking); the mock backend is
-an in-memory duplex-channel implementation with real
-connection-refused/addr-in-use/end-of-stream semantics. Strace-verified
-on Linux. See `docs/behavior/net.md`.
+an in-memory implementation with real
+connection-refused/addr-in-use/end-of-stream/fire-and-forget semantics.
+Strace-verified on Linux throughout. See `docs/behavior/net.md`.
 
 ## License
 
