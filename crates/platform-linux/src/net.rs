@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use platform::error::Result;
 use platform::net::{Net, TcpListener, TcpStream, UdpSocket, UnixListener, UnixStream};
@@ -71,6 +72,10 @@ impl TcpStream for LinuxTcpStream {
 
     fn local_addr(&self) -> Result<SocketAddr> {
         sysnet::local_addr(&self.fd)
+    }
+
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        sysnet::set_read_timeout(&self.fd, timeout)
     }
 }
 

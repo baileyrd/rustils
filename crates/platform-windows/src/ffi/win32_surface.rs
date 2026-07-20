@@ -103,3 +103,9 @@ pub use windows_sys::Win32::Storage::FileSystem::DeleteFileW;
 // counterpart to `recv`/`send`: the peer address travels with every
 // call instead of being fixed once at `connect`/`accept` time.
 pub use windows_sys::Win32::Networking::WinSock::{recvfrom, sendto, SOCK_DGRAM};
+// TcpStream::set_read_timeout (rusty_rdp convergence forcing consumer —
+// see platform/src/net.rs's doc comment). Winsock's `SO_RCVTIMEO` takes
+// a plain millisecond `DWORD`, unlike Linux's `struct timeval` — a wire
+// representation difference, not a behavior one, so not a registered
+// divergence.
+pub use windows_sys::Win32::Networking::WinSock::SO_RCVTIMEO;

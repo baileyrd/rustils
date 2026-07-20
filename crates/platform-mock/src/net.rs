@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 use platform::net::{Net, TcpListener, TcpStream, UdpSocket, UnixListener, UnixStream};
@@ -79,6 +80,7 @@ impl Net for MockNet {
             peer: client_addr,
             read_buf: Vec::new(),
             read_pos: 0,
+            read_timeout: std::cell::Cell::new(None),
         };
         let client_end = MockTcpStream {
             tx: c2s_tx,
@@ -87,6 +89,7 @@ impl Net for MockNet {
             peer: addr,
             read_buf: Vec::new(),
             read_pos: 0,
+            read_timeout: std::cell::Cell::new(None),
         };
         // The listener side may have dropped (no one accepting anymore)
         // — the same "nothing there" outcome a real refused connection
@@ -196,19 +199,38 @@ pub struct MockTcpStream {
     peer: SocketAddr,
     read_buf: Vec<u8>,
     read_pos: usize,
+    // `Cell`, not a plain field: `set_read_timeout` takes `&self`, the
+    // same "stateless-looking capability actually needs one flag"
+    // shape `platform-windows`'s `ensure_wsa_started` Once-guard has,
+    // just per-instance here instead of process-global.
+    read_timeout: std::cell::Cell<Option<Duration>>,
 }
 
 impl TcpStream for MockTcpStream {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         if self.read_pos >= self.read_buf.len() {
-            match self.rx.recv() {
+            let received = match self.read_timeout.get() {
+                Some(d) => self.rx.recv_timeout(d).map_err(|e| match e {
+                    // A real timeout expiring is exactly this
+                    // ambiguous in practice too — see
+                    // `platform::net::TcpStream::set_read_timeout`'s
+                    // doc comment for why this mock doesn't pretend to
+                    // resolve what the real backends can't.
+                    mpsc::RecvTimeoutError::Timeout => None,
+                    mpsc::RecvTimeoutError::Disconnected => Some(()),
+                }),
+                None => self.rx.recv().map_err(|_| Some(())),
+            };
+            match received {
                 Ok(chunk) => {
                     self.read_buf = chunk;
                     self.read_pos = 0;
                 }
                 // The peer dropped its stream: end of stream, like a
                 // real closed socket's read returning 0.
-                Err(_) => return Ok(0),
+                Err(Some(())) => return Ok(0),
+                // The read timeout expired before any data arrived.
+                Err(None) => return Err(err(ErrorKind::WouldBlock, "read")),
             }
         }
         let n = buf.len().min(self.read_buf.len() - self.read_pos);
@@ -235,6 +257,11 @@ impl TcpStream for MockTcpStream {
 
     fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.local)
+    }
+
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        self.read_timeout.set(timeout);
+        Ok(())
     }
 }
 

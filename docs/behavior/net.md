@@ -59,6 +59,19 @@ from the other two slices (see below).
   entire reason this surface exists, per the roadmap, so both are
   required to be movable across threads by the trait itself, not left to
   each backend to happen to get right.
+- `TcpStream::set_read_timeout(Some(d))` bounds how long a `read` will
+  block waiting for data — an idle timeout, not a per-call deadline
+  (each `read` gets its own fresh `d`). `None` blocks indefinitely, the
+  default before this is ever called. A timeout expiring surfaces as
+  `ErrorKind::WouldBlock` **or** `ErrorKind::TimedOut` — deliberately
+  not pinned to one, the same ambiguity
+  `std::net::TcpStream::set_read_timeout` itself documents (Linux's
+  `SO_RCVTIMEO` expiring is `EAGAIN`, indistinguishable from a
+  genuinely non-blocking socket at the errno level) — every real caller
+  already has to check both. Added after the TCP/Unix/UDP slices
+  landed, forced by a real gap: rusty_rdp's convergence needs it
+  (`examples/connect.rs` idles a read loop out via
+  `std::net::TcpStream::set_read_timeout`), not speculation.
 
 ### Unix domain sockets
 
@@ -188,3 +201,8 @@ from the other two slices (see below).
   behavior) — every backend here binds the address family `addr`
   itself names, with no dual-stack `IPV6_V6ONLY` handling either way;
   not exercised by the parity suite, which only uses IPv4 loopback.
+- `UnixStream`/`UdpSocket` have no `set_read_timeout` counterpart —
+  only `TcpStream` needed one for its actual forcing consumer
+  (rusty_rdp), and this trait doesn't speculatively grow surface no
+  named consumer has asked for (RFC v2 §3). Add it there too if and
+  when something actually needs it.
