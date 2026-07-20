@@ -223,13 +223,16 @@ impl Spawner for WindowsSpawner {
         // `sys::proc::wait_many` documents).
         let mut handles: Vec<_> = Vec::with_capacity(children.len());
         for child in children.iter_mut() {
-            let native = child.as_any_mut().downcast_mut::<WindowsChild>().ok_or_else(|| {
-                PlatformError::new(
-                    ErrorKind::Other,
-                    OsCode::None,
-                    "wait_any: child type changed between the gating pass and the native pass",
-                )
-            })?;
+            let native = child
+                .as_any_mut()
+                .downcast_mut::<WindowsChild>()
+                .ok_or_else(|| {
+                    PlatformError::new(
+                        ErrorKind::Other,
+                        OsCode::None,
+                        "wait_any: child type changed between the gating pass and the native pass",
+                    )
+                })?;
             handles.push(native.process.as_raw());
         }
         match proc::wait_many(&handles, timeout)? {
