@@ -13,6 +13,13 @@
 //! (no listener/stream split — a UDP socket both sends and receives),
 //! named for rusty_tail's magicsock transport.
 //!
+//! `TcpStream::set_read_timeout` was added afterward, forced by a real
+//! consumer gap rather than speculation: rusty_rdp's convergence (its
+//! `net.rs` driver is already generic over `Read + Write`) needs it —
+//! `examples/connect.rs` idles a read loop out via
+//! `std::net::TcpStream::set_read_timeout`, a capability this trait
+//! had no equivalent for until now.
+//!
 //! `std::net::SocketAddr`/`IpAddr` are used directly in this trait's
 //! signatures: unlike `std::fs`/`std::net::TcpStream` themselves, they
 //! perform no I/O and own no OS handle — pure value types, the same
@@ -24,6 +31,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::error::Result;
 
@@ -49,6 +57,23 @@ pub trait TcpStream: Send {
 
     /// The local address this stream is bound to.
     fn local_addr(&self) -> Result<SocketAddr>;
+
+    /// Bound the time `read` will block waiting for data. `None`
+    /// (the default, before this is ever called) blocks indefinitely,
+    /// same as every other stream in this crate. `Some(d)` makes a
+    /// `read` that receives nothing within `d` fail rather than block
+    /// forever — a plain idle-timeout, not a per-call deadline (the
+    /// clock restarts on the next `read`).
+    ///
+    /// A timeout expiring surfaces as `ErrorKind::WouldBlock` **or**
+    /// `ErrorKind::TimedOut`, backend-chosen and not pinned to one —
+    /// the identical ambiguity `std::net::TcpStream::set_read_timeout`
+    /// documents (Linux's `SO_RCVTIMEO` expiring is `EAGAIN`, the same
+    /// errno a genuinely non-blocking socket reports, so this crate's
+    /// own `kind_of` mapping can't tell the two apart any more than
+    /// std's can) — check for both, the way every real caller already
+    /// has to.
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<()>;
 }
 
 /// A listening TCP socket. Object-safe. `Send` for the same reason

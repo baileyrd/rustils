@@ -352,6 +352,14 @@ Linux including the fire-and-forget send-to-nobody behavior that has
 no TCP/Unix equivalent. D16's Net surface is now fully landed across
 all three named slices, with shared parity coverage for all three too.
 
+**Landed (`TcpStream::set_read_timeout`) 2026-07-20** — added while
+starting the rusty_rdp convergence this entry names as cheapest;
+rusty_rdp's `examples/connect.rs` idles a read loop out via
+`std::net::TcpStream::set_read_timeout`, a capability this trait had
+none for. See the convergence roadmap's Phase 5 entry for the full
+backend notes, including a real pre-existing test-flake bug this work
+caught and fixed along the way (unrelated to the timeout itself).
+
 ### Cross-cutting notes from the full-ecosystem survey
 
 - **nexus re-derived already-landed rustils work**: its

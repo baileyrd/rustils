@@ -385,8 +385,42 @@ time. Added:
 This closes out D16's original four-consumer survey — TCP, Unix
 sockets, and UDP datagram all landed, and with the Unix-socket parity
 suite landed too (see the note above), Net's own parity coverage is
-complete across all three slices. Nothing remains open within this
-domain.
+complete across all three slices.
+
+**Landed (`TcpStream::set_read_timeout`) 2026-07-20.** The one thing
+that reopened this "done" domain: starting the rusty_rdp convergence
+this phase's own note above flags as cheapest (its `net.rs` driver is
+already generic over `Read + Write`) surfaced a real gap in
+`platform` itself before any code changed in rusty_rdp's own repo.
+rusty_rdp's own
+`examples/connect.rs` idles a read loop out via
+`std::net::TcpStream::set_read_timeout`, a capability
+`platform::net::TcpStream` had no equivalent for. Added
+`set_read_timeout(&self, timeout: Option<Duration>) -> Result<()>` —
+an idle timeout (each `read` gets its own fresh clock, not a per-call
+deadline), `None` blocking indefinitely (the prior, only, behavior).
+Linux: `setsockopt(SOL_SOCKET, SO_RCVTIMEO, &timeval, ...)`. Windows:
+the same option name but a plain millisecond `DWORD` instead of a
+`timeval` — a wire-representation difference, not a behavior one, so
+not a registered divergence. Mock: a per-instance `Cell<Option
+<Duration>>` plus `mpsc::Receiver::recv_timeout`, a real timeout, not a
+no-op. A timeout expiring is deliberately **not** pinned to one
+`ErrorKind` (`WouldBlock` or `TimedOut`, backend-chosen) — the same
+ambiguity `std::net::TcpStream::set_read_timeout` itself documents
+(Linux's `SO_RCVTIMEO` expiring is indistinguishable from `EAGAIN` at
+the errno level), so every real caller already has to check both, and
+this trait doesn't pretend to resolve what the OS itself can't.
+Deliberately scoped to `TcpStream` only — `UnixStream`/`UdpSocket`
+have no forcing consumer for it yet (RFC v2 §3). Strace-verified on
+Linux: a real 100ms timeout fires the `setsockopt` and the subsequent
+`read` genuinely returns after ~103ms with `WouldBlock`. Caught a
+real, unrelated pre-existing bug in the process: the Unix-socket
+parity suite's `assert_unix_behavior` used a path keyed only on pid,
+so `mock_unix_conforms` and `linux_unix_conforms`/`windows_unix_conforms`
+running concurrently in the same test binary shared the identical
+literal path — mock's own harmless-looking cleanup unlink could
+intermittently delete the real backend's *live* socket file mid-test.
+Fixed by keying the path on a per-backend label too.
 
 ## Phase 6 — Security surface (D15)
 

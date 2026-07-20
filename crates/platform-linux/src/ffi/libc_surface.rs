@@ -78,3 +78,11 @@ pub use libc::{chmod, mode_t, sockaddr_un, AF_UNIX};
 // counterpart to `read`/`write`: the peer address travels with every
 // call instead of being fixed once at `connect`/`accept` time.
 pub use libc::{recvfrom, sendto, SOCK_DGRAM};
+
+// TcpStream::set_read_timeout (rusty_rdp convergence forcing consumer:
+// its examples/connect.rs idles out a read loop once the server goes
+// quiet via std::net::TcpStream::set_read_timeout — the one capability
+// this trait was missing to accept platform's stream in place of std's).
+// `SO_RCVTIMEO` takes a `struct timeval` on Linux (Windows' equivalent
+// is a plain millisecond `DWORD` instead — see sys::net's doc comment).
+pub use libc::{suseconds_t, time_t, timeval, SO_RCVTIMEO};

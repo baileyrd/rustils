@@ -27,6 +27,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::Once;
+use std::time::Duration;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 
@@ -300,6 +301,32 @@ pub fn set_nodelay(sock: &OwnedSocket, nodelay: bool) -> Result<()> {
     };
     if r != 0 {
         return Err(wsa_err("setsockopt(TCP_NODELAY)"));
+    }
+    Ok(())
+}
+
+/// `setsockopt(SOL_SOCKET, SO_RCVTIMEO, ...)`. Winsock's `SO_RCVTIMEO`
+/// is a plain millisecond count, not a `timeval` struct — `None` and
+/// any `Duration` under 1ms both become `0`, which Winsock treats as
+/// "no timeout", the same sentinel `set_read_timeout` documents at the
+/// trait level.
+pub fn set_read_timeout(sock: &OwnedSocket, timeout: Option<Duration>) -> Result<()> {
+    let millis: u32 = timeout
+        .map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX))
+        .unwrap_or(0);
+    // SAFETY: `&millis` is a valid `u32`-sized buffer outliving the
+    // call; `sock` is caller-owned.
+    let r = unsafe {
+        w::setsockopt(
+            sock.raw(),
+            w::SOL_SOCKET,
+            w::SO_RCVTIMEO,
+            (&millis as *const u32).cast(),
+            std::mem::size_of::<u32>() as i32,
+        )
+    };
+    if r != 0 {
+        return Err(wsa_err("setsockopt(SO_RCVTIMEO)"));
     }
     Ok(())
 }

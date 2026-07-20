@@ -5,6 +5,7 @@
 //! consumers), not a growing corner of the Fs surface.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::{Duration, Instant};
 
 use platform::error::ErrorKind;
 use platform::net::Net;
@@ -57,14 +58,59 @@ fn assert_net_behavior(net: &dyn Net) {
         .err()
         .expect("must refuse: nothing listening");
     assert_eq!(e.kind, ErrorKind::ConnectionRefused);
+
+    // set_read_timeout: a peer that stays connected but sends nothing
+    // must make a short-timeout read return promptly, not hang until
+    // the peer eventually does something.
+    let listener2 = net
+        .tcp_listen(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .expect("listen (timeout case)");
+    let addr2 = listener2.local_addr().expect("local_addr");
+    let handle2 = std::thread::spawn(move || {
+        let (stream, _peer) = listener2.accept().expect("accept (timeout case)");
+        // Held open (not dropped) for the client's whole timeout
+        // attempt below, so the timeout — not a peer-closed EOF — is
+        // what actually fires.
+        std::thread::sleep(Duration::from_millis(500));
+        drop(stream);
+    });
+    let mut timeout_client = net.tcp_connect(addr2).expect("connect (timeout case)");
+    timeout_client
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("set_read_timeout");
+    let started = Instant::now();
+    let mut buf = [0u8; 16];
+    let e = timeout_client
+        .read(&mut buf)
+        .expect_err("must time out: the peer never sends anything");
+    assert!(
+        matches!(e.kind, ErrorKind::WouldBlock | ErrorKind::TimedOut),
+        "unexpected kind for an expired read timeout: {:?}",
+        e.kind
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(400),
+        "read timeout took far longer than the 100ms requested"
+    );
+    handle2.join().expect("server thread panicked");
 }
 
 /// Unix domain sockets' assertion set: connect/accept, the unnamed-peer
 /// case a plain `unix_connect` client always hits, refusal once the
 /// listener drops, and — the behavior this slice exists for —
 /// stale-cleanup bind reclaiming the leftover path afterward.
-fn assert_unix_behavior(net: &dyn Net) {
-    let path = std::env::temp_dir().join(format!("rustils-net-parity-{}.sock", std::process::id()));
+fn assert_unix_behavior(net: &dyn Net, label: &str) {
+    // `label` (not just the pid) keeps this path distinct per backend:
+    // `mock_unix_conforms` and `linux_unix_conforms`/`windows_unix_conforms`
+    // run concurrently in the same test binary (same pid), and this
+    // function's own cleanup unlink below would otherwise race a real
+    // backend's live socket file out from under it — mock never touches
+    // the filesystem, so a shared pid-only path made its harmless-looking
+    // cleanup a real, if intermittent, cross-test bug.
+    let path = std::env::temp_dir().join(format!(
+        "rustils-net-parity-{label}-{}.sock",
+        std::process::id()
+    ));
     // A leftover from a previous run (or a prior call in the same test
     // binary) is exactly what stale-cleanup bind exists for — no
     // manual removal needed here, but start from a known state anyway
@@ -172,7 +218,7 @@ fn mock_net_conforms() {
 
 #[test]
 fn mock_unix_conforms() {
-    assert_unix_behavior(&platform_mock::MockNet);
+    assert_unix_behavior(&platform_mock::MockNet, "mock");
 }
 
 #[test]
@@ -189,7 +235,7 @@ fn linux_net_conforms() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_unix_conforms() {
-    assert_unix_behavior(&platform_linux::LinuxNet);
+    assert_unix_behavior(&platform_linux::LinuxNet, "linux");
 }
 
 #[cfg(target_os = "linux")]

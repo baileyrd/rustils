@@ -9,6 +9,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 
@@ -264,6 +265,39 @@ pub fn set_nodelay(fd: &OwnedFd, nodelay: bool) -> Result<()> {
     };
     if r < 0 {
         return Err(net_err("setsockopt(TCP_NODELAY)"));
+    }
+    Ok(())
+}
+
+/// `setsockopt(SOL_SOCKET, SO_RCVTIMEO, ...)`. `None` sets an
+/// all-zero `timeval`, which `SO_RCVTIMEO` treats as "no timeout" —
+/// the same sentinel the kernel itself uses, not a special case this
+/// wrapper invents.
+pub fn set_read_timeout(fd: &OwnedFd, timeout: Option<Duration>) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let tv = match timeout {
+        Some(d) => c::timeval {
+            tv_sec: d.as_secs() as c::time_t,
+            tv_usec: c::suseconds_t::from(d.subsec_micros()),
+        },
+        None => c::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        },
+    };
+    // SAFETY: `&tv` is a valid `timeval`-sized buffer outliving the
+    // call; `fd` is caller-owned.
+    let r = unsafe {
+        c::setsockopt(
+            fd.as_raw_fd(),
+            c::SOL_SOCKET,
+            c::SO_RCVTIMEO,
+            (&tv as *const c::timeval).cast(),
+            std::mem::size_of::<c::timeval>() as c::socklen_t,
+        )
+    };
+    if r < 0 {
+        return Err(net_err("setsockopt(SO_RCVTIMEO)"));
     }
     Ok(())
 }

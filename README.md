@@ -151,6 +151,18 @@ an in-memory implementation with real
 connection-refused/addr-in-use/end-of-stream/fire-and-forget semantics.
 Strace-verified on Linux throughout. See `docs/behavior/net.md`.
 
+Starting the rusty_rdp convergence (the roadmap's flagged cheapest
+proof of the trait) surfaced one real gap in this "done" surface
+before any code changed in rusty_rdp's own repo: `TcpStream` had no
+read-timeout capability, which rusty_rdp's own example code needs.
+`TcpStream::set_read_timeout` closes it — an idle timeout (`None`
+blocks indefinitely, unchanged default), backend-chosen
+`WouldBlock`/`TimedOut` on expiry (the same ambiguity
+`std::net::TcpStream::set_read_timeout` itself has, not resolved here
+either), strace-verified on a real 100ms timeout. Scoped to
+`TcpStream` only — no named consumer needs it on `UnixStream`/
+`UdpSocket` yet.
+
 ## License
 
 MIT — matching the sibling crates (`rush`, `rusty_win32`, `rusty_libc`,
