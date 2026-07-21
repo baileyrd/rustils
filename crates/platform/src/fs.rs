@@ -14,6 +14,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use crate::error::{ErrorKind, OsCode, PlatformError, Result};
 
@@ -84,18 +85,29 @@ impl AccessMode {
 }
 
 /// Metadata for a filesystem entry.
+///
+/// `nlink`/`modified` (`ls -l`'s donor material, coreutils gap backlog
+/// #63) are portable across both backends — unlike [`UnixMode`]'s
+/// special bits, hard-link counts and modification times are concepts
+/// both Linux (`st_nlink`/`st_mtime`) and Windows
+/// (`FILE_STANDARD_INFO::NumberOfLinks`/`FILE_BASIC_INFO::LastWriteTime`)
+/// genuinely have, so there is no `Option` here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Metadata {
     pub file_type: FileType,
     pub len: u64,
+    pub nlink: u64,
+    pub modified: SystemTime,
 }
 
 /// POSIX mode bits and ownership (`test -u/-g/-k/-O/-G`'s donor material,
-/// D11) — `setuid`/`setgid`/`sticky` and the owning `uid`/`gid`. Windows
-/// has no analog for any of this (NTFS security descriptors are a wholly
-/// different model, not a POSIX-mode-bit superset); [`Dir::unix_mode`]
-/// returns `Ok(None)` there rather than fabricating zeroed-out values —
-/// "this OS has no such concept" is a real answer, not an error.
+/// D11) — `setuid`/`setgid`/`sticky`, the standard `rwx` `permissions`
+/// bits (coreutils gap backlog #64's read side; `0o777`-masked, e.g.
+/// `0o755`), and the owning `uid`/`gid`. Windows has no analog for any
+/// of this (NTFS security descriptors are a wholly different model,
+/// not a POSIX-mode-bit superset); [`Dir::unix_mode`] returns `Ok(None)`
+/// there rather than fabricating zeroed-out values — "this OS has no
+/// such concept" is a real answer, not an error.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UnixMode {
     pub setuid: bool,
@@ -103,6 +115,7 @@ pub struct UnixMode {
     pub sticky: bool,
     pub uid: u32,
     pub gid: u32,
+    pub permissions: u16,
 }
 
 /// An opaque per-OS file identity, equality-comparable only (`test -ef`'s

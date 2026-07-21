@@ -216,14 +216,26 @@ impl Dir for MockDir {
     fn metadata(&self, rel: &OsStr) -> Result<Metadata> {
         let node = self.child(rel, "metadata")?;
         let n = crate::sync::lock(&node);
+        // No hard-link concept in an in-memory tree (every node has
+        // exactly one parent entry pointing at it) and no real clock to
+        // read a modification time from — `nlink: 1`/`modified:
+        // UNIX_EPOCH` are deterministic, honestly-labeled defaults, the
+        // same "not real, but reproducible" tradeoff `MockCsprng`'s
+        // fixed seed and `unix_mode`'s `UnixMode::default()` already make.
+        const NLINK: u64 = 1;
+        let modified = std::time::SystemTime::UNIX_EPOCH;
         Ok(match &*n {
             Node::File(data) => Metadata {
                 file_type: FileType::File,
                 len: data.len() as u64,
+                nlink: NLINK,
+                modified,
             },
             Node::Dir(_) => Metadata {
                 file_type: FileType::Dir,
                 len: 0,
+                nlink: NLINK,
+                modified,
             },
             // Real lstat-style length is the target string's byte
             // length; not asserted cross-backend (the parity suite
@@ -233,6 +245,8 @@ impl Dir for MockDir {
             Node::Symlink(target) => Metadata {
                 file_type: FileType::Symlink,
                 len: target.as_encoded_bytes().len() as u64,
+                nlink: NLINK,
+                modified,
             },
             Node::Unreachable => unreachable!(),
         })

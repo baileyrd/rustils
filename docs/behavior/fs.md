@@ -90,7 +90,27 @@ convenience.
   entries yield different ones. Neither follows a terminal symlink,
   matching `metadata`.
 
-- `try_clone` (D5, rustils#51 — forced by `platform::process::Stdio::File`
+- `Metadata::nlink`/`modified` (coreutils gap backlog #63, `ls -l`'s
+  donor material): unlike `UnixMode`, both fields are portable — Linux
+  (`st_nlink`/`st_mtime`) and Windows
+  (`FILE_STANDARD_INFO::NumberOfLinks`/`FILE_BASIC_INFO::LastWriteTime`)
+  both genuinely have a link count and a modification time, so there is
+  no `Option` here. `nlink` is always at least 1; `modified` is never in
+  the future relative to a write that just happened — both asserted in
+  the shared parity suite. Backend-specific exactness (the value really
+  matches what the kernel/NTFS reports, not just "some plausible
+  number") is pinned per backend against a second, independent
+  source: Linux against a raw `libc::stat` call
+  (`linux_metadata_reports_a_real_nlink_mtime_and_permissions`),
+  Windows against `std::fs::Metadata::modified()`/a raw
+  `GetFileInformationByHandleEx(FileStandardInfo, ...)` call
+  (`windows_metadata_reports_a_real_nlink_and_mtime`).
+- `UnixMode::permissions` (coreutils gap backlog #65, `ls -l`'s donor
+  material): the standard `rwxrwxrwx` bits (`mode & 0o777`), alongside
+  the special bits this field already had. Read-only — there is still
+  no `chmod`-equivalent write path (coreutils gap backlog #64), only a
+  forcing consumer for reading the bits back, not for setting them.
+- `unix_mode`/`file_id` (`test`'s `-u/-g/-k/-O/-G/-ef` donor material,
   needing the `2>&1`/`&> file` shell-redirect shape): duplicates the
   underlying OS handle (`dup(2)`/`DuplicateHandle`) into a fresh, owned
   `File` that shares the *same open-file description* as the original —
@@ -122,3 +142,11 @@ convenience.
   read/write/execute probe and `unix_mode`'s `Ok(None)` — this spec
   stops at "can I do this" and "does this OS have mode bits at all,"
   not "what does this file's full ACL say."
+- uid/gid → display-name resolution (`root`, not `0`). Deliberately
+  outside this trait: it's an NSS/directory-service lookup, not
+  filesystem metadata — `UnixMode::uid`/`gid` already answer "what
+  number does this entry's mode word say," and a consumer that wants a
+  human-readable name resolves it itself
+  (`platform_linux::{user_name, group_name}`, `getpwuid_r`/
+  `getgrgid_r` — coreutils gap backlog #65's `ls -l` donor material,
+  used by `rls -l` but not part of `platform::fs`/`Dir` at all).

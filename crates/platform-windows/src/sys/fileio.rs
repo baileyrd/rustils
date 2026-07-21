@@ -6,6 +6,7 @@
 #![allow(unsafe_code)]
 
 use std::ffi::{OsStr, OsString};
+use std::time::{Duration, SystemTime};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 use platform::fs::FileType;
@@ -106,9 +107,35 @@ fn file_type_of_attributes(attrs: u32) -> FileType {
     }
 }
 
-/// (file type, size) for an open handle, via `FileBasicInfo`'s attributes
-/// and the basic-info query's `EndOfFile` counterpart.
-pub fn metadata_by_handle(handle: &OwnedWinHandle, path: &OsStr) -> Result<(FileType, u64)> {
+/// Windows `FILETIME` (100-nanosecond intervals since 1601-01-01 UTC)
+/// converted to [`SystemTime`] — the same `1601`-vs-`1970` epoch
+/// translation `FileBasicInfo::LastWriteTime` always needs, since
+/// `platform::fs::Metadata::modified` is epoch-agnostic (`SystemTime`),
+/// not a raw Windows tick count.
+fn filetime_to_system_time(filetime: i64) -> SystemTime {
+    // 100ns intervals between the FILETIME epoch (1601) and the Unix
+    // epoch (1970).
+    const EPOCH_DIFF_100NS: i64 = 116_444_736_000_000_000;
+    let unix_100ns = filetime - EPOCH_DIFF_100NS;
+    if unix_100ns >= 0 {
+        let secs = (unix_100ns / 10_000_000) as u64;
+        let nanos = ((unix_100ns % 10_000_000) * 100) as u32;
+        SystemTime::UNIX_EPOCH + Duration::new(secs, nanos)
+    } else {
+        let abs = (-unix_100ns) as u64;
+        let secs = abs / 10_000_000;
+        let nanos = ((abs % 10_000_000) * 100) as u32;
+        SystemTime::UNIX_EPOCH - Duration::new(secs, nanos)
+    }
+}
+
+/// (file type, size, link count, mtime) for an open handle, via
+/// `FileBasicInfo`'s attributes/`LastWriteTime` and
+/// [`file_standard_info`]'s `EndOfFile`/`NumberOfLinks`.
+pub fn metadata_by_handle(
+    handle: &OwnedWinHandle,
+    path: &OsStr,
+) -> Result<(FileType, u64, u64, SystemTime)> {
     // SAFETY: `info` is a valid out-buffer of exactly the queried class's
     // size, outliving the call; the handle is open with at least
     // FILE_READ_ATTRIBUTES access.
@@ -126,14 +153,16 @@ pub fn metadata_by_handle(handle: &OwnedWinHandle, path: &OsStr) -> Result<(File
         info
     };
     let file_type = file_type_of_attributes(basic.FileAttributes);
+    let (raw_len, nlink) = file_standard_info(handle, path)?;
     let len = if file_type == FileType::Dir {
         // Directories report no meaningful byte length; pin 0 across
         // backends rather than exposing an allocation-size accident.
         0
     } else {
-        end_of_file(handle, path)?
+        raw_len
     };
-    Ok((file_type, len))
+    let modified = filetime_to_system_time(basic.LastWriteTime);
+    Ok((file_type, len, nlink, modified))
 }
 
 /// `(dwVolumeSerialNumber, fileIndex)` via `GetFileInformationByHandle`
@@ -158,10 +187,15 @@ pub fn file_id_by_handle(handle: &OwnedWinHandle, path: &OsStr) -> Result<(u64, 
     Ok((u64::from(info.dwVolumeSerialNumber), index))
 }
 
-fn end_of_file(handle: &OwnedWinHandle, path: &OsStr) -> Result<u64> {
-    // FILE_STANDARD_INFO is not in the curated surface; EndOfFile is also
-    // available as GetFileSizeEx, but that widens the surface for one
-    // field. Query the standard-info layout directly instead.
+/// `(EndOfFile, NumberOfLinks)` via `FILE_STANDARD_INFO`.
+///
+/// Not in the curated surface (`ffi::win32_surface`); `EndOfFile` alone
+/// is also available as `GetFileSizeEx`, but that widens the surface
+/// for one field when the standard-info layout already carries both
+/// values this backend needs (`EndOfFile` for `Metadata::len`,
+/// `NumberOfLinks` for `Metadata::nlink`, coreutils gap backlog #65's
+/// `ls -l` donor material) in a single call.
+fn file_standard_info(handle: &OwnedWinHandle, path: &OsStr) -> Result<(u64, u64)> {
     #[repr(C)]
     struct FileStandardInfo {
         allocation_size: i64,
@@ -187,7 +221,7 @@ fn end_of_file(handle: &OwnedWinHandle, path: &OsStr) -> Result<u64> {
         }
         info
     };
-    Ok(info.end_of_file as u64)
+    Ok((info.end_of_file as u64, u64::from(info.number_of_links)))
 }
 
 /// Enumerate a directory handle's entries, excluding `.`/`..`. The handle

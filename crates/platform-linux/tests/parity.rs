@@ -37,6 +37,17 @@ fn assert_fs_behavior(root: &dyn Dir) {
     let md = root.metadata(OsStr::new("a.bin")).expect("metadata");
     assert_eq!(md.file_type, FileType::File);
     assert_eq!(md.len, 9);
+    // Portable across backends (coreutils gap backlog #63): a real
+    // link count is always at least 1, and a file just written can't
+    // report a modification time in the future. Backend-specific
+    // values (an exact mtime, a >1 nlink for a real hard link) get
+    // their own live-verified test —
+    // `linux_metadata_reports_a_real_nlink_mtime_and_permissions`.
+    assert!(md.nlink >= 1, "nlink must be at least 1");
+    assert!(
+        md.modified <= std::time::SystemTime::now(),
+        "a freshly-written file can't be modified in the future"
+    );
 
     // missing entries are NotFound with path context
     let e = root.metadata(OsStr::new("missing")).expect_err("must fail");
@@ -302,6 +313,58 @@ fn linux_access_denies_execute_on_a_plain_file() {
         .access(OsStr::new("f"), AccessMode::execute())
         .expect_err("a plain data file has no execute bit");
     assert_eq!(e.kind, ErrorKind::PermissionDenied);
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// `Metadata::nlink`/`modified` and `UnixMode::permissions` (coreutils
+/// gap backlog #63/#65, `ls -l` donor material), checked against a raw
+/// `libc::stat` call issued directly by the test — bypassing this
+/// crate's own code entirely, the same "verify the actual kernel state,
+/// not just that our wrapper returned a number" discipline this
+/// session's Tun/Sandbox work already established — rather than
+/// asserting a specific value this test would have to predict (e.g. the
+/// exact permission bits after the ambient umask is applied).
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_metadata_reports_a_real_nlink_mtime_and_permissions() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let tmp = std::env::temp_dir().join(format!("rustils-metadata-ext-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mk tempdir");
+    let root = platform_linux::LinuxDir::open_ambient(&tmp).expect("open ambient");
+    root.open(OsStr::new("f"), &OpenOptions::create_truncate())
+        .expect("create f");
+
+    let md = root.metadata(OsStr::new("f")).expect("metadata");
+    let unix_mode = root
+        .unix_mode(OsStr::new("f"))
+        .expect("unix_mode")
+        .expect("Linux always answers Some");
+
+    let path = tmp.join("f");
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("no interior NUL");
+    // SAFETY: `st` is a plain-old-data struct for which all-zeroes is a
+    // valid (if meaningless) value, overwritten by the kernel on
+    // success; `c_path` is a valid, NUL-terminated path outliving the
+    // call.
+    #[allow(unsafe_code)]
+    let st: libc::stat = unsafe {
+        let mut st = std::mem::zeroed();
+        let rc = libc::stat(c_path.as_ptr(), &mut st);
+        assert_eq!(rc, 0, "raw stat must succeed");
+        st
+    };
+
+    assert_eq!(md.nlink, st.st_nlink, "nlink must match a raw stat");
+    assert_eq!(
+        unix_mode.permissions,
+        (st.st_mode & 0o777) as u16,
+        "permissions must match a raw stat"
+    );
+    let expected_mtime = std::time::SystemTime::UNIX_EPOCH
+        + std::time::Duration::new(st.st_mtime as u64, st.st_mtime_nsec as u32);
+    assert_eq!(md.modified, expected_mtime, "mtime must match a raw stat");
+
     std::fs::remove_dir_all(&tmp).ok();
 }
 

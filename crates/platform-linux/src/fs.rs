@@ -163,8 +163,13 @@ impl Dir for LinuxDir {
     }
 
     fn metadata(&self, rel: &OsStr) -> Result<Metadata> {
-        let (file_type, len) = fdio::statat(self.fd.as_raw_fd(), rel)?;
-        Ok(Metadata { file_type, len })
+        let (file_type, len, nlink, modified) = fdio::statat(self.fd.as_raw_fd(), rel)?;
+        Ok(Metadata {
+            file_type,
+            len,
+            nlink,
+            modified,
+        })
     }
 
     fn access(&self, rel: &OsStr, mode: AccessMode) -> Result<()> {

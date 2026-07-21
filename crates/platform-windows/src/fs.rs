@@ -195,8 +195,13 @@ impl Dir for WindowsDir {
             nt::FILE_OPEN,
             nt::FILE_SYNCHRONOUS_IO_NONALERT | nt::FILE_OPEN_REPARSE_POINT,
         )?;
-        let (file_type, len) = fileio::metadata_by_handle(&handle, rel)?;
-        Ok(Metadata { file_type, len })
+        let (file_type, len, nlink, modified) = fileio::metadata_by_handle(&handle, rel)?;
+        Ok(Metadata {
+            file_type,
+            len,
+            nlink,
+            modified,
+        })
     }
 
     fn access(&self, rel: &OsStr, mode: AccessMode) -> Result<()> {

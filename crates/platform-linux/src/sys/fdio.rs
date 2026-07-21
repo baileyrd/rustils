@@ -8,6 +8,7 @@ use std::ffi::CStr;
 use std::ffi::{CString, OsStr, OsString};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::time::{Duration, SystemTime};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 use platform::fs::{FileType, UnixMode};
@@ -273,9 +274,23 @@ pub fn read_link(dirfd: RawFd, rel: &OsStr) -> Result<OsString> {
     }
 }
 
-/// `fstatat` returning (file type, size).
+/// Reconstructs a [`SystemTime`] from a POSIX `(seconds, nanoseconds)`
+/// pair, where `nanoseconds` is always in `0..1_000_000_000` regardless
+/// of the sign of `seconds` (the `timespec` convention every stat-family
+/// call here follows) — a plain "seconds since epoch as `i64`" cast
+/// would get pre-1970 timestamps wrong by simply flipping the sign of
+/// the nanosecond remainder too.
+fn system_time_from_secs_nsec(secs: i64, nsec: u32) -> SystemTime {
+    if secs >= 0 {
+        SystemTime::UNIX_EPOCH + Duration::new(secs as u64, nsec)
+    } else {
+        SystemTime::UNIX_EPOCH - Duration::new((-secs) as u64, 0) + Duration::new(0, nsec)
+    }
+}
+
+/// `fstatat` returning (file type, size, link count, mtime).
 #[cfg(not(feature = "track-p"))]
-pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
+pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64, u64, SystemTime)> {
     let c_rel = to_cstring(rel, "fstatat")?;
     // SAFETY: `stat` is a plain-old-data struct for which the all-zeroes
     // bit pattern is a valid (if meaningless) value; the kernel overwrites
@@ -293,7 +308,8 @@ pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
         m if m == c::S_IFLNK => FileType::Symlink,
         _ => FileType::Other,
     };
-    Ok((ft, st.st_size as u64))
+    let modified = system_time_from_secs_nsec(st.st_mtime, st.st_mtime_nsec as u32);
+    Ok((ft, st.st_size as u64, st.st_nlink, modified))
 }
 
 /// Metadata via raw `SYS_statx` — Track P. There is no raw `fstatat` worth
@@ -301,7 +317,7 @@ pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
 /// layout is kernel-defined (no glibc `struct stat` translation shim), and
 /// the mode/size fields live at const-asserted offsets in rusty_libc.
 #[cfg(feature = "track-p")]
-pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
+pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64, u64, SystemTime)> {
     use rusty_libc::fs as rfs;
     let c_rel = to_cstring(rel, "statx")?;
     let st = rfs::statx(
@@ -317,7 +333,8 @@ pub fn statat(dirfd: RawFd, rel: &OsStr) -> Result<(FileType, u64)> {
         rfs::S_IFLNK => FileType::Symlink,
         _ => FileType::Other,
     };
-    Ok((ft, st.stx_size))
+    let modified = system_time_from_secs_nsec(st.stx_mtime.tv_sec, st.stx_mtime.tv_nsec);
+    Ok((ft, st.stx_size, u64::from(st.stx_nlink), modified))
 }
 
 /// `S_ISUID`/`S_ISGID`/`S_ISVTX` decoded from `fstatat`'s `st_mode`, plus
@@ -343,6 +360,7 @@ pub fn unix_mode(dirfd: RawFd, rel: &OsStr) -> Result<UnixMode> {
         sticky: st.st_mode & c::S_ISVTX != 0,
         uid: st.st_uid,
         gid: st.st_gid,
+        permissions: (st.st_mode & 0o777) as u16,
     })
 }
 
@@ -366,6 +384,7 @@ pub fn unix_mode(dirfd: RawFd, rel: &OsStr) -> Result<UnixMode> {
         sticky: mode & c::S_ISVTX != 0,
         uid: st.stx_uid,
         gid: st.stx_gid,
+        permissions: (mode & 0o777) as u16,
     })
 }
 

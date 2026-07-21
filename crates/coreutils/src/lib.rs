@@ -89,4 +89,31 @@ pub mod native {
     pub fn terminal() -> Box<dyn platform::term::Terminal> {
         Box::new(platform_windows::WindowsTerminal::new())
     }
+
+    /// `uid` → account name, numeric-string fallback when there's no
+    /// such account (or, on Windows, no `uid` concept at all —
+    /// `Dir::unix_mode` is always `None` there, so this never actually
+    /// gets called with a real value on that backend, but still needs
+    /// to exist for `rls -l`'s call site to compile on every target).
+    /// `ls -l`'s donor material, coreutils gap backlog #65.
+    #[cfg(target_os = "linux")]
+    pub fn user_name(uid: u32) -> String {
+        platform_linux::user_name(uid).unwrap_or_else(|| uid.to_string())
+    }
+
+    #[cfg(windows)]
+    pub fn user_name(uid: u32) -> String {
+        uid.to_string()
+    }
+
+    /// `gid` → group name, on the same terms as [`user_name`].
+    #[cfg(target_os = "linux")]
+    pub fn group_name(gid: u32) -> String {
+        platform_linux::group_name(gid).unwrap_or_else(|| gid.to_string())
+    }
+
+    #[cfg(windows)]
+    pub fn group_name(gid: u32) -> String {
+        gid.to_string()
+    }
 }
