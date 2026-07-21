@@ -131,6 +131,26 @@ fn make_pipe(stdin_slot: bool) -> Result<(OwnedWinHandle, OwnedWinHandle)> {
     Ok((child, parent))
 }
 
+/// An inheritable duplicate of a [`Stdio::File`]'s underlying handle
+/// (rustils#51, D5) — downcasts to this backend's own `WindowsFile` via
+/// [`platform::fs::File::as_any`] to reach the handle
+/// [`crate::sys::handle::duplicate`] wraps as inheritable; a `File` from
+/// a foreign backend fails `Unsupported` rather than guessing how to
+/// extract a handle from it.
+fn inheritable_dup_of_file(file: &dyn platform::fs::File) -> Result<OwnedWinHandle> {
+    let windows_file = file
+        .as_any()
+        .downcast_ref::<crate::fs::WindowsFile>()
+        .ok_or_else(|| {
+            PlatformError::new(
+                ErrorKind::Unsupported,
+                OsCode::None,
+                "CreateProcessW: Stdio::File from a foreign backend",
+            )
+        })?;
+    crate::sys::handle::duplicate(&windows_file.handle, true)
+}
+
 fn inheritable_dup_of_std(slot: u32) -> Result<Option<SlotHandle>> {
     // SAFETY: `GetStdHandle` takes a documented slot constant and has no
     // other preconditions.
@@ -208,7 +228,7 @@ pub fn spawn(
     command_line: &[u16],
     cwd: &OsStr,
     env: &EnvSpec,
-    stdio: [Stdio; 3],
+    stdio: [&Stdio; 3],
     new_group: bool,
 ) -> Result<(OwnedWinHandle, Option<OwnedWinHandle>, u32, ParentPipes)> {
     let mut line: Vec<u16> = command_line.to_vec();
@@ -216,7 +236,9 @@ pub fn spawn(
     let cwd_w = to_wide_nul(cwd);
     let block = env_block(env);
 
-    let use_handles = stdio.iter().any(|s| matches!(s, Stdio::Null | Stdio::Pipe));
+    let use_handles = stdio
+        .iter()
+        .any(|s| matches!(s, Stdio::Null | Stdio::Pipe | Stdio::File(_)));
     let mut parent_pipes: ParentPipes = [None, None, None];
     let mut slot_handles: [Option<SlotHandle>; 3] = [None, None, None];
     // SAFETY: STARTUPINFOW is plain-old-data for which all-zeroes is a
@@ -237,6 +259,9 @@ pub fn spawn(
                     let (child, parent) = make_pipe(i == 0)?;
                     parent_pipes[i] = Some(parent);
                     Some(SlotHandle::Owned(child))
+                }
+                Stdio::File(file) => {
+                    Some(SlotHandle::Owned(inheritable_dup_of_file(file.as_ref())?))
                 }
             };
         }

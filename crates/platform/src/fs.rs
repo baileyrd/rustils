@@ -145,6 +145,31 @@ pub trait File {
     /// consumer needed it. [`Dir::write_atomic`] (D11, convergence
     /// roadmap Phase 3) is that consumer.
     fn sync_all(&mut self) -> Result<()>;
+
+    /// Duplicate this file's underlying OS handle (`dup(2)`/
+    /// `DuplicateHandle`) into a fresh, independent `File` that shares
+    /// the *same open-file description* — position included: a read or
+    /// write through either handle advances the other's next
+    /// read/write position too. That sharing is the entire point (it is
+    /// what `dup` gives and a fresh [`Dir::open`] of the same path does
+    /// not): it is what lets a caller build a `2>&1`/`&> file`-style
+    /// shell redirect — both `stdout` and `stderr` wired to
+    /// [`crate::process::Stdio::File`] instances that share one
+    /// underlying description, exactly like a real shell's `dup2`-based
+    /// redirect does (RFC v2 D5 — `rush/src/exec.rs`'s `Redirect::Dup`).
+    /// The clone is not inheritable by a child process on its own (Unix:
+    /// `CLOEXEC` set; Windows: not marked inheritable) — inheritance is
+    /// [`crate::process::Stdio::File`]'s job at spawn time, not this
+    /// method's.
+    fn try_clone(&self) -> Result<Box<dyn File>>;
+
+    /// Downcast hook, mirroring [`crate::process::Child::as_any_mut`] —
+    /// lets a backend's `Spawner::spawn` recover its own concrete
+    /// `File` type (`LinuxFile`/`WindowsFile`) from a
+    /// [`crate::process::Stdio::File`]'s object-safe `Box<dyn File>` to
+    /// reach the raw fd/handle a spawn-time `dup2`/`DuplicateHandle`
+    /// wiring needs. Not for consumers.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// An open directory: the capability all filesystem operations flow through.

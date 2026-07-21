@@ -7,7 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, GroupSpec, Signal, Spawner, Stdio};
+use platform::process::{Child, Command, EnvSpec, ExitStatus, GroupSpec, Signal, Spawner, Stdio};
 
 /// A scripted response for a program name.
 #[derive(Debug, Clone)]
@@ -15,6 +15,65 @@ pub struct Script {
     pub status: ExitStatus,
     /// Bytes served through `take_stdout` when the spawn piped stdout.
     pub stdout: Vec<u8>,
+}
+
+/// Which kind of [`Stdio`] wiring a slot requested — [`SpawnRecord`]'s
+/// field type. Not the `Stdio` value itself: a [`Stdio::File`] owns an
+/// open OS handle with no honest "log a copy of it" meaning (`Stdio`
+/// itself is deliberately not `Clone`, see its own doc comment) — a
+/// test assertion over the spawn log only ever needs to know *which*
+/// wiring was requested, not the file identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdioKind {
+    Inherit,
+    Null,
+    Pipe,
+    File,
+}
+
+impl From<&Stdio> for StdioKind {
+    fn from(stdio: &Stdio) -> Self {
+        match stdio {
+            Stdio::Inherit => StdioKind::Inherit,
+            Stdio::Null => StdioKind::Null,
+            Stdio::Pipe => StdioKind::Pipe,
+            Stdio::File(_) => StdioKind::File,
+        }
+    }
+}
+
+/// A logged spawn request, for test assertions (`MockSpawner::spawned`).
+/// A snapshot of [`Command`]'s shape rather than the `Command` itself:
+/// `Command` is deliberately not `Clone` (a `Stdio::File` slot owns an
+/// open OS handle — see `Command`'s own doc comment), so this captures
+/// the same fields as an independent, `Clone`-able value, with `Stdio`
+/// reduced to [`StdioKind`] (which wiring was requested, not the file
+/// identity — nothing meaningful to log there anyway).
+#[derive(Debug, Clone)]
+pub struct SpawnRecord {
+    pub program: OsString,
+    pub argv: Vec<OsString>,
+    pub cwd: OsString,
+    pub env: EnvSpec,
+    pub stdin: StdioKind,
+    pub stdout: StdioKind,
+    pub stderr: StdioKind,
+    pub group: GroupSpec,
+}
+
+impl From<&Command> for SpawnRecord {
+    fn from(cmd: &Command) -> Self {
+        Self {
+            program: cmd.program.clone(),
+            argv: cmd.argv.clone(),
+            cwd: cmd.cwd.clone(),
+            env: cmd.env.clone(),
+            stdin: StdioKind::from(&cmd.stdin),
+            stdout: StdioKind::from(&cmd.stdout),
+            stderr: StdioKind::from(&cmd.stderr),
+            group: cmd.group,
+        }
+    }
 }
 
 /// In-memory pipe end: reads drain the buffer; writes are accepted and
@@ -43,6 +102,24 @@ impl platform::fs::File for MemPipe {
     fn sync_all(&mut self) -> Result<()> {
         Ok(())
     }
+
+    /// A best-effort, independent-copy clone rather than a real shared-
+    /// offset duplicate (contrast `MockFile::try_clone` in `fs.rs`, which
+    /// does share): `MemPipe` is this module's own private
+    /// `take_stdin`/`take_stdout`/`take_stderr` representation, never
+    /// constructible as a `Stdio::File` value, so the exact `dup`
+    /// semantics the trait's doc comment describes are never exercised
+    /// through this type.
+    fn try_clone(&self) -> Result<Box<dyn platform::fs::File>> {
+        Ok(Box::new(MemPipe {
+            data: self.data.clone(),
+            pos: self.pos,
+        }))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Spawner whose children terminate exactly as scripted.
@@ -50,7 +127,7 @@ impl platform::fs::File for MemPipe {
 pub struct MockSpawner {
     scripts: BTreeMap<OsString, Script>,
     /// Log of every spawn request, for assertions.
-    pub spawned: Arc<Mutex<Vec<Command>>>,
+    pub spawned: Arc<Mutex<Vec<SpawnRecord>>>,
 }
 
 impl MockSpawner {
@@ -166,7 +243,7 @@ fn mem_pipe(data: Vec<u8>) -> Box<dyn platform::fs::File> {
 
 impl Spawner for MockSpawner {
     fn spawn(&self, cmd: &Command) -> Result<Box<dyn Child>> {
-        crate::sync::lock(&self.spawned).push(cmd.clone());
+        crate::sync::lock(&self.spawned).push(SpawnRecord::from(cmd));
         let script = self.scripts.get(&cmd.program).ok_or_else(|| {
             PlatformError::new(ErrorKind::NotFound, OsCode::None, "spawn")
                 .with_path(cmd.program.clone())
@@ -174,9 +251,9 @@ impl Spawner for MockSpawner {
         Ok(Box::new(MockChild {
             status: script.status,
             own_group: !matches!(cmd.group, GroupSpec::Inherit),
-            stdin: (cmd.stdin == Stdio::Pipe).then(|| mem_pipe(Vec::new())),
-            stdout: (cmd.stdout == Stdio::Pipe).then(|| mem_pipe(script.stdout.clone())),
-            stderr: (cmd.stderr == Stdio::Pipe).then(|| mem_pipe(Vec::new())),
+            stdin: matches!(cmd.stdin, Stdio::Pipe).then(|| mem_pipe(Vec::new())),
+            stdout: matches!(cmd.stdout, Stdio::Pipe).then(|| mem_pipe(script.stdout.clone())),
+            stderr: matches!(cmd.stderr, Stdio::Pipe).then(|| mem_pipe(Vec::new())),
         }))
     }
 

@@ -164,7 +164,7 @@ pub fn spawn(
     args: &[OsString],
     cwd: &OsStr,
     env: &EnvSpec,
-    stdio: [Stdio; 3],
+    stdio: [&Stdio; 3],
     group: GroupSpec,
 ) -> Result<(c::pid_t, ParentPipes)> {
     // Every allocation happens here, before the spawn call (B-1/B-2 fix
@@ -249,6 +249,42 @@ pub fn spawn(
                 }
                 child_ends[fd] = Some(child);
                 parent_ends[fd] = Some(parent);
+            }
+            Stdio::File(file) => {
+                use std::os::fd::{AsFd, AsRawFd};
+                // Unlike Pipe, no new fd is created here: the source
+                // stays owned by the caller's `Stdio::File` (borrowed
+                // for exactly this call — `stdio` outlives it), and
+                // `adddup2` itself is the duplication, same as it is
+                // for Pipe's already-open ends.
+                let linux_file = file
+                    .as_any()
+                    .downcast_ref::<crate::fs::LinuxFile>()
+                    .ok_or_else(|| {
+                        PlatformError::new(
+                            ErrorKind::Unsupported,
+                            OsCode::None,
+                            "posix_spawn: Stdio::File from a foreign backend",
+                        )
+                    })?;
+                // SAFETY: `actions.0` is initialized; `linux_file`'s fd
+                // is open and valid for the duration of this call. dup2
+                // onto 0/1/2 clears CLOEXEC on the duplicate in the
+                // child even when the source itself is CLOEXEC
+                // (`Dir::open`'s default) — fork copies the whole fd
+                // table regardless of CLOEXEC, and `adddup2`'s dup2
+                // runs in the child before exec, the same reasoning the
+                // Pipe arm above already documents.
+                let r = unsafe {
+                    c::posix_spawn_file_actions_adddup2(
+                        &mut actions.0,
+                        linux_file.as_fd().as_raw_fd(),
+                        fd as c::c_int,
+                    )
+                };
+                if r != 0 {
+                    return Err(errno_err("posix_spawn adddup2", r, OsStr::new("")));
+                }
             }
         }
     }

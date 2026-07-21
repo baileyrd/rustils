@@ -121,6 +121,28 @@ versus re-deriving it; either way this material is the curriculum (M1).
 - Parent-side pipe-end lifetime lessons (a lingering write end starves
   the reader of EOF — the deadlock class, documented at each site).
 
+**Landed (`Stdio::File` slice) 2026-07-21** — rustils#51, filed
+immediately after #43–#46 landed: converting `nexus-rush/src/job.rs`'s
+`spawn_pipeline` onto `Spawner::spawn` (to actually reach
+`GroupSpec::JoinGroup`/`Signal`-based `kill_tree`/`wait_job` — all
+`Child`-trait methods, only reachable on a child rustils itself
+spawned) hit a real blocker one level up: `Stdio` had no way to wire a
+stage's stdin/stdout/stderr to an arbitrary already-open file at all,
+which `nexus-rush/src/exec.rs::build_stage`'s shell redirects (`>
+file`/`>> file`/`< file`/`2>&1`/`&> file`) need. Added
+`Stdio::File(Box<dyn platform::fs::File>)` (mechanism: a spawn-time
+`dup2`/`DuplicateHandle`-style wiring onto the child, borrowing rather
+than consuming the caller's `File`) and `File::try_clone` (the
+`2>&1`/`&> file` shape specifically — two `Stdio::File` slots sharing
+one open-file description, position included, which two independent
+`Dir::open` calls on the same path cannot substitute for). Forced
+`Stdio` to give up `Copy`/`Clone`/`PartialEq`/`Eq` and `Command` to give
+up `Clone` (an open OS handle has no honest value-type-copy meaning);
+`platform-mock`'s spawn log moved from cloning `Command` to a
+`SpawnRecord`/`StdioKind` snapshot type as the direct consequence. See
+`docs/behavior/process.md` and `docs/behavior/fs.md` for the full
+contract.
+
 ### D6 — `rush/src/trap.rs`: the signal-deferral core
 
 Handler = one atomic store; consumption at safe points via `swap(0)`.

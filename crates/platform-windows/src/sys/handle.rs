@@ -7,9 +7,13 @@
 
 #![allow(unsafe_code)]
 
+use std::ffi::OsStr;
 use std::os::windows::io::{AsHandle, BorrowedHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
 
+use platform::error::Result;
+
 use crate::ffi::win32_surface as w;
+use crate::sys::errmap;
 
 /// An owned Win32 HANDLE, closed on drop.
 #[derive(Debug)]
@@ -64,6 +68,40 @@ impl From<OwnedHandle> for OwnedWinHandle {
         // ownership.
         Self(handle.into_raw_handle())
     }
+}
+
+/// `DuplicateHandle` within this process (`File::try_clone`, D5,
+/// rustils#51; also the spawn-time `Stdio::File` inheritable-wiring
+/// step in `sys::proc`). `DUPLICATE_SAME_ACCESS` copies the source's own
+/// access rights rather than requiring the caller to know them; the
+/// duplicate shares the same underlying open-file object (position
+/// included — that sharing is `DuplicateHandle`'s defining property,
+/// same as `dup(2)`'s). `inheritable` controls only whether *this*
+/// duplicate's own inherit flag is set — `try_clone`'s callers want
+/// `false` (a clone is not automatically handed to a future child just
+/// because it was requested), `sys::proc`'s spawn-time wiring wants
+/// `true`.
+pub fn duplicate(handle: &OwnedWinHandle, inheritable: bool) -> Result<OwnedWinHandle> {
+    let mut dup: w::HANDLE = std::ptr::null_mut();
+    // SAFETY: `handle.as_raw()` is a valid open handle for the life of
+    // `handle`; `GetCurrentProcess()` is a pseudo-handle valid without
+    // acquisition or release; `dup` is a valid out-pointer.
+    let ok = unsafe {
+        w::DuplicateHandle(
+            w::GetCurrentProcess(),
+            handle.as_raw(),
+            w::GetCurrentProcess(),
+            &mut dup,
+            0,
+            i32::from(inheritable),
+            w::DUPLICATE_SAME_ACCESS,
+        )
+    };
+    if ok == 0 {
+        return Err(errmap::last_win32_err("DuplicateHandle", OsStr::new("")));
+    }
+    OwnedWinHandle::from_raw(dup)
+        .ok_or_else(|| errmap::last_win32_err("DuplicateHandle", OsStr::new("")))
 }
 
 impl Drop for OwnedWinHandle {

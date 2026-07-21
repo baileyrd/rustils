@@ -37,7 +37,10 @@ impl WindowsDir {
 /// An open file backed by an [`OwnedWinHandle`]. Public for std interop
 /// (RFC v2 §5.1); the [`Dir`] trait still hands out `Box<dyn File>`.
 pub struct WindowsFile {
-    handle: OwnedWinHandle,
+    // `pub(crate)`, not private: `sys::proc`'s `Stdio::File` spawn-time
+    // wiring (rustils#51) needs the handle after downcasting through
+    // `File::as_any` from a different module in this crate.
+    pub(crate) handle: OwnedWinHandle,
 }
 
 // std interop (RFC v2 §5.1): delegation to OwnedWinHandle's conversions —
@@ -101,6 +104,16 @@ impl File for WindowsFile {
 
     fn sync_all(&mut self) -> Result<()> {
         fileio::sync_all(&self.handle)
+    }
+
+    fn try_clone(&self) -> Result<Box<dyn File>> {
+        Ok(Box::new(WindowsFile {
+            handle: crate::sys::handle::duplicate(&self.handle, false)?,
+        }))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

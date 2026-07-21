@@ -29,7 +29,14 @@ pub enum EnvSpec {
 }
 
 /// Stdio wiring for the child.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+///
+/// Not `Copy`/`Clone`/`PartialEq`/`Eq`, unlike most small value types in
+/// this module: [`Stdio::File`] owns a `Box<dyn` [`crate::fs::File`]`>`,
+/// an open OS handle with no honest "clone for a log/comparison" meaning
+/// (duplicating it is [`crate::fs::File::try_clone`], a real OS call,
+/// not a value-type copy). Consumers that need to distinguish variants
+/// use `matches!` rather than `==`.
+#[derive(Default)]
 pub enum Stdio {
     #[default]
     Inherit,
@@ -41,6 +48,35 @@ pub enum Stdio {
     /// drain (or drop) captured output before blocking in `wait`, and
     /// drop the stdin end to deliver EOF.
     Pipe,
+    /// Wire this slot to an already-open [`crate::fs::File`] — D5
+    /// (`docs/extraction-map.md`), forced by shell redirects (`>
+    /// file`/`>> file`/`< file`/`2>&1`/`&> file`, rustils#51): the
+    /// caller opens (or [`crate::fs::File::try_clone`]s, for the
+    /// `2>&1`/`&> file` shared-description shape) the target file and
+    /// hands ownership to this slot. Mechanism only — a backend wires
+    /// the given file's underlying fd/handle onto the child's
+    /// stdin/stdout/stderr (Unix: `dup2`-equivalent; Windows: an
+    /// inheritable `DuplicateHandle`) without consuming or closing it,
+    /// so the same [`crate::fs::File`] a caller already holds keeps
+    /// working after `spawn` returns. `Spawner::spawn` fails
+    /// `Unsupported` for a `File` value it didn't create itself (a
+    /// foreign backend's `File` impl) rather than guessing how to
+    /// extract a raw handle from it.
+    File(Box<dyn crate::fs::File>),
+}
+
+impl std::fmt::Debug for Stdio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Stdio::Inherit => write!(f, "Inherit"),
+            Stdio::Null => write!(f, "Null"),
+            Stdio::Pipe => write!(f, "Pipe"),
+            // The boxed `dyn File` has no `Debug` bound of its own (RFC
+            // v2 §5.1: object-safe traits here stay minimal) — printed
+            // as a marker, not its contents.
+            Stdio::File(_) => write!(f, "File(..)"),
+        }
+    }
 }
 
 /// Process-group placement for the child (RFC v2 §5.4 — groups are
@@ -73,7 +109,13 @@ pub enum GroupSpec {
 /// discrete arguments end to end; any joining or quoting an OS requires is
 /// backend-internal and never caller-visible (the Windows backend's quoting
 /// module is the security boundary here — RFC v2 §5.4).
-#[derive(Debug, Clone)]
+///
+/// Not `Clone`, unlike most builder types: a [`Stdio::File`] slot owns an
+/// open OS handle with no honest "clone for a log/re-spawn" meaning (see
+/// [`Stdio`]'s own doc comment). A consumer that wants to log spawn
+/// requests for test assertions (e.g. `platform-mock`'s `SpawnRecord`)
+/// snapshots the fields it needs rather than cloning the whole value.
+#[derive(Debug)]
 pub struct Command {
     pub program: OsString,
     pub argv: Vec<OsString>,
