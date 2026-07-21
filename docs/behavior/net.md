@@ -187,7 +187,10 @@ from the other two slices (see below).
 
 - Any TLS/crypto behavior — out of scope for this trait by design (see
   Scope above); consumers layer their own wire security over the plain
-  `TcpStream`.
+  `TcpStream`. The full design research on why this stays true — and
+  which one narrow piece (OS trust-anchor access) could ever land
+  elsewhere in the PAL under §3's gate — is
+  `../design-discussion-tls.md` (rustils#70).
 - The exact `ErrorKind` `unix_connect` reports for a `path` that never
   named any socket file at all, as opposed to a stale-but-present one —
   asserted only as "fails, not hangs," not pinned to one `ErrorKind`
