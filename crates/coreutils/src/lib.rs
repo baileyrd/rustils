@@ -22,8 +22,8 @@ pub mod term_report;
 pub mod native {
     use std::path::Path;
 
-    use platform::error::Result;
-    use platform::fs::Dir;
+    use platform::error::{ErrorKind, OsCode, PlatformError, Result};
+    use platform::fs::{Dir, File, OpenOptions};
 
     #[cfg(target_os = "linux")]
     pub fn open_dir(path: &Path) -> Result<Box<dyn Dir>> {
@@ -33,6 +33,31 @@ pub mod native {
     #[cfg(windows)]
     pub fn open_dir(path: &Path) -> Result<Box<dyn Dir>> {
         Ok(Box::new(platform_windows::WindowsDir::open_ambient(path)?))
+    }
+
+    /// Opens `path` — an arbitrary ambient *file* path, not necessarily
+    /// under a directory this process already has a capability for —
+    /// with `opts`. Splits into parent directory + file name and goes
+    /// through [`open_dir`] + [`Dir::open`], the only portable way to
+    /// reach an arbitrary path through the `platform::fs` capability
+    /// model (rustils#62): every binary here that takes a bare CLI path
+    /// argument for a file should use this rather than re-deriving the
+    /// split itself, or — as `rtee` originally did — reaching past
+    /// `platform::fs` for `std::fs::File` directly.
+    pub fn open_ambient_file(path: &Path, opts: &OpenOptions) -> Result<Box<dyn File>> {
+        let parent = path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let name = path.file_name().ok_or_else(|| {
+            PlatformError::new(
+                ErrorKind::InvalidInput,
+                OsCode::None,
+                "open_ambient_file: not a file path",
+            )
+            .with_path(path)
+        })?;
+        open_dir(parent)?.open(name, opts)
     }
 
     #[cfg(target_os = "linux")]
