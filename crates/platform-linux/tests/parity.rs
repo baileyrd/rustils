@@ -774,3 +774,141 @@ fn linux_give_terminal_honest_when_redirected() {
         "no controlling terminal: give_terminal must refuse"
     );
 }
+
+/// `Stdio::File` (rustils#51, D5): a stage's stdin/stdout wired to an
+/// already-open `File` instead of `Inherit`/`Null`/`Pipe` — the `< file`
+/// and `> file` shell-redirect shapes.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_stdio_file_wiring() {
+    use platform::fs::{Dir, OpenOptions};
+    use platform::process::{Command, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir().join(format!("rustils-stdio-file-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mk tempdir");
+    let dir = platform_linux::LinuxDir::open_ambient(&tmp).expect("open ambient");
+    let s = platform_linux::LinuxSpawner;
+
+    // `< file`: stdin wired to an already-open File, read back through a
+    // piped stdout to prove the child actually saw the file's bytes.
+    let mut in_file = dir
+        .open(OsStr::new("in.txt"), &OpenOptions::create_truncate())
+        .expect("create in.txt");
+    in_file.write(b"hello from file").expect("write in.txt");
+    drop(in_file);
+    let in_read = dir
+        .open(OsStr::new("in.txt"), &OpenOptions::read())
+        .expect("reopen in.txt for read");
+
+    let mut c = Command::new("cat", tmp.clone());
+    c.stdin = Stdio::File(in_read);
+    c.stdout = Stdio::Pipe;
+    let mut child = s.spawn(&c).expect("spawn");
+    let mut out = child.take_stdout().expect("piped stdout");
+    let mut got = Vec::new();
+    let mut buf = [0u8; 64];
+    loop {
+        let n = out.read(&mut buf).expect("read");
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&buf[..n]);
+    }
+    assert_eq!(got, b"hello from file");
+    assert!(child.wait().expect("wait").success());
+
+    // `> file`: stdout wired to an already-open File, read back directly
+    // from the filesystem afterward.
+    let out_file = dir
+        .open(OsStr::new("out.txt"), &OpenOptions::create_truncate())
+        .expect("create out.txt");
+    let mut c = Command::new("sh", tmp.clone())
+        .arg("-c")
+        .arg("printf 'to file'");
+    c.stdout = Stdio::File(out_file);
+    let child = s.spawn(&c).expect("spawn");
+    assert!(child.wait().expect("wait").success());
+    let mut readback = dir
+        .open(OsStr::new("out.txt"), &OpenOptions::read())
+        .expect("reopen out.txt");
+    let mut got = [0u8; 64];
+    let n = readback.read(&mut got).expect("read out.txt");
+    assert_eq!(&got[..n], b"to file");
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// `File::try_clone` + `Stdio::File` (rustils#51, D5): the `2>&1`/
+/// `&> file` shape — stdout and stderr wired to *clones* of the same
+/// open file, which must share the file's offset the way a real `dup2`
+/// pair does, so sequential writes through either fd append rather than
+/// clobber each other at position 0.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_stdio_file_try_clone_shares_offset_for_dup_style_redirect() {
+    use platform::fs::{Dir, OpenOptions};
+    use platform::process::{Command, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir().join(format!("rustils-stdio-dup-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mk tempdir");
+    let dir = platform_linux::LinuxDir::open_ambient(&tmp).expect("open ambient");
+    let s = platform_linux::LinuxSpawner;
+
+    let out_file = dir
+        .open(OsStr::new("both.txt"), &OpenOptions::create_truncate())
+        .expect("create both.txt");
+    let err_file = out_file.try_clone().expect("try_clone");
+
+    let mut c = Command::new("sh", tmp.clone())
+        .arg("-c")
+        .arg("printf 'out-' >&1; printf 'err-' >&2");
+    c.stdout = Stdio::File(out_file);
+    c.stderr = Stdio::File(err_file);
+    let child = s.spawn(&c).expect("spawn");
+    assert!(child.wait().expect("wait").success());
+
+    let mut readback = dir
+        .open(OsStr::new("both.txt"), &OpenOptions::read())
+        .expect("reopen both.txt");
+    let mut got = Vec::new();
+    let mut buf = [0u8; 64];
+    loop {
+        let n = readback.read(&mut buf).expect("read");
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&buf[..n]);
+    }
+    assert_eq!(
+        got, b"out-err-",
+        "shared offset: sequential writes append, not clobber"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// `Stdio::File` refuses a `File` from a foreign backend (rustils#51):
+/// `LinuxSpawner` can only extract a raw fd from its own `LinuxFile`, so
+/// a `platform-mock`-backed `File` fails `Unsupported` rather than the
+/// spawn silently ignoring the redirect or panicking.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_stdio_file_refuses_a_foreign_backend_file() {
+    use platform::fs::{Dir, OpenOptions};
+    use platform::process::{Command, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_linux::LinuxSpawner;
+    let foreign = platform_mock::MockDir::root()
+        .with_file("f", b"x".to_vec())
+        .open(OsStr::new("f"), &OpenOptions::read())
+        .expect("mock open");
+
+    let mut c = Command::new("cat", tmp);
+    c.stdin = Stdio::File(foreign);
+    let e = s
+        .spawn(&c)
+        .err()
+        .expect("must refuse: foreign File backend");
+    assert_eq!(e.kind, platform::error::ErrorKind::Unsupported);
+}

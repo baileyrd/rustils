@@ -120,6 +120,28 @@ pub fn write(fd: &OwnedFd, buf: &[u8]) -> Result<usize> {
     rusty_libc::fd::write(fd.as_raw_fd(), buf).map_err(|e| trackp_err("write", e))
 }
 
+/// `fcntl(fd, F_DUPFD_CLOEXEC, 0)` — `File::try_clone` (D5, rustils#51):
+/// a fresh fd sharing the same open-file description (position
+/// included) as `fd`, with `CLOEXEC` set atomically on the duplicate so
+/// it never leaks into an unrelated future child by accident — spawn-
+/// time inheritance for a `Stdio::File` slot is a separate, explicit
+/// step (`sys::spawn`'s own `Stdio::File` handling), not this function's
+/// concern. Not track-p-gated: like `fsync`/`pidfd_open`, rusty_libc has
+/// no `fcntl` surface of its own yet (outside its ~25-syscall
+/// inventory) — one implementation for both configurations.
+pub fn dup_cloexec(fd: &OwnedFd) -> Result<OwnedFd> {
+    // SAFETY: `fd` is a valid open descriptor; `F_DUPFD_CLOEXEC` takes a
+    // plain integer (the minimum fd number to return, `0` = any) as its
+    // sole variadic argument.
+    let new_fd = unsafe { c::fcntl(fd.as_raw_fd(), c::F_DUPFD_CLOEXEC, 0) };
+    if new_fd < 0 {
+        return Err(os_err("fcntl(F_DUPFD_CLOEXEC)", OsStr::new("")));
+    }
+    // SAFETY: `new_fd` is a freshly returned, valid, otherwise-unowned
+    // descriptor; wrapped exactly once.
+    Ok(unsafe { OwnedFd::from_raw_fd(new_fd) })
+}
+
 /// `mkdirat(dirfd, rel, 0o777)` (mode filtered by umask, as usual).
 #[cfg(not(feature = "track-p"))]
 pub fn mkdirat(dirfd: RawFd, rel: &OsStr) -> Result<()> {

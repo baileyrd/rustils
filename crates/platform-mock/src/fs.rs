@@ -67,10 +67,17 @@ impl MockDir {
     }
 }
 
-/// An open handle to an in-memory file.
+/// An open handle to an in-memory file. `pos` is `Arc<Mutex<_>>`, not a
+/// plain field: [`File::try_clone`] must share it with the clone (a real
+/// `dup`/`DuplicateHandle`'s defining property — a read/write through
+/// either handle advances the other's next position too), which a
+/// bare-`usize` field re-initialized per handle cannot express. Two
+/// independent [`Dir::open`] calls on the same path still get two
+/// independent `Arc`s (correctly *not* sharing), since `open` always
+/// constructs a fresh one — only `try_clone` shares the existing `Arc`.
 pub struct MockFile {
     node: Arc<Mutex<Node>>,
-    pos: usize,
+    pos: Arc<Mutex<usize>>,
     readable: bool,
     writable: bool,
 }
@@ -92,10 +99,11 @@ impl File for MockFile {
                 "read",
             ));
         };
-        let remaining = &data[self.pos.min(data.len())..];
+        let mut pos = crate::sync::lock(&self.pos);
+        let remaining = &data[(*pos).min(data.len())..];
         let count = remaining.len().min(buf.len());
         buf[..count].copy_from_slice(&remaining[..count]);
-        self.pos += count;
+        *pos += count;
         Ok(count)
     }
 
@@ -126,6 +134,20 @@ impl File for MockFile {
     fn sync_all(&mut self) -> Result<()> {
         // In-memory: writes are already "durable" the instant they land.
         Ok(())
+    }
+
+    fn try_clone(&self) -> Result<Box<dyn File>> {
+        Ok(Box::new(MockFile {
+            node: self.node.clone(),
+            // Shared, not re-initialized: see this struct's doc comment.
+            pos: self.pos.clone(),
+            readable: self.readable,
+            writable: self.writable,
+        }))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -159,7 +181,7 @@ impl Dir for MockDir {
         };
         Ok(Box::new(MockFile {
             node,
-            pos: 0,
+            pos: Arc::new(Mutex::new(0)),
             readable: opts.read,
             writable: opts.write || opts.append,
         }))
@@ -377,6 +399,32 @@ mod tests {
         let mut buf = [0u8; 16];
         let n = f.read(&mut buf).expect("read");
         assert_eq!(&buf[..n], b"hello");
+    }
+
+    #[test]
+    fn try_clone_shares_the_read_position() {
+        let root = MockDir::root().with_file("a.txt", *b"0123456789");
+        let mut f = root
+            .open(OsStr::new("a.txt"), &OpenOptions::read())
+            .expect("open");
+        let mut clone = f.try_clone().expect("try_clone");
+
+        let mut buf = [0u8; 3];
+        assert_eq!(f.read(&mut buf).expect("read via original"), 3);
+        assert_eq!(&buf, b"012");
+
+        // The clone's next read must continue from where the ORIGINAL
+        // left off — the shared-offset property `dup(2)`/
+        // `DuplicateHandle` have and a fresh `open` of the same path
+        // does not (this trait method's whole point, per its own doc
+        // comment: D5's `2>&1`/`&> file` shape needs it).
+        assert_eq!(clone.read(&mut buf).expect("read via clone"), 3);
+        assert_eq!(&buf, b"345");
+
+        // And back through the original: still shared, not two
+        // independent cursors that happened to start aligned.
+        assert_eq!(f.read(&mut buf).expect("read via original again"), 3);
+        assert_eq!(&buf, b"678");
     }
 
     #[test]

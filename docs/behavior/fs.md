@@ -90,6 +90,30 @@ convenience.
   entries yield different ones. Neither follows a terminal symlink,
   matching `metadata`.
 
+- `try_clone` (D5, rustils#51 — forced by `platform::process::Stdio::File`
+  needing the `2>&1`/`&> file` shell-redirect shape): duplicates the
+  underlying OS handle (`dup(2)`/`DuplicateHandle`) into a fresh, owned
+  `File` that shares the *same open-file description* as the original —
+  position included. A read or write through either handle advances the
+  other's next read/write position too; this is the entire reason the
+  method exists (a fresh `Dir::open` of the same path gets an
+  independent position instead, and cannot substitute for it). The
+  clone is not itself inheritable by a spawned child — Unix: `CLOEXEC`
+  set (`F_DUPFD_CLOEXEC`); Windows: not marked inheritable
+  (`DuplicateHandle` with `bInheritHandle = FALSE`) — inheritance is
+  `Stdio::File`'s job at spawn time, a separate, explicit step.
+  Pinned by a dedicated test in each native backend's `tests/parity.rs`
+  (`linux_stdio_file_try_clone_shares_offset_for_dup_style_redirect` /
+  the Windows copy), not the shared `assert_fs_behavior` — exercised
+  through `Stdio::File` rather than `try_clone` in isolation, since the
+  redirect-duplication shape is the actual forcing use case: two
+  processes' worth of writes through clones of the same file interleave
+  correctly (append, not clobber at position 0) only if the position is
+  genuinely shared. `platform-mock`'s own
+  `try_clone_shares_the_read_position` unit test
+  (`platform-mock/src/fs.rs`) pins the same property directly, needing
+  no OS fixture at all.
+
 ## Deliberately unspecified
 
 - `read_dir` ordering. Backends differ (mock: name order as an accident of

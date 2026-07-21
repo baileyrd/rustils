@@ -19,6 +19,42 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.10.0
+
+- Added `Stdio::File(Box<dyn platform::fs::File>)` (D5, rustils#51):
+  wires a spawned child's stdin/stdout/stderr to an already-open `File`
+  — the `> file`/`>> file`/`< file`/`2>&1`/`&> file` shell-redirect
+  shapes `nexus-rush/src/exec.rs::build_stage` needs, filed as a direct
+  follow-up once #43–#46 landed and converting `job.rs`'s
+  `spawn_pipeline` onto `Spawner::spawn` hit this gap. Mechanism only:
+  a spawn-time `dup2`/`DuplicateHandle`-style wiring that borrows rather
+  than consumes the caller's `File`. `Spawner::spawn` fails
+  `Unsupported` for a `Stdio::File` value from a different backend.
+- Added `File::try_clone(&self) -> Result<Box<dyn File>>` (`dup(2)`/
+  `DuplicateHandle`, shared open-file-description including position) —
+  the `2>&1`/`&> file` half of the same redirect shape: two
+  `Stdio::File` slots need to share one file's position, which two
+  independent `Dir::open` calls on the same path cannot give them.
+  Also added `File::as_any(&self) -> &dyn Any`, a downcast hook mirroring
+  `Child::as_any_mut` that a backend's `Spawner::spawn` needs to recover
+  its own concrete `File` type from a `Stdio::File`'s object-safe
+  `Box<dyn File>`. Both are **new required methods on an existing
+  trait** — breaking for any `File` implementor (none outside this
+  repo's own three backends exist yet).
+- **Breaking**: `Stdio` is no longer `Copy`/`Clone`/`PartialEq`/`Eq`,
+  and `Command` is no longer `Clone` — a `Stdio::File` slot owns an
+  open OS handle with no honest value-type-copy meaning. Callers that
+  compared `Stdio` with `==` need `matches!` instead (the only such
+  caller in this repo, `platform-mock`, was updated).
+- **Breaking** (`platform-mock` only): `MockSpawner::spawned`'s element
+  type changed from `Command` to a new `SpawnRecord` struct (with a new
+  `StdioKind` enum for its `stdin`/`stdout`/`stderr` fields) — the
+  direct consequence of `Command` losing `Clone`; existing field-name
+  reads (`spawned[0].cwd`, etc.) are source-compatible.
+- Per `docs/versioning.md` §2, all of the above land in one `y`-bump
+  regardless of which parts are additive vs. breaking, same rule as
+  every prior entry here.
+
 ### 0.9.0
 
 - Added the job-control slice (rustils#43–#46), converging

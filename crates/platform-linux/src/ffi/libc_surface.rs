@@ -149,3 +149,11 @@ pub use libc::{
     SECCOMP_MODE_FILTER, SECCOMP_RET_ALLOW, SECCOMP_RET_DATA, SECCOMP_RET_ERRNO,
     SECCOMP_RET_KILL_PROCESS,
 };
+
+// Fs surface, `File::try_clone` (D5, rustils#51 — the `2>&1`/`&> file`
+// shell-redirect shape `nexus-rush/src/exec.rs::build_stage` needs).
+// `F_DUPFD_CLOEXEC` duplicates a fd to the lowest available number with
+// `CLOEXEC` set atomically on the new fd — the same fd-family `fcntl`
+// already admitted above for the Net rustils#41 escape hatch, one more
+// `cmd` value on it.
+pub use libc::F_DUPFD_CLOEXEC;

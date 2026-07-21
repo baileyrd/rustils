@@ -90,6 +90,36 @@ assertions.
   and never let a parent-side copy of a write end leak into another
   child (the backends guarantee their own ends don't: CLOEXEC on unix,
   explicit non-inheritance on Windows).
+- `Stdio::File(file)` (D5, rustils#51 — forced by
+  `nexus-rush/src/exec.rs::build_stage`'s shell redirects: `> file`,
+  `>> file`, `< file`, `2>&1`, `&> file`): wires the slot to an
+  already-open `File` the caller provides, ownership moving into the
+  `Command`. Mechanism only — the backend duplicates the given file's
+  fd/handle onto the child's stdin/stdout/stderr at spawn time (Unix:
+  `posix_spawn_file_actions_adddup2`; Windows: an inheritable
+  `DuplicateHandle` assigned via `STARTUPINFO`) without consuming or
+  closing the caller's own `File`, which keeps working after `spawn`
+  returns (or after `Command` itself drops, if the caller extracted no
+  reference to it beforehand). `2>&1`/`&> file`-style duplication —
+  stdout and stderr both landing correctly in one target rather than
+  clobbering each other — needs [`crate::fs::File::try_clone`]
+  (`docs/behavior/fs.md`), not two independent `Dir::open` calls on the
+  same path: only `try_clone` shares the file's position the way a
+  real `dup2` pair does.
+  `Spawner::spawn` fails `Unsupported` for a `Stdio::File` whose `File`
+  wasn't produced by that same backend (a foreign backend's `File`
+  impl) rather than guessing how to extract a raw handle from it —
+  pinned by a dedicated test per backend
+  (`linux_stdio_file_refuses_a_foreign_backend_file` / the Windows
+  copy), not the shared assertion set.
+- `Command` is not `Clone` (a `Stdio::File` slot owns an open OS handle
+  with no honest "clone for a log/re-spawn" meaning) and `Stdio` is not
+  `Copy`/`Clone`/`PartialEq`/`Eq` for the same reason — consumers that
+  need to distinguish `Stdio` variants use `matches!`, not `==`.
+  `platform-mock::MockSpawner`'s spawn log (`spawned`) reflects this:
+  it stores `SpawnRecord`/`StdioKind` snapshots (which wiring kind was
+  requested, not the `Command`/`Stdio` values themselves), not clones
+  of the original `Command`.
 
 ## Deliberately unspecified (until the R2 hoist supplies them)
 
