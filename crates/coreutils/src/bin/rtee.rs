@@ -7,7 +7,20 @@
 
 use std::io::Write;
 
+use platform::fs::{File, OpenOptions};
 use platform::process::{Command, ExitStatus, Stdio};
+
+/// `platform::fs::File::write` may return short; loop until `buf` is
+/// fully written, the same guarantee `std::io::Write::write_all` gives
+/// (and that the direct-to-stdout side of this same copy loop already
+/// gets for free from `std::io::Write`).
+fn write_all(file: &mut dyn File, mut buf: &[u8]) -> platform::error::Result<()> {
+    while !buf.is_empty() {
+        let n = file.write(buf)?;
+        buf = &buf[n..];
+    }
+    Ok(())
+}
 
 fn main() -> std::process::ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
@@ -27,10 +40,13 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let mut out_file = match std::fs::File::create(file_arg) {
+    let mut out_file = match coreutils::native::open_ambient_file(
+        std::path::Path::new(file_arg),
+        &OpenOptions::create_truncate(),
+    ) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("rtee: {}: {e}", file_arg.to_string_lossy());
+            eprintln!("rtee: {e}");
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -64,7 +80,7 @@ fn main() -> std::process::ExitCode {
                 if stdout.write_all(&buf[..n]).is_err() {
                     break;
                 }
-                if let Err(e) = out_file.write_all(&buf[..n]) {
+                if let Err(e) = write_all(out_file.as_mut(), &buf[..n]) {
                     eprintln!("rtee: write: {e}");
                     return std::process::ExitCode::FAILURE;
                 }
