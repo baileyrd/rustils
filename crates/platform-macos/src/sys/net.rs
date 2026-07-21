@@ -459,6 +459,17 @@ fn to_sockaddr_un(path: &Path) -> Result<(c::sockaddr_un, c::socklen_t)> {
 
 /// Unpack a kernel-filled `sockaddr_un` back into a path, or `None` for
 /// an unnamed (anonymous) `AF_UNIX` endpoint.
+///
+/// Darwin quirk, found live on real hardware (not caught by
+/// cross-compile-check alone): unlike Linux, `getpeername`/`getsockname`
+/// on an anonymous/unbound endpoint here does not shrink the returned
+/// `len` back to the header-only size — `len` can still span the whole
+/// zeroed `sun_path` buffer even though no path was ever written. Rather
+/// than trust `len` to signal "no path" (the Linux-only assumption the
+/// `len <= offset` check below made), an all-zero `sun_path` is treated
+/// as unbound regardless of what `len` claims: `to_sockaddr_un` already
+/// refuses any path containing an embedded NUL byte, so a real bound
+/// path can never come back as entirely zero bytes.
 fn from_sockaddr_un(addr: &c::sockaddr_un, len: c::socklen_t) -> Result<Option<PathBuf>> {
     let offset = sun_path_offset();
     let len = len as usize;
@@ -474,6 +485,9 @@ fn from_sockaddr_un(addr: &c::sockaddr_un, len: c::socklen_t) -> Result<Option<P
     }
     let path_len = (len - offset).min(addr.sun_path.len());
     let mut bytes: Vec<u8> = addr.sun_path[..path_len].iter().map(|&b| b as u8).collect();
+    if bytes.iter().all(|&b| b == 0) {
+        return Ok(None);
+    }
     if bytes.last() == Some(&0) {
         bytes.pop();
     }

@@ -426,7 +426,20 @@ developed under) — a dedicated `macos` CI job (real `macos-latest`
 runner, scoped to `platform`/`platform-mock`/`platform-macos` rather
 than `cargo test --workspace`, since `coreutils`'s bins aren't portable
 to macOS yet either) now runs `clippy`/`test` on real hardware on every
-push and PR, closing that gap.
+push and PR, closing that gap. **Justified the gap immediately**: the
+`macos` job's first-ever run found a genuine bug cross-compile-check
+alone could never catch — `getpeername`/`getsockname` on an
+anonymous/unbound `AF_UNIX` client does not shrink the returned `len`
+back to the header-only size the way Linux does, so `from_sockaddr_un`
+read the whole zeroed `sun_path` buffer as path content instead of
+recognizing there was none, returning `Some("\0\0…")` instead of `None`
+(`macos_unix_conforms`, `net_parity.rs`). Fixed by treating an
+all-zero `sun_path` as unbound regardless of what `len` reports —
+sound because `to_sockaddr_un` already refuses any path containing an
+embedded NUL byte, so a real bound path can never come back all-zero.
+No `docs/divergences.md` entry: this brings macOS behavior in line
+with the documented `platform::net` contract, not a permanent
+divergence from it.
 
 **Landed (`TcpStream::set_read_timeout`) 2026-07-20** — added while
 starting the rusty_rdp convergence this entry names as cheapest;
