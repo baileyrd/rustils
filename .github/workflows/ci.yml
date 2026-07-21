@@ -40,6 +40,28 @@ jobs:
           cargo clippy -p platform-linux --features track-p --all-targets -- -D warnings
           cargo test -p platform-linux --features track-p
 
+  # rustils#48: platform-macos's own real-hardware verification. A
+  # separate job, not a `test` matrix leg — `cargo test --workspace` on
+  # macOS would also try to build coreutils' bin targets, which call
+  # `coreutils::native::spawner()` unconditionally; that module is gated
+  # `#[cfg(any(target_os = "linux", windows))]` because platform-macos is
+  # deliberately net-only (no process/fs slice — RFC v2 §3, no consumer
+  # has forced one), so those bins simply don't compile there yet. Scoped
+  # to the three crates that actually run on macOS today, the same
+  # per-job scoping `miri` and `cross-compile-check` already use for
+  # what they can and can't cover.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: clippy (warnings are errors)
+        run: cargo clippy -p platform -p platform-mock -p platform-macos --all-targets -- -D warnings
+      - name: test
+        run: cargo test -p platform -p platform-mock -p platform-macos
+
   unsafe-scope:
     # RFC v2 §6: unsafe is confined to backend sys/ module trees. This job
     # fails if `unsafe` appears anywhere else. Grep-based on purpose —
