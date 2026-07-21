@@ -87,6 +87,17 @@ pub use libc::{recvfrom, sendto, SOCK_DGRAM};
 // is a plain millisecond `DWORD` instead — see sys::net's doc comment).
 pub use libc::{suseconds_t, time_t, timeval, SO_RCVTIMEO};
 
+// Net surface, raw-fd + non-blocking escape hatch (rustils#41, rusty_tail's
+// rusty_tokio hand-rolled async runtime — wants to register a socket with
+// its own reactor rather than reimplement socket setup from scratch).
+// Inherent-impl-only on the concrete Linux socket types, not part of the
+// object-safe `platform::net` traits (see those types' own doc comments).
+// `fcntl` has no dedicated admission elsewhere in this file (unlike
+// `ioctl`, admitted solely for `TIOCGWINSZ`) — `F_GETFL`/`F_SETFL` read
+// and write a socket's open-file-status flags, of which `O_NONBLOCK` is
+// the one this escape hatch toggles.
+pub use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
+
 // Security surface, CSPRNG slice (RFC v2 R5+, D15, first slice) —
 // rusty_rdp's five hand-rolled `/dev/urandom` reads. No libc *wrapper*
 // function for `getrandom(2)` is admitted here (unlike `renameat2`,
