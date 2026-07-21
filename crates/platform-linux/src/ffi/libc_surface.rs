@@ -150,6 +150,24 @@ pub use libc::{
     SECCOMP_RET_KILL_PROCESS,
 };
 
+// Tun surface (RFC v2 R5+, D14) — rusty_tail's ts-tun, the single named
+// consumer. `IFF_TUN`/`IFF_NO_PI`/`TUNSETIFF` are admitted here (unlike
+// Landlock, this ioctl predates pidfd_open/renameat2 and libc does carry
+// it); `SIOCSIFADDR`/`SIOCSIFNETMASK`/`SIOCSIFMTU`/`SIOCGIFFLAGS`/
+// `SIOCSIFFLAGS` have no libc admission on this generic Linux target at
+// all (only libc's android/l4re-specific paths carry them) — the same
+// escape-hatch shape as Landlock's raw syscalls, just raw ioctl request
+// numbers instead: stable, documented Linux kernel `ioctl(2)` request
+// codes (`<linux/sockios.h>`), not expected to ever change. `AF_INET`/
+// `SOCK_DGRAM`/`socket`/`ioctl`/`open`/`O_RDWR` are all already admitted
+// above for the Net/Landlock slices.
+pub use libc::{c_ulong, IFF_NO_PI, IFF_TUN, TUNSETIFF};
+pub const SIOCSIFADDR: c_ulong = 0x8916;
+pub const SIOCSIFNETMASK: c_ulong = 0x891c;
+pub const SIOCSIFMTU: c_ulong = 0x8922;
+pub const SIOCGIFFLAGS: c_ulong = 0x8913;
+pub const SIOCSIFFLAGS: c_ulong = 0x8914;
+
 // Fs surface, `File::try_clone` (D5, rustils#51 — the `2>&1`/`&> file`
 // shell-redirect shape `nexus-rush/src/exec.rs::build_stage` needs).
 // `F_DUPFD_CLOEXEC` duplicates a fd to the lowest available number with

@@ -19,6 +19,43 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.11.0
+
+- Added the Tun / virtual-link surface (D14, convergence roadmap Phase
+  8): `platform::tun::{Tun, TunDevice}`, forced by rusty_tail's
+  `ts-tun`, the single named consumer. `Tun::create(name, ipv4,
+  prefix_len, mtu)` bundles device creation, IPv4/prefix addressing
+  (which installs the connected route), MTU, and bring-up into one
+  call, mirroring `ts-tun/src/sys.rs`'s own hand-rolled ioctl sequence
+  exactly. Linux: `/dev/net/tun` + `TUNSETIFF`, then
+  `SIOCSIFADDR`/`SIOCSIFNETMASK`/`SIOCSIFMTU`/flags-up over a throwaway
+  `AF_INET`/`SOCK_DGRAM` socket — live-verified against a real kernel
+  (real interface, real installed route, a real kernel-routed outbound
+  packet, and a hand-crafted checksummed inbound packet delivered to a
+  bound `UdpSocket`), not merely cross-compile-checked.
+- The concrete `platform_linux::LinuxTunDevice` additionally exposes
+  `AsFd`/`AsRawFd`/`set_nonblocking` on the concrete (non-boxed) type —
+  the same raw-fd escape hatch rustils#41/#42 established for `Net`,
+  since `ts-tun` needs to register the device's fd with tokio's own
+  reactor directly, exactly as `ts-magicsock` did onto
+  `platform_linux::LinuxUdpSocket`.
+- `platform_windows::WindowsTun::create` reports `ErrorKind::Unsupported`
+  explicitly rather than the module being absent — no Windows consumer
+  has named itself (`ts-tun` is `#![cfg(target_os = "linux")]` only), so
+  there is no donor evidence for a `wintun`-backed shape yet. No
+  `platform-macos` `Tun` impl exists at all — same "no consumer, no
+  speculative surface" call.
+- Added `platform_mock::{MockTun, MockTunDevice}`: does not simulate
+  kernel routing (unlike `MockUdpSocket`/`MockTcpStream`, there is no
+  peer-socket "other side" to fake for a TUN device — the real
+  counterpart is the kernel's own routing table). Scriptable instead:
+  `MockTunDevice::queue_inbound` queues bytes for a future `read()`,
+  and `written_packets()` returns everything recorded via `write()`.
+  Does not block on an empty queue (`read()` returns `Ok(0)`
+  immediately) — no real mechanism to block on, the same tradeoff
+  `MockCsprng` makes for randomness quality.
+- See `docs/behavior/tun.md` for the full behavior contract.
+
 ### 0.10.0
 
 - Added `Stdio::File(Box<dyn platform::fs::File>)` (D5, rustils#51):

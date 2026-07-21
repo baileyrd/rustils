@@ -23,6 +23,7 @@ mod process;
 mod security;
 mod signals;
 mod term;
+mod tun;
 
 pub use fs::{LinuxDir, LinuxFile};
 pub use net::{
@@ -32,3 +33,4 @@ pub use process::{LinuxChild, LinuxSpawner};
 pub use security::{LinuxCsprng, LinuxSandbox};
 pub use signals::LinuxSignalSource;
 pub use term::LinuxTerminal;
+pub use tun::{LinuxTun, LinuxTunDevice};

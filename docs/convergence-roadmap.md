@@ -622,6 +622,56 @@ Windows via wintun, `Unsupported` until a Windows consumer names itself.
 Lower priority than Phases 1–6 only because it has one consumer instead
 of several — not because the donor evidence is weak.
 
+**Landed 2026-07-21** — `platform::tun::{Tun, TunDevice}`. Linux:
+`/dev/net/tun` + `TUNSETIFF`, then `SIOCSIFADDR`/`SIOCSIFNETMASK`/
+`SIOCSIFMTU`/bring-up via a throwaway `AF_INET`/`SOCK_DGRAM` socket —
+the exact ioctl sequence `ts-tun/src/sys.rs` already hand-rolls.
+Live-verified in this sandboxed environment (`/dev/net/tun` and
+`CAP_NET_ADMIN` both genuinely present, confirmed with a raw C probe
+before committing to live tests over cross-compile-check-only): a real
+created interface, a real installed connected route, a real
+kernel-routed outbound packet read back off the device, and a
+hand-crafted, independently-checksummed inbound IP/UDP packet actually
+delivered to a bound `UdpSocket` via `write`. Ships the same raw-fd
+escape hatch (`AsFd`/`AsRawFd`/`set_nonblocking` on the concrete
+`LinuxTunDevice`, not the object-safe trait) rustils#41/#42 established
+for `Net`, since `ts-tun` needs to register the fd with tokio's own
+reactor exactly like `ts-magicsock` did. Windows's `WindowsTun` reports
+`ErrorKind::Unsupported` explicitly — `ts-tun` (the only named
+consumer) is Linux-only, so there is no donor evidence for a Windows
+shape yet. `platform-mock`'s `MockTun`/`MockTunDevice` don't simulate
+kernel routing (no "other side" to fake, unlike `MockUdpSocket`) —
+scriptable instead: a test queues bytes for `read()` and asserts
+against everything `write()` recorded. See `docs/behavior/tun.md` for
+the full contract. rusty_tail's own `ts-tun` convergence onto this is a
+follow-up in that repo, not this PR.
+
+**CI finding, same day** — the dev sandbox this landed against runs as
+root with `CAP_NET_ADMIN`, but CI's hosted `ubuntu-latest` runner
+executes the `test` job as an unprivileged user, so `tun_parity.rs`'s
+live tests failed there with `PermissionDenied` on `TUNSETIFF` —
+caught by CI itself, not by re-checking assumptions ahead of time (the
+same class of gap the Sandbox slice's Landlock `ENOSYS` finding was,
+just discovered a step later in the workflow this time). Fixed by
+having the tests skip gracefully rather than fail when lacking the
+capability (mirroring `security_sandbox.rs`'s `NotEnforced` degrade
+path), plus a dedicated `sudo`-elevated CI step so CI still gets
+genuine live coverage instead of only ever exercising the skip branch.
+
+**Second CI finding, same day** — with the privileged step actually
+running, `linux_tun_outbound_packet_is_readable_from_the_device` still
+failed intermittently: the very first packet read off a freshly-up'd
+interface was not always the crafted UDP datagram the test just sent —
+a classic TUN-device gotcha where the kernel emits its own spontaneous
+traffic (IPv6 router solicitation/neighbor discovery, most commonly)
+on a newly-up'd interface, arriving ahead of whatever a caller sent.
+Fixed in the test only (not `sys::tun`'s `create`/`configure`, which
+already behave correctly — a real device genuinely offers no ordering
+guarantee here, so a production consumer needs to filter anyway):
+`device.read()` now loops, skipping any packet that doesn't match the
+expected IPv4/UDP/destination-port shape, bounded at 16 attempts so a
+genuine regression still fails fast rather than hanging.
+
 ## Phase 9 — Windowing + Registry/Config (nexus-only)
 
 **Lands here** (trait) **+ nexus** (convergence), last and thinnest per
