@@ -88,7 +88,11 @@ impl Drop for OwnedSocket {
 }
 
 impl OwnedSocket {
-    fn raw(&self) -> w::SOCKET {
+    /// The raw Winsock `SOCKET` value. `pub(crate)` (rustils#59):
+    /// `net.rs`'s `AsRawSocket` impls delegate here, the same "expose
+    /// the raw handle, keep ownership private" shape `AsRawFd` gives
+    /// the fd backends.
+    pub(crate) fn raw(&self) -> w::SOCKET {
         self.0
     }
 }
@@ -283,6 +287,21 @@ pub fn tcp_accept(listen_sock: &OwnedSocket) -> Result<(OwnedSocket, SocketAddr)
     }
     let peer = from_sockaddr(&buf)?;
     Ok((OwnedSocket(sock), peer))
+}
+
+/// `ioctlsocket(FIONBIO, ...)` (rustils#59) — Winsock's equivalent of
+/// `fcntl(F_SETFL, O_NONBLOCK)`. Additive: existing blocking callers
+/// are unaffected unless they opt in.
+pub fn set_nonblocking(sock: &OwnedSocket, nonblocking: bool) -> Result<()> {
+    let mut mode: u32 = u32::from(nonblocking);
+    // SAFETY: `sock` is caller-owned and valid; `&mut mode` is a valid
+    // `u32` out-param `ioctlsocket` both reads (the requested mode) and
+    // is documented to only read for `FIONBIO`, outliving the call.
+    let r = unsafe { w::ioctlsocket(sock.raw(), w::FIONBIO, &mut mode) };
+    if r != 0 {
+        return Err(wsa_err("ioctlsocket(FIONBIO)"));
+    }
+    Ok(())
 }
 
 /// `setsockopt(IPPROTO_TCP, TCP_NODELAY, ...)`.

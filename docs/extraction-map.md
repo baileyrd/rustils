@@ -499,6 +499,17 @@ for the full backend notes and why the constructors were necessary
 (without them, the accessors would be unreachable — `Box<dyn Trait>`
 erases the concrete type with no safe way back).
 
+**Landed (Windows raw-socket + non-blocking escape hatch) 2026-07-21**
+— rustils#59, the `platform-windows` half of the gap #41 left,
+forced by the same `rusty_tokio` consumer scoping a Windows/IOCP
+reactor (`rusty_tokio#6`). `AsRawSocket`/`set_nonblocking`
+(`ioctlsocket(FIONBIO, ...)`) plus concrete `connect`/`bind`/`accept`
+constructors on the five Windows socket types — inherent-impl-only,
+same reasoning as the Linux slice. No `AsSocket`/ownership-transfer
+interop (Windows's `sysnet::OwnedSocket` is this crate's own newtype,
+not std's `std::os::windows::io::OwnedSocket`) — not asked for. See
+the convergence roadmap's Phase 5 entry for the full backend notes.
+
 ### Cross-cutting notes from the full-ecosystem survey
 
 - **nexus re-derived already-landed rustils work**: its
