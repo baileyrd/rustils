@@ -183,8 +183,26 @@ fn linux_tun_outbound_packet_is_readable_from_the_device() {
     let dest = SocketAddr::new(IpAddr::V4(peer), 44444);
     sender.send_to(b"outbound payload", dest).expect("send_to");
 
+    // A freshly-up'd interface can carry kernel-spontaneous traffic of
+    // its own (IPv6 router solicitation/neighbor discovery, most
+    // commonly) ahead of what a caller just sent — a real device gives
+    // no guarantee that the very first packet read is the one this
+    // test is waiting for. Observed on CI: the first `read()` returned
+    // a non-IPv4 packet, not the crafted UDP datagram. Skip anything
+    // that doesn't match rather than asserting on read #1
+    // unconditionally; bounded so a genuine regression still fails
+    // fast instead of hanging.
     let mut buf = [0u8; 256];
-    let n = device.read(&mut buf).expect("read routed packet");
+    let n = (0..16)
+        .find_map(|_| {
+            let n = device.read(&mut buf).expect("read from device");
+            let is_ours = n >= 28
+                && buf[0] >> 4 == 4
+                && buf[9] == 17
+                && u16::from_be_bytes([buf[22], buf[23]]) == 44444;
+            is_ours.then_some(n)
+        })
+        .expect("our UDP packet never arrived within 16 reads");
     let pkt = &buf[..n];
     assert!(n >= 28, "at least an IPv4 + UDP header");
     assert_eq!(pkt[9], 17, "protocol field is UDP");

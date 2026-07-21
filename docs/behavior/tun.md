@@ -36,6 +36,15 @@ an honest pass, not a hard requirement to run as root. A dedicated,
 `sudo`-elevated CI step re-runs just this suite so CI itself still gets
 genuine live coverage rather than only ever exercising the skip path.
 
+With that privileged step actually exercising real kernel behavior, it
+also surfaced a genuine device-level ordering gotcha: a freshly-up'd
+interface can carry the kernel's own spontaneous traffic (IPv6 router
+solicitation/neighbor discovery, most commonly) ahead of whatever a
+caller just sent — there is no guarantee the first packet `read()`
+returns is the one a test (or any consumer) is waiting for. The
+outbound-packet test now loops, skipping anything that doesn't match
+the expected shape, rather than asserting on the very first read.
+
 ## Specified
 
 - `Tun::create` opens a new TUN (not TAP — no consumer needs an

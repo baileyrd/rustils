@@ -658,6 +658,20 @@ capability (mirroring `security_sandbox.rs`'s `NotEnforced` degrade
 path), plus a dedicated `sudo`-elevated CI step so CI still gets
 genuine live coverage instead of only ever exercising the skip branch.
 
+**Second CI finding, same day** — with the privileged step actually
+running, `linux_tun_outbound_packet_is_readable_from_the_device` still
+failed intermittently: the very first packet read off a freshly-up'd
+interface was not always the crafted UDP datagram the test just sent —
+a classic TUN-device gotcha where the kernel emits its own spontaneous
+traffic (IPv6 router solicitation/neighbor discovery, most commonly)
+on a newly-up'd interface, arriving ahead of whatever a caller sent.
+Fixed in the test only (not `sys::tun`'s `create`/`configure`, which
+already behave correctly — a real device genuinely offers no ordering
+guarantee here, so a production consumer needs to filter anyway):
+`device.read()` now loops, skipping any packet that doesn't match the
+expected IPv4/UDP/destination-port shape, bounded at 16 attempts so a
+genuine regression still fails fast rather than hanging.
+
 ## Phase 9 — Windowing + Registry/Config (nexus-only)
 
 **Lands here** (trait) **+ nexus** (convergence), last and thinnest per
