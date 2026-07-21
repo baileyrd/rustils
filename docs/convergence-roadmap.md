@@ -505,6 +505,27 @@ Fixed by keying the path on a per-backend label too.
    kernel-level confinement in memory. See `docs/behavior/security.md`
    for the full contract.
 
+   **Re-verification attempt, 2026-07-21** — a fresh session tried again
+   in a different sandboxed environment (a Firecracker microVM, not the
+   prior session's container) and hit the same `ENOSYS`, but ran the
+   root cause down further this time: `Seccomp: 0` on the process (no
+   seccomp filter in play, ruling out a container policy denying the
+   syscall) and `/proc/config.gz` shows `CONFIG_SECURITY_LANDLOCK is not
+   set` — Landlock is compiled out of this kernel entirely, on a 6.18.5
+   kernel that otherwise fully supports it (added in 5.13). Confirmed
+   across two independent sandboxed sessions, of two different
+   isolation kinds (container-based and Firecracker-microVM-based),
+   that Landlock enforcement cannot be live-verified in this execution
+   environment family. `security_sandbox.rs`'s
+   `confine_filesystem_enforces_read_write_boundaries` test still passes
+   by exercising only its `NotEnforced` degrade-path branch (early
+   return before any of the actual enforcement assertions) — the
+   `Enforced` branch remains unexercised in any session to date. Closing
+   this out needs a bare-metal host or VM with `CONFIG_SECURITY_LANDLOCK=y`,
+   not just another sandboxed session — treat repeating this same probe
+   in another container/microVM as a known dead end rather than
+   something worth re-trying.
+
 ## Phase 7 — PTY surface (D13)
 
 **Blocked on a named consumer** — this is the one item on this roadmap
