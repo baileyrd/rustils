@@ -6,13 +6,18 @@ governs *when* each future surface gets built, this document records *where*
 everything belongs when it does. For *in what order* — the phased
 migration/convergence sequencing across this repo and the parallel
 tools — see [`docs/convergence-roadmap.md`](convergence-roadmap.md).
+A rendered version of this picture, including the 2026-07-21
+beside-the-PAL shelf additions recorded below, is
+[`docs/architecture.svg`](architecture.svg).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  LAYER 3 — Application                                       │
 │  rush · coreutils · rusty_tail · rusty_naner · rusty_lsp     │
 │  SHH · rusty_rdp · rusty_whisper · rusty_llama · nexus       │
-│  (beside, not on top: rusty_lines · rusty_regx)              │
+│  (beside, not on top: rusty_lines · rusty_regx · planned:    │
+│   rusty_tls · rusty_http · rusty_wire · rusty_ansder ·       │
+│   rusty_json — see Layer 3 notes)                            │
 ├──────────────────────────────────────────────────────────────┤
 │  LAYER 2 — Platform Abstraction Layer (platform crate)       │
 │  today: Fs · Process · Events · Net (TCP/Unix/UDP, done) ·   │
@@ -112,7 +117,46 @@ Consumers pull the PAL into shape; the PAL never speculates (§3).
   Process its cheapest first convergence).
 - **Beside the PAL, not on top:** rusty_lines (line editing) and
   rusty_regx (regex) are OS-independent pure-Rust libraries; they need no
-  abstraction layer and simply serve the applications.
+  abstraction layer and simply serve the applications. **Shelf additions
+  planned 2026-07-21** (out of the TLS design research,
+  `docs/design-discussion-tls.md`, and the same-day ecosystem source
+  survey), governed by the shelf's own gate — extracted only where two-plus
+  repos demonstrably duplicate the logic today:
+  - **rusty_tls** (planned): sans-IO TLS engine wrapping rustls behind a
+    consumers-never-see-rustls seam, one verify-by-default trust policy
+    with a named no-verify escape hatch, sync + async adapters. Consumers:
+    rusty_request (forcing), rusty_rdp (migrates its `tls.rs`), rusty_tail
+    (latent). TLS stays permanently out of `Net`'s traits (D16).
+  - **rusty_http** (planned, gate met): sans-IO HTTP/1.1 message layer +
+    `Url` type. Six live hand-rolls today: rusty_request's
+    `http1.rs`/`url.rs`/`cookie.rs` (the donor code) and four in rusty_tail
+    (controlhttp, DERP client, LocalAPI client, and a hand-rolled HTTP
+    *server* in ts-localapi).
+  - **rusty_json** (optional, gate arguably met): rusty_request's no-serde
+    `json.rs` and nexus's hand-rolled JSON config are two real
+    implementations; extract when a second consumer reaches for one.
+  - **rusty_wire** (planned, owner override 2026-07-21 of the initial
+    "rows only" call): the endian-explicit byte-cursor `Reader`/`Writer`
+    micro-crate. Donors: rdp's `cursor.rs` (287 lines, the core, taken
+    near-verbatim) and shh's `wire/` (173 lines — its SSH composites stay
+    a dialect above the core, never in it). Justified as the foundation
+    rusty_ansder builds on, plus one fuzzed implementation of
+    overrun/truncation handling instead of N.
+  - **rusty_ansder** (planned, same owner override): ASN.1/DER
+    definite-length TLV + general typed layer, built on rusty_wire.
+    Donor: rdp's already-layered DER stack — `ber.rs` (273 lines, taken
+    whole) plus the general half of `krb5/asn1.rs` (528 lines); the
+    Kerberos-specific structures stay in rdp, rebuilt on top. X.509
+    remains a gated row inside this crate (named consumer: rusty_tls, if
+    it ever looks inside certificates); no crypto ever — it parses,
+    never verifies.
+  - Declined: shared crypto primitives (shh uses RustCrypto/dalek by
+    choice; rdp's hand-rolls are protocol-mandated obsolete algorithms)
+    and base64 (no duplication exists). rusty_provider stays off the
+    shelf entirely — a parallel tokio/reqwest stack with no live gap.
+  - Shelf build order: rusty_wire → rusty_ansder (dependency); rusty_tls,
+    rusty_http, rusty_json are independent of each other and of those
+    two.
 
 ## The convergence rule
 
