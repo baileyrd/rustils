@@ -48,6 +48,8 @@ pub mod sys;
 #[cfg(windows)]
 mod term;
 #[cfg(windows)]
+mod tun;
+#[cfg(windows)]
 pub mod util;
 pub use winargv;
 
@@ -66,3 +68,5 @@ pub use security::{WindowsCsprng, WindowsSandbox};
 pub use signals::WindowsSignalSource;
 #[cfg(windows)]
 pub use term::WindowsTerminal;
+#[cfg(windows)]
+pub use tun::WindowsTun;

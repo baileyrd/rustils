@@ -18,5 +18,6 @@ pub mod net;
 pub mod process;
 pub mod security;
 pub mod term;
+pub mod tun;
 
 pub use error::{ErrorKind, OsCode, PlatformError};

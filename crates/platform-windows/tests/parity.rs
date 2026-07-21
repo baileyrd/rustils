@@ -843,3 +843,19 @@ fn windows_stdio_file_refuses_a_foreign_backend_file() {
         .expect("must refuse: foreign File backend");
     assert_eq!(e.kind, platform::error::ErrorKind::Unsupported);
 }
+
+/// Tun surface (RFC v2 R5+, D14): `wintun` has no backend yet — no
+/// Windows consumer has named itself (rusty_tail's `ts-tun`, the only
+/// named consumer for this surface, is Linux-only). `create` reports
+/// `Unsupported` explicitly rather than the module being missing.
+#[test]
+fn windows_tun_create_is_unsupported() {
+    use platform::tun::Tun;
+
+    let tun = platform_windows::WindowsTun;
+    let e = tun
+        .create("ts0", std::net::Ipv4Addr::new(100, 64, 0, 1), 10, 1280)
+        .err()
+        .expect("must refuse: no wintun backend");
+    assert_eq!(e.kind, platform::error::ErrorKind::Unsupported);
+}

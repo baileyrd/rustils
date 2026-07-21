@@ -622,6 +622,30 @@ Windows via wintun, `Unsupported` until a Windows consumer names itself.
 Lower priority than Phases 1–6 only because it has one consumer instead
 of several — not because the donor evidence is weak.
 
+**Landed 2026-07-21** — `platform::tun::{Tun, TunDevice}`. Linux:
+`/dev/net/tun` + `TUNSETIFF`, then `SIOCSIFADDR`/`SIOCSIFNETMASK`/
+`SIOCSIFMTU`/bring-up via a throwaway `AF_INET`/`SOCK_DGRAM` socket —
+the exact ioctl sequence `ts-tun/src/sys.rs` already hand-rolls.
+Live-verified in this sandboxed environment (`/dev/net/tun` and
+`CAP_NET_ADMIN` both genuinely present, confirmed with a raw C probe
+before committing to live tests over cross-compile-check-only): a real
+created interface, a real installed connected route, a real
+kernel-routed outbound packet read back off the device, and a
+hand-crafted, independently-checksummed inbound IP/UDP packet actually
+delivered to a bound `UdpSocket` via `write`. Ships the same raw-fd
+escape hatch (`AsFd`/`AsRawFd`/`set_nonblocking` on the concrete
+`LinuxTunDevice`, not the object-safe trait) rustils#41/#42 established
+for `Net`, since `ts-tun` needs to register the fd with tokio's own
+reactor exactly like `ts-magicsock` did. Windows's `WindowsTun` reports
+`ErrorKind::Unsupported` explicitly — `ts-tun` (the only named
+consumer) is Linux-only, so there is no donor evidence for a Windows
+shape yet. `platform-mock`'s `MockTun`/`MockTunDevice` don't simulate
+kernel routing (no "other side" to fake, unlike `MockUdpSocket`) —
+scriptable instead: a test queues bytes for `read()` and asserts
+against everything `write()` recorded. See `docs/behavior/tun.md` for
+the full contract. rusty_tail's own `ts-tun` convergence onto this is a
+follow-up in that repo, not this PR.
+
 ## Phase 9 — Windowing + Registry/Config (nexus-only)
 
 **Lands here** (trait) **+ nexus** (convergence), last and thinnest per

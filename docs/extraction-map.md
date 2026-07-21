@@ -342,6 +342,22 @@ ioctls behind an anticipated-but-unbuilt `TunDevice` trait (its own
 comments defer a wintun backend). A new gated surface with its named
 consumer already in hand.
 
+**Landed 2026-07-21** — `platform::tun::{Tun, TunDevice}`, mirroring
+`ts-tun/src/sys.rs`'s exact ioctl sequence on Linux (`/dev/net/tun` +
+`TUNSETIFF`, then `SIOCSIFADDR`/`SIOCSIFNETMASK`/`SIOCSIFMTU`/bring-up).
+Live-verified (not just cross-compile-checked) in this session's
+sandboxed environment, which genuinely has `/dev/net/tun` and
+`CAP_NET_ADMIN` — confirmed with a raw C probe first, the same
+discipline the Sandbox slice's `ENOSYS` finding established: check
+before assuming, and say so honestly either way. Ships the same raw-fd
+escape hatch (`AsFd`/`AsRawFd`/`set_nonblocking` on the concrete
+`LinuxTunDevice`) D16/rustils#41-#42 established for Net, since `ts-tun`
+needs to hand its fd to tokio's reactor exactly like `ts-magicsock` did.
+`WindowsTun` reports `Unsupported` explicitly — no Windows donor exists
+yet, `ts-tun` itself being Linux-only. See `docs/behavior/tun.md` and
+the convergence roadmap's Phase 8 entry for the full contract and
+backend notes.
+
 ### D15 — Security surface donors (nexus, shh, rusty_rdp)
 
 The gated Security surface now has concrete donor material:
