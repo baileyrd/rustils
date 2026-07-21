@@ -18,6 +18,28 @@ Three independently-versioned lines, per `docs/versioning.md` §1:
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock`)
 
+### 0.9.0
+
+- Added the job-control slice (rustils#43–#46), converging
+  `platform::process`/`platform::term` onto what `nexus-rush/src/job.rs`
+  needs (`baileyrd/nexus#454`): `GroupSpec::JoinGroup(pgid)` (join an
+  existing process group at spawn, D1's pipeline shape); a portable
+  `Signal` enum (`Term`/`Int`/`Hup`/`Quit`/`Kill`/`Stop`/`Cont`) —
+  `Child::kill_tree`/`kill_single` now take a `Signal` instead of a
+  hardcoded `SIGKILL`; `ExitStatus::Stopped`/`Continued` plus
+  `Child::wait_job`/`try_wait_job` (D10, the `WUNTRACED`/`WCONTINUED`
+  half of wait); and `platform::term::JobControlTerminal::give_terminal`
+  (`tcsetpgrp`), a new Unix-only extension trait implemented only by
+  `LinuxTerminal`. Breaking for existing `Child` implementers
+  (`kill_tree`/`kill_single`'s signature changed, two new required
+  methods) — per `docs/versioning.md` §2 this is a `y`-bump regardless
+  of the additive/breaking split, same as `TcpStream::set_read_timeout`
+  was. Windows gains divergence-registry entry **008** for what it
+  can't do (only `Signal::Kill`; no `GroupSpec::JoinGroup`; no
+  `wait_job`/`try_wait_job`). This bump was missed at merge time and is
+  being recorded after the fact — no functional change since #49
+  landed, just the version/changelog catching up to it.
+
 ### 0.8.0
 
 - Added a raw-fd + non-blocking escape hatch to `platform-linux`'s
