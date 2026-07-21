@@ -305,6 +305,25 @@ peek-without-reap remains unlanded — no consumer has forced it yet.
 > since the process-surface work landed; what remains — rush swapping
 > its own three duplicated PATH-walkers over to it — is ecosystem-side,
 > out of scope here without `rush`'s code in hand.
+>
+> **Landed (third wave: nlink/mtime/permissions, 2026-07-21)** —
+> coreutils gap backlog #63/#64/#65, forced by this repo's own
+> `coreutils::ls -l` reference consumer. `Metadata::nlink`/`modified`
+> (portable, no `Option`) and `UnixMode::permissions` (the standard
+> `rwxrwxrwx` bits — read-only; a `chmod`-equivalent write path is
+> #64's still-open remaining half). Live-verified per backend against
+> a second, independent source (Linux: raw `libc::stat`; Windows:
+> `std::fs::Metadata::modified()` + a raw
+> `GetFileInformationByHandleEx(FileStandardInfo, ...)` call, since
+> `MetadataExt::number_of_links` is nightly-only). Also added, outside
+> `platform::fs` entirely: `platform_linux::{user_name, group_name}`
+> (`getpwuid_r`/`getgrgid_r`) backing `coreutils::native`'s uid/gid
+> display-name resolution — a directory-service lookup, not filesystem
+> metadata, so it doesn't belong on `Dir`/`UnixMode` itself. The
+> resulting `rls -l` diffs byte-for-byte identical against real `ls -l`
+> (aside from the unduplicated `total N` header) across several stress
+> cases. See `docs/behavior/fs.md` and the convergence roadmap's Phase
+> 3 entry for the full contract and backend notes.
 
 ### D12 — Small process/events donors (each waits for its consumer)
 

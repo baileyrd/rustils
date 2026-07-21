@@ -211,6 +211,46 @@ PATH-walking implementations (`command -v`/`type`/completion) over to
 call this already-existing API — out of scope here without `rush`'s
 actual code in hand to unify against.
 
+**Landed (`Metadata`/`UnixMode` third wave: nlink, mtime, permissions)
+2026-07-21** — coreutils gap backlog #63/#64/#65's `ls -l` donor
+material, forced by this repo's own reference consumer
+(`coreutils::ls -l`, a real forcing use even though it's internal —
+RFC v2 §3 requires a named consumer, not an *external* one).
+`Metadata` gains `nlink: u64`/`modified: SystemTime` (portable —
+both backends genuinely have a link count and mtime, no `Option`
+needed, unlike `UnixMode`); `UnixMode` gains `permissions: u16` (the
+standard `rwxrwxrwx` bits, read-only — `Dir::unix_mode`'s write-side
+companion, a `chmod`-equivalent, is issue #64's remaining open half,
+still unbuilt with no consumer). Linux: `statat`/`unix_mode` extended
+in place (`fstatat`'s `st_nlink`/`st_mtime`/`st_mode & 0o777`, and the
+Track P `statx` arm's equivalent fields) rather than adding a second
+syscall. Windows: `FILE_BASIC_INFO::LastWriteTime` (already fetched
+for `metadata_by_handle`, just not previously extracted) and a new
+`file_standard_info` call (refactored from the private `end_of_file`
+helper, which already queried `FILE_STANDARD_INFO` but discarded its
+`NumberOfLinks` field). Live-verified per backend against a second,
+independent source — Linux via a raw `libc::stat` call, Windows via
+`std::fs::Metadata::modified()` plus a raw
+`GetFileInformationByHandleEx(FileStandardInfo, ...)` call (no stable
+`std` accessor exists for Windows link count —
+`MetadataExt::number_of_links` is nightly-only). See
+`docs/behavior/fs.md` for the full contract.
+
+Also added, deliberately **outside** `platform::fs` (uid/gid → display
+name is a directory-service lookup, not filesystem metadata):
+`platform_linux::{user_name, group_name}` via `getpwuid_r`/
+`getgrgid_r` (reentrant, not the classic shared-static-buffer
+variants), backing `coreutils::native::user_name`/`group_name` —
+`rls -l`'s only OS-touching addition beyond `platform::fs` itself.
+`coreutils::ls::{ls_long, format_long}` render the actual `-l`
+long-format line, diffed **byte-for-byte identical** (aside from the
+`total N` block-count header, deliberately not replicated — no
+allocated-block-count field exists anywhere in `Metadata`) against
+real `ls -l` in this session's own sandboxed environment across
+several stress cases: wide size-column alignment, `setuid` rendering,
+a zero-permission directory, a dangling symlink, and a real `nlink: 3`
+from an actual subdirectory.
+
 ## Phase 4 — Track P completion
 
 **Landed 2026-07-19, both parts.**

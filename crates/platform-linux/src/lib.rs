@@ -32,5 +32,6 @@ pub use net::{
 pub use process::{LinuxChild, LinuxSpawner};
 pub use security::{LinuxCsprng, LinuxSandbox};
 pub use signals::LinuxSignalSource;
+pub use sys::identity::{group_name, user_name};
 pub use term::LinuxTerminal;
 pub use tun::{LinuxTun, LinuxTunDevice};

@@ -6,6 +6,12 @@
 //! third copy (see `docs/behavior/fs.md`).
 
 #![cfg(windows)]
+// `windows_metadata_reports_a_real_nlink_and_mtime` makes one raw
+// `windows_sys` call directly (bypassing this crate's own code
+// entirely) to verify `Metadata::nlink` against a genuinely separate
+// path, the same reasoning `net_nonblocking.rs` gives for its own raw
+// `windows_sys` call.
+#![allow(unsafe_code)]
 
 use std::ffi::OsStr;
 
@@ -39,6 +45,17 @@ fn assert_fs_behavior(root: &dyn Dir) {
     let md = root.metadata(OsStr::new("a.bin")).expect("metadata");
     assert_eq!(md.file_type, FileType::File);
     assert_eq!(md.len, 9);
+    // Portable across backends (coreutils gap backlog #63): a real
+    // link count is always at least 1, and a file just written can't
+    // report a modification time in the future. Backend-specific
+    // values (an exact mtime, a >1 nlink for a real hard link) get
+    // their own live-verified test —
+    // `windows_metadata_reports_a_real_nlink_and_mtime`.
+    assert!(md.nlink >= 1, "nlink must be at least 1");
+    assert!(
+        md.modified <= std::time::SystemTime::now(),
+        "a freshly-written file can't be modified in the future"
+    );
 
     // missing entries are NotFound with path context
     let e = root.metadata(OsStr::new("missing")).expect_err("must fail");
@@ -300,6 +317,70 @@ fn windows_access_grants_execute_unconditionally() {
         .expect("create f");
     root.access(OsStr::new("f"), AccessMode::execute())
         .expect("Windows has no execute bit to deny on a plain data file");
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// `Metadata::nlink`/`modified` (coreutils gap backlog #63, `ls -l`
+/// donor material). `modified` is checked against
+/// `std::fs::Metadata::modified()` (std's own independent Windows
+/// metadata path); `nlink` has no *stable* std accessor
+/// (`MetadataExt::number_of_links` is nightly-only,
+/// `windows_by_handle` — rust-lang/rust#63010), so it's checked
+/// against a raw `GetFileInformationByHandleEx(FileStandardInfo, ...)`
+/// call issued directly by the test instead, bypassing this crate's
+/// own `windows_sys` calls entirely — the same "verify against a
+/// genuinely separate code path" discipline
+/// `linux_metadata_reports_a_real_nlink_mtime_and_permissions` uses
+/// via a raw `libc::stat` call.
+#[test]
+fn windows_metadata_reports_a_real_nlink_and_mtime() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FileStandardInfo, GetFileInformationByHandleEx};
+
+    let tmp = std::env::temp_dir().join(format!("rustils-metadata-ext-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mk tempdir");
+    let root = platform_windows::WindowsDir::open_ambient(&tmp).expect("open ambient");
+    root.open(OsStr::new("f"), &OpenOptions::create_truncate())
+        .expect("create f");
+
+    let md = root.metadata(OsStr::new("f")).expect("metadata");
+    let std_md = std::fs::metadata(tmp.join("f")).expect("std::fs::metadata");
+    assert_eq!(
+        md.modified,
+        std_md.modified().expect("std modified()"),
+        "mtime must match std's own independent Windows metadata"
+    );
+
+    #[repr(C)]
+    struct FileStandardInfoLayout {
+        allocation_size: i64,
+        end_of_file: i64,
+        number_of_links: u32,
+        delete_pending: u8,
+        directory: u8,
+    }
+    let std_file = std::fs::File::open(tmp.join("f")).expect("std open for raw handle");
+    // SAFETY: `std_file`'s raw handle is open and alive for the
+    // duration of this call; `info` is a valid out-buffer of exactly
+    // the queried class's size, outliving the call.
+    let info: FileStandardInfoLayout = unsafe {
+        let mut info = std::mem::zeroed::<FileStandardInfoLayout>();
+        let ok = GetFileInformationByHandleEx(
+            std_file.as_raw_handle() as _,
+            FileStandardInfo,
+            (&mut info as *mut FileStandardInfoLayout).cast(),
+            std::mem::size_of::<FileStandardInfoLayout>() as u32,
+        );
+        assert_ne!(ok, 0, "raw GetFileInformationByHandleEx must succeed");
+        info
+    };
+    assert_eq!(
+        md.nlink,
+        u64::from(info.number_of_links),
+        "nlink must match a raw GetFileInformationByHandleEx(FileStandardInfo) call"
+    );
+
+    drop(std_file);
     std::fs::remove_dir_all(&tmp).ok();
 }
 

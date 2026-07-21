@@ -19,6 +19,31 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.13.0
+
+- Added `Metadata::nlink: u64`/`modified: SystemTime` and
+  `UnixMode::permissions: u16` (coreutils gap backlog #63/#64/#65) —
+  forced by this repo's own `coreutils::ls -l` reference consumer, the
+  `ls -l` donor material. `nlink`/`modified` are portable (both
+  backends genuinely have a link count and mtime, no `Option` needed);
+  `permissions` is the standard `rwxrwxrwx` bits, read-only — a
+  `chmod`-equivalent write path remains unbuilt (#64, no consumer).
+  **Breaking**: both are new required fields on existing public
+  structs — breaking for any external construction of `Metadata`/
+  `UnixMode` (none outside this repo's own three backends and
+  `platform-mock` exist yet). Live-verified per backend against a
+  second, independent source (Linux: raw `libc::stat`; Windows:
+  `std::fs::Metadata::modified()` + a raw
+  `GetFileInformationByHandleEx(FileStandardInfo, ...)` call). See
+  `docs/behavior/fs.md` and the convergence roadmap's Phase 3 entry
+  for the full contract and backend notes.
+- Added `platform_linux::{user_name, group_name}` (`getpwuid_r`/
+  `getgrgid_r`) — uid/gid → display-name resolution backing
+  `coreutils::native`'s `-l` output, deliberately **not** part of
+  `platform::fs`/`Dir`/`UnixMode` (a directory-service lookup, not
+  filesystem metadata). Linux-only; nothing to resolve on Windows
+  (`Dir::unix_mode` is always `None` there).
+
 ### 0.12.0
 
 - Added a raw-socket + non-blocking escape hatch to `platform-windows`'s

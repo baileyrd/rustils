@@ -175,3 +175,10 @@ pub const SIOCSIFFLAGS: c_ulong = 0x8914;
 // already admitted above for the Net rustils#41 escape hatch, one more
 // `cmd` value on it.
 pub use libc::F_DUPFD_CLOEXEC;
+
+// uid/gid → display-name resolution (coreutils gap backlog #65, `ls -l`
+// donor material): the NSS-backed reentrant lookups, not the classic
+// non-reentrant `getpwuid`/`getgrgid` (a shared static buffer across
+// every caller in the process — exactly the kind of hazard this crate's
+// own `LAST_ERRNO` thread-local commentary elsewhere already flags).
+pub use libc::{getgrgid_r, getpwuid_r, group, passwd, ERANGE};
