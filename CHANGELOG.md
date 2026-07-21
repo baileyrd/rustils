@@ -18,6 +18,34 @@ Three independently-versioned lines, per `docs/versioning.md` §1:
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock`)
 
+### 0.9.0
+
+- Job-control slice (rustils#43/#44/#45/#46), forced by `nexus-rush/src/job.rs`
+  (`baileyrd/nexus`, converging onto `platform::process`/`platform::term` per
+  `baileyrd/nexus#454`):
+  - `GroupSpec::JoinGroup(pgid)` — a pipeline stage joins an existing process
+    group at spawn (race-free, same as `NewGroup`) instead of leading a fresh
+    one. Unix only; `Unsupported` on Windows.
+  - `Child::kill_tree`/`kill_single` now take a `Signal` parameter (**breaking**
+    — previously no argument, always `SIGKILL`) — a new portable `Signal` enum
+    (`Term`/`Int`/`Hup`/`Quit`/`Kill`/`Stop`/`Cont`). Windows accepts only
+    `Signal::Kill`; every other variant is `Unsupported` there.
+  - `ExitStatus::Stopped(sig)`/`Continued` plus `Child::wait_job`/`try_wait_job`
+    (`WUNTRACED`/`WCONTINUED`) — the Ctrl-Z/`fg`/`bg` half of wait. Unix only;
+    `Unsupported` on Windows.
+  - `platform::term::JobControlTerminal` — a new, separate trait (not folded
+    into `Terminal`) providing `give_terminal(pgid)` (`tcsetpgrp`), encoding
+    the `SIGTTOU`-ignored precondition into every call. Implemented only by
+    `LinuxTerminal` — no Windows equivalent exists to implement it, which is
+    exactly why it's its own trait rather than a `Terminal` method every
+    backend would have to answer for.
+  - New divergence-registry entry 008 records the Windows-side gaps (no
+    general signal delivery, no numeric-pgid group join).
+  - rustils#47 (Windows: adopt an externally-spawned pid into a Job Object)
+    deliberately did **not** get an API here — no forcing consumer yet
+    (`JobObject::assign_pid` is dead code in `nexus`) — left open as a
+    recorded gap per RFC v2 §3's consumer gate.
+
 ### 0.8.0
 
 - Added a raw-fd + non-blocking escape hatch to `platform-linux`'s
