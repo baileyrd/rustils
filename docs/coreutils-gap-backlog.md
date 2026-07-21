@@ -19,7 +19,7 @@ every "consumer" here is inside this same repo, so there's no separate
 "lands in the tool's own repo" split — everything below either lands in
 `platform`/backends or in `coreutils` itself.
 
-## Gap 1 — `rtee` bypasses `platform::fs` entirely for its output file
+## Gap 1 — `rtee` bypasses `platform::fs` entirely for its output file (#62)
 
 **File:** `crates/coreutils/src/bin/rtee.rs:30`
 
@@ -66,7 +66,7 @@ Both are coreutils/consumer-side fixes, not a `platform` trait gap —
 recorded here because the *pattern* (bare CLI path arguments are
 common) is a real recurring friction point worth fixing once.
 
-## Gap 2 — `platform::fs::Metadata` has no timestamps
+## Gap 2 — `platform::fs::Metadata` has no timestamps (#63)
 
 **File:** `crates/platform/src/fs.rs:86-91`
 
@@ -94,7 +94,7 @@ was the most conspicuous absence found reading the trait, not because
 anything is blocked on it. Per RFC v2 §3, do not build ahead of a
 named need.
 
-## Gap 3 — no `chmod`-equivalent (write path for permissions)
+## Gap 3 — no `chmod`-equivalent (write path for permissions) (#64)
 
 **File:** `crates/platform/src/fs.rs:180-260` (the `Dir` trait)
 
@@ -107,7 +107,7 @@ speculative right now — no binary in `coreutils` needs it (there is no
 `rchmod`), and per RFC v2 §3 this stays unbuilt until one does.
 Recorded for completeness, lowest priority in this document.
 
-## Gap 4 — `coreutils::ls` doesn't use the `Metadata`/`unix_mode` it already has
+## Gap 4 — `coreutils::ls` doesn't use the `Metadata`/`unix_mode` it already has (#65)
 
 **File:** `crates/coreutils/src/ls.rs`
 
@@ -122,7 +122,7 @@ even if `ls -l` were built) — listed here so it doesn't get confused
 with an actual capability shortfall when someone goes looking for why
 `ls` output looks so bare.
 
-## Gap 5 — `std::env::current_dir()` duplicated three times (by design, not a gap)
+## Gap 5 — `std::env::current_dir()` duplicated three times (by design, not a gap) (#66, closed)
 
 **Files:** `crates/coreutils/src/bin/rrun.rs:15`,
 `crates/coreutils/src/bin/rtee.rs:23`,
@@ -150,7 +150,7 @@ never a `platform::process` addition — that would reintroduce the
 exact ambient-inheritance shortcut the design rationale above rules
 out.
 
-## Gap 6 — `rcat`/`rtee` write to `std::io::stdout()` directly (reviewed, not a gap)
+## Gap 6 — `rcat`/`rtee` write to `std::io::stdout()` directly (reviewed, not a gap) (#67, closed)
 
 **Files:** `crates/coreutils/src/bin/rcat.rs:29`,
 `crates/coreutils/src/bin/rtee.rs:58`.
@@ -167,11 +167,11 @@ Recorded so a future read of this backlog doesn't re-flag it.
 
 ## Summary
 
-| # | Item | Kind | Action |
-|---|------|------|--------|
-| 1 | `rtee`'s `std::fs::File::create` bypass | Consumer bug + ergonomics gap | Fix `rtee`; consider `open_ambient_file` helper |
-| 2 | No timestamps in `Metadata` | Real `platform` capability gap | Hold — no forcing consumer |
-| 3 | No `chmod`-equivalent write path | Real `platform` capability gap | Hold — no forcing consumer |
-| 4 | `ls` doesn't use `metadata`/`unix_mode`/`read_link` it already has | `coreutils` feature backlog | Hold — cosmetic, no urgency |
-| 5 | Triplicated `std::env::current_dir()` | By design, not a gap | No `platform` change; optional `coreutils` helper |
-| 6 | Direct `std::io::stdout()` writes | Reviewed, not a gap | None |
+| # | Item | Kind | Action | Issue |
+|---|------|------|--------|-------|
+| 1 | `rtee`'s `std::fs::File::create` bypass | Consumer bug + ergonomics gap | Fix `rtee`; consider `open_ambient_file` helper | #62 |
+| 2 | No timestamps in `Metadata` | Real `platform` capability gap | Hold — no forcing consumer | #63 |
+| 3 | No `chmod`-equivalent write path | Real `platform` capability gap | Hold — no forcing consumer | #64 |
+| 4 | `ls` doesn't use `metadata`/`unix_mode`/`read_link` it already has | `coreutils` feature backlog | Hold — cosmetic, no urgency | #65 |
+| 5 | Triplicated `std::env::current_dir()` | By design, not a gap | No `platform` change; optional `coreutils` helper | #66 (closed) |
+| 6 | Direct `std::io::stdout()` writes | Reviewed, not a gap | None | #67 (closed) |
