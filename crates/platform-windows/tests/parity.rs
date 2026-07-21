@@ -778,9 +778,17 @@ fn windows_stdio_file_try_clone_shares_offset_for_dup_style_redirect() {
         .expect("create both.txt");
     let err_file = out_file.try_clone().expect("try_clone");
 
+    // No space before `1>&2` (rustils#57): cmd.exe's `echo` takes
+    // everything up to the redirection token as literal text, and a
+    // digit immediately touching `>` is consumed as the fd number
+    // without needing (or eating) a preceding separator — but a space
+    // *before* that digit is not part of the redirection syntax, so
+    // cmd.exe leaves it in the echoed output. `echo err- 1>&2` was
+    // observed on `windows-latest` CI to literally echo `err- ` (with
+    // the trailing space) rather than `err-`.
     let mut c = Command::new("cmd", tmp.clone())
         .arg("/c")
-        .arg("echo out-&echo err- 1>&2");
+        .arg("echo out-&echo err-1>&2");
     c.stdout = Stdio::File(out_file);
     c.stderr = Stdio::File(err_file);
     let child = s.spawn(&c).expect("spawn");
