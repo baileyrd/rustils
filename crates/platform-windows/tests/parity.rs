@@ -385,7 +385,7 @@ fn windows_process_backend_conforms() {
 /// exit stand-ins keep the refusal case race-free.
 #[test]
 fn windows_process_group_kill() {
-    use platform::process::{Command, ExitStatus, GroupSpec, Spawner, Stdio};
+    use platform::process::{Command, ExitStatus, GroupSpec, Signal, Spawner, Stdio};
 
     let tmp = std::env::temp_dir();
     let s = platform_windows::WindowsSpawner;
@@ -404,7 +404,7 @@ fn windows_process_group_kill() {
     // wait reports Code(1) — Windows has no signal to encode (divergence
     // 001, the cross-OS pin opposite Linux's Signaled(9)).
     let child = s.spawn(&sleeper(GroupSpec::NewGroup)).expect("spawn");
-    child.kill_tree().expect("kill_tree");
+    child.kill_tree(Signal::Kill).expect("kill_tree");
     assert_eq!(child.wait().expect("wait"), ExitStatus::Code(1));
 
     // kill_tree reaches a grandchild: cmd spawns ping as its own child;
@@ -416,19 +416,19 @@ fn windows_process_group_kill() {
     c.stdout = Stdio::Null;
     let child = s.spawn(&c).expect("spawn");
     std::thread::sleep(std::time::Duration::from_millis(100));
-    child.kill_tree().expect("kill_tree");
+    child.kill_tree(Signal::Kill).expect("kill_tree");
     assert_eq!(child.wait().expect("wait"), ExitStatus::Code(1));
 
     // kill_single works without a group.
     let child = s.spawn(&sleeper(GroupSpec::Inherit)).expect("spawn");
-    child.kill_single().expect("kill_single");
+    child.kill_single(Signal::Kill).expect("kill_single");
     assert_eq!(child.wait().expect("wait"), ExitStatus::Code(1));
 
     // kill_tree without NewGroup is refused, not guessed at.
     let c = Command::new("cmd", tmp).arg("/c").arg("exit 0");
     let child = s.spawn(&c).expect("spawn");
     assert_eq!(
-        child.kill_tree().expect_err("must refuse").kind,
+        child.kill_tree(Signal::Kill).expect_err("must refuse").kind,
         platform::error::ErrorKind::Unsupported
     );
     child.wait().expect("wait");
@@ -438,7 +438,7 @@ fn windows_process_group_kill() {
 /// mirrors the Linux leg's assertions with cmd/ping fixtures.
 #[test]
 fn windows_wait_any_and_try_wait() {
-    use platform::process::{wait_any, Child, Command, ExitStatus, Spawner, Stdio};
+    use platform::process::{wait_any, Child, Command, ExitStatus, Signal, Spawner, Stdio};
 
     let tmp = std::env::temp_dir();
     let s = platform_windows::WindowsSpawner;
@@ -495,7 +495,7 @@ fn windows_wait_any_and_try_wait() {
     );
 
     // Release the sleeper.
-    children[0].kill_single().expect("kill");
+    children[0].kill_single(Signal::Kill).expect("kill");
     children.remove(0).wait().expect("wait");
 }
 
@@ -619,4 +619,76 @@ fn windows_terminal_honest_when_redirected() {
     assert!(t.enter_raw().is_err(), "no tty: raw mode must refuse");
     t.leave_raw().expect("leave without enter is an Ok no-op");
     assert!(t.set_echo(false).is_err(), "no tty: set_echo must refuse");
+}
+
+/// Divergence 008 (Windows side): `Signal::Kill` behaves exactly as
+/// `kill_tree`/`kill_single` always did; every other identity is
+/// `Unsupported` — there is no OS mechanism to deliver an arbitrary
+/// signal to a process here.
+#[test]
+fn windows_kill_signal_is_kill_only() {
+    use platform::process::{Command, ExitStatus, Signal, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_windows::WindowsSpawner;
+
+    let mut c = Command::new("ping", tmp)
+        .arg("-n")
+        .arg("30")
+        .arg("127.0.0.1");
+    c.stdout = Stdio::Null;
+    let child = s.spawn(&c).expect("spawn");
+    assert_eq!(
+        child
+            .kill_single(Signal::Term)
+            .expect_err("must refuse")
+            .kind,
+        platform::error::ErrorKind::Unsupported
+    );
+    child.kill_single(Signal::Kill).expect("Kill always works");
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Code(1));
+}
+
+/// Divergence 008 (Windows side, the `GroupSpec` half): `JoinGroup`
+/// targets a numeric pgid Windows has no analog for — Job Objects are
+/// handle-based, with no "start already inside group N" primitive.
+/// `spawn` refuses up front rather than silently falling back to
+/// `Inherit`/`NewGroup`.
+#[test]
+fn windows_join_group_is_unsupported() {
+    use platform::process::{Command, GroupSpec, Spawner};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_windows::WindowsSpawner;
+    let c = Command::new("cmd", tmp)
+        .arg("/c")
+        .arg("exit 0")
+        .group(GroupSpec::JoinGroup(1));
+    assert_eq!(
+        s.spawn(&c).err().expect("must refuse").kind,
+        platform::error::ErrorKind::Unsupported
+    );
+}
+
+/// D8/D10 (Windows side): no job-control stop/continue analog —
+/// `wait_job`/`try_wait_job` are `Unsupported` rather than silently
+/// degrading to plain `wait`/`try_wait` semantics.
+#[test]
+fn windows_wait_job_is_unsupported() {
+    use platform::process::{Command, Spawner};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_windows::WindowsSpawner;
+    let c = Command::new("cmd", tmp).arg("/c").arg("exit 0");
+    let mut child = s.spawn(&c).expect("spawn");
+    assert_eq!(
+        child.wait_job().expect_err("must refuse").kind,
+        platform::error::ErrorKind::Unsupported
+    );
+    assert_eq!(
+        child.try_wait_job().expect_err("must refuse").kind,
+        platform::error::ErrorKind::Unsupported
+    );
+    child.kill_single(platform::process::Signal::Kill).ok();
+    let _ = child.wait();
 }

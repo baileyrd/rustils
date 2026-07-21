@@ -7,7 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, GroupSpec, Spawner, Stdio};
+use platform::process::{Child, Command, ExitStatus, GroupSpec, Signal, Spawner, Stdio};
 
 /// A scripted response for a program name.
 #[derive(Debug, Clone)]
@@ -106,10 +106,13 @@ impl Child for MockChild {
     }
 
     /// Scripted children have already "finished"; kill succeeds without
-    /// changing the scripted status. The `NewGroup` precondition is
-    /// enforced exactly like the native backends so consumer logic can be
-    /// tested against it.
-    fn kill_tree(&self) -> Result<()> {
+    /// changing the scripted status, for any [`Signal`] — the mock does
+    /// not model the Windows `Signal::Kill`-only restriction (divergence
+    /// 008 is a backend-specific OS limitation, not a portable-contract
+    /// fact). The `NewGroup`/`JoinGroup` precondition is enforced exactly
+    /// like the native backends so consumer logic can be tested against
+    /// it.
+    fn kill_tree(&self, _sig: Signal) -> Result<()> {
         if self.own_group {
             Ok(())
         } else {
@@ -121,12 +124,22 @@ impl Child for MockChild {
         }
     }
 
-    fn kill_single(&self) -> Result<()> {
+    fn kill_single(&self, _sig: Signal) -> Result<()> {
         Ok(())
     }
 
     /// Scripted children have already terminated by construction.
     fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
+        Ok(Some(self.status))
+    }
+
+    /// Scripted children never stop/continue — always the terminal
+    /// scripted status, same as `try_wait`.
+    fn wait_job(&mut self) -> Result<ExitStatus> {
+        Ok(self.status)
+    }
+
+    fn try_wait_job(&mut self) -> Result<Option<ExitStatus>> {
         Ok(Some(self.status))
     }
 
@@ -160,7 +173,7 @@ impl Spawner for MockSpawner {
         })?;
         Ok(Box::new(MockChild {
             status: script.status,
-            own_group: cmd.group == GroupSpec::NewGroup,
+            own_group: !matches!(cmd.group, GroupSpec::Inherit),
             stdin: (cmd.stdin == Stdio::Pipe).then(|| mem_pipe(Vec::new())),
             stdout: (cmd.stdout == Stdio::Pipe).then(|| mem_pipe(script.stdout.clone())),
             stderr: (cmd.stderr == Stdio::Pipe).then(|| mem_pipe(Vec::new())),
@@ -203,14 +216,21 @@ mod tests {
         let spawner = MockSpawner::new().script("x", ExitStatus::Code(0));
         let inherit = spawner.spawn(&Command::new("x", "/")).expect("spawn");
         assert_eq!(
-            inherit.kill_tree().expect_err("must refuse").kind,
+            inherit
+                .kill_tree(Signal::Kill)
+                .expect_err("must refuse")
+                .kind,
             ErrorKind::Unsupported
         );
         let grouped = spawner
             .spawn(&Command::new("x", "/").group(GroupSpec::NewGroup))
             .expect("spawn");
-        grouped.kill_tree().expect("kill_tree with NewGroup");
-        grouped.kill_single().expect("kill_single always works");
+        grouped
+            .kill_tree(Signal::Term)
+            .expect("kill_tree with NewGroup");
+        grouped
+            .kill_single(Signal::Kill)
+            .expect("kill_single always works");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use platform::error::Result;
-use platform::term::{TermStream, Terminal, WinSize};
+use platform::term::{JobControlTerminal, TermStream, Terminal, WinSize};
 
 use crate::sys::termios as t;
 
@@ -72,5 +72,11 @@ impl Terminal for LinuxTerminal {
 
     fn set_echo(&mut self, on: bool) -> Result<bool> {
         t::set_echo(t::stream_fd(TermStream::Stdin), on)
+    }
+}
+
+impl JobControlTerminal for LinuxTerminal {
+    fn give_terminal(&self, pgid: u32) -> Result<()> {
+        t::give_terminal(t::stream_fd(TermStream::Stdin), pgid as i32)
     }
 }

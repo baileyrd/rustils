@@ -141,3 +141,25 @@ pub trait Terminal {
     /// all this operation touches.
     fn set_echo(&mut self, on: bool) -> Result<bool>;
 }
+
+/// Job-control terminal handoff (`tcsetpgrp`) — D1/D9, Unix-only with no
+/// Windows twin (this module's doc comment; divergence-registry entry
+/// 008 covers the process-side half of the same gap). Deliberately a
+/// separate trait from [`Terminal`], not a method on it: every backend
+/// including Windows implements `Terminal`, but there is no
+/// `tcsetpgrp`-equivalent for a Windows backend to implement here — a
+/// job-control consumer (a shell) opts into this trait specifically,
+/// rather than every `Terminal` implementor being forced to answer for a
+/// capability that does not exist on one of them.
+pub trait JobControlTerminal {
+    /// Hand the controlling terminal's foreground process group to
+    /// `pgid` (`tcsetpgrp(STDIN_FILENO, pgid)`) — called both to give a
+    /// foreground job the terminal and, once it stops or exits, to
+    /// reclaim it for the shell's own group. Sound only once `SIGTTOU`
+    /// is ignored in the calling process (D1's precondition): a
+    /// background process that calls `tcsetpgrp` is stopped by
+    /// `SIGTTOU` by default otherwise. Implementations encode this
+    /// precondition themselves — ignoring `SIGTTOU` as part of every
+    /// call — rather than leaving it to the caller to remember.
+    fn give_terminal(&self, pgid: u32) -> Result<()>;
+}

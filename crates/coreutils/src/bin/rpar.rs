@@ -62,7 +62,7 @@ fn main() -> std::process::ExitCode {
                 children.len()
             );
             for child in &children {
-                let _ = child.kill_single();
+                let _ = child.kill_single(platform::process::Signal::Kill);
             }
             for child in children {
                 let _ = child.wait();
@@ -90,6 +90,9 @@ fn main() -> std::process::ExitCode {
                 match status {
                     ExitStatus::Code(c) => println!("[{label}] exited {c}"),
                     ExitStatus::Signaled(s) => println!("[{label}] killed by signal {s}"),
+                    ExitStatus::Stopped(_) | ExitStatus::Continued => unreachable!(
+                        "Child::wait only ever produces Code/Signaled — Stopped/Continued are wait_job/try_wait_job-only (D10)"
+                    ),
                 }
             }
             Err(e) => {

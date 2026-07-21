@@ -373,7 +373,7 @@ fn linux_process_backend_conforms() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_process_group_kill() {
-    use platform::process::{Command, ExitStatus, GroupSpec, Spawner};
+    use platform::process::{Command, ExitStatus, GroupSpec, Signal, Spawner};
 
     let tmp = std::env::temp_dir();
     let s = platform_linux::LinuxSpawner;
@@ -385,7 +385,7 @@ fn linux_process_group_kill() {
         .arg("sleep 30")
         .group(GroupSpec::NewGroup);
     let child = s.spawn(&c).expect("spawn");
-    child.kill_tree().expect("kill_tree");
+    child.kill_tree(Signal::Kill).expect("kill_tree");
     assert_eq!(child.wait().expect("wait"), ExitStatus::Signaled(9));
 
     // kill_tree reaches a grandchild: the shell spawns its own child and
@@ -396,20 +396,20 @@ fn linux_process_group_kill() {
         .group(GroupSpec::NewGroup);
     let child = s.spawn(&c).expect("spawn");
     std::thread::sleep(std::time::Duration::from_millis(100));
-    child.kill_tree().expect("kill_tree");
+    child.kill_tree(Signal::Kill).expect("kill_tree");
     assert_eq!(child.wait().expect("wait"), ExitStatus::Signaled(9));
 
     // kill_single works without a group.
     let c = Command::new("sh", tmp.clone()).arg("-c").arg("sleep 30");
     let child = s.spawn(&c).expect("spawn");
-    child.kill_single().expect("kill_single");
+    child.kill_single(Signal::Kill).expect("kill_single");
     assert_eq!(child.wait().expect("wait"), ExitStatus::Signaled(9));
 
     // kill_tree without NewGroup is refused, not guessed at.
     let c = Command::new("sh", tmp).arg("-c").arg("exit 0");
     let child = s.spawn(&c).expect("spawn");
     assert_eq!(
-        child.kill_tree().expect_err("must refuse").kind,
+        child.kill_tree(Signal::Kill).expect_err("must refuse").kind,
         platform::error::ErrorKind::Unsupported
     );
     child.wait().expect("wait");
@@ -421,7 +421,7 @@ fn linux_process_group_kill() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_wait_any_and_try_wait() {
-    use platform::process::{wait_any, Child, Command, ExitStatus, Spawner};
+    use platform::process::{wait_any, Child, Command, ExitStatus, Signal, Spawner};
 
     let tmp = std::env::temp_dir();
     let s = platform_linux::LinuxSpawner;
@@ -477,7 +477,7 @@ fn linux_wait_any_and_try_wait() {
     );
 
     // Release the sleeper.
-    children[0].kill_single().expect("kill");
+    children[0].kill_single(Signal::Kill).expect("kill");
     children.remove(0).wait().expect("wait");
 }
 
@@ -644,4 +644,124 @@ fn linux_terminal_honest_when_redirected() {
     assert!(t.enter_raw().is_err(), "no tty: raw mode must refuse");
     t.leave_raw().expect("leave without enter is an Ok no-op");
     assert!(t.set_echo(false).is_err(), "no tty: set_echo must refuse");
+}
+
+/// Portable `Signal` (rustils#46, D1's `kill_cmd`): every non-`Kill`
+/// identity actually reaches the child as the matching raw signal,
+/// decoded through the existing `Signaled` arm — the B-5 sentinel again,
+/// just with a caller-chosen signal instead of the hardcoded SIGKILL.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_kill_signal_is_portable() {
+    use platform::process::{Command, ExitStatus, Signal, Spawner};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_linux::LinuxSpawner;
+
+    for (sig, raw) in [
+        (Signal::Term, 15),
+        (Signal::Int, 2),
+        (Signal::Hup, 1),
+        (Signal::Quit, 3),
+    ] {
+        let c = Command::new("sh", tmp.clone()).arg("-c").arg("sleep 30");
+        let child = s.spawn(&c).expect("spawn");
+        child.kill_single(sig).expect("kill_single");
+        assert_eq!(child.wait().expect("wait"), ExitStatus::Signaled(raw));
+    }
+}
+
+/// `GroupSpec::JoinGroup` (rustils#44, D1's pipeline shape): a second
+/// stage joins the first stage's already-created group instead of
+/// leading its own — `kill_tree` on the joiner reaches the leader too,
+/// which is only possible if the join actually placed it in that pgid
+/// (a broken join would leave the second stage in the test process's own
+/// group, invisible to a kill targeted at the leader's pgid).
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_process_group_join() {
+    use platform::process::{Command, ExitStatus, GroupSpec, Signal, Spawner};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_linux::LinuxSpawner;
+
+    let leader = s
+        .spawn(
+            &Command::new("sh", tmp.clone())
+                .arg("-c")
+                .arg("sleep 30")
+                .group(GroupSpec::NewGroup),
+        )
+        .expect("spawn leader");
+    let pgid = leader.id();
+
+    let follower = s
+        .spawn(
+            &Command::new("sh", tmp)
+                .arg("-c")
+                .arg("sleep 30")
+                .group(GroupSpec::JoinGroup(pgid)),
+        )
+        .expect("spawn follower");
+
+    // kill_tree on the *follower* targets the *leader's* pgid (the join
+    // target it was given, not its own pid) — reaching the leader is the
+    // proof the join landed in the right group.
+    follower.kill_tree(Signal::Kill).expect("kill_tree");
+    assert_eq!(follower.wait().expect("wait"), ExitStatus::Signaled(9));
+    assert_eq!(leader.wait().expect("wait"), ExitStatus::Signaled(9));
+}
+
+/// `Child::wait_job`/`try_wait_job` (rustils#45, D10): the
+/// `WUNTRACED`/`WCONTINUED` half of wait — a child observed stopping,
+/// then continuing, then finally exiting, none of which the plain
+/// `wait`/`try_wait` pair (no `WUNTRACED`/`WCONTINUED`) can ever see.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_wait_job_observes_stop_and_continue() {
+    use platform::process::{Command, ExitStatus, Signal, Spawner};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_linux::LinuxSpawner;
+
+    let c = Command::new("sh", tmp)
+        .arg("-c")
+        .arg("kill -STOP $$; exit 5");
+    let mut child = s.spawn(&c).expect("spawn");
+
+    // Blocking: the child stops itself shortly after spawn.
+    assert_eq!(child.wait_job().expect("wait_job"), ExitStatus::Stopped(19));
+
+    // Non-blocking: nothing new until we resume it.
+    assert_eq!(child.try_wait_job().expect("try_wait_job"), None);
+    child.kill_single(Signal::Cont).expect("SIGCONT");
+    assert_eq!(child.wait_job().expect("wait_job"), ExitStatus::Continued);
+
+    // The eventual exit is still a terminal, stashed result — reachable
+    // through either the job-aware or the plain wait/try_wait pair.
+    assert_eq!(child.wait_job().expect("wait_job"), ExitStatus::Code(5));
+    assert_eq!(
+        child.try_wait_job().expect("repoll"),
+        Some(ExitStatus::Code(5))
+    );
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Code(5));
+}
+
+/// `JobControlTerminal::give_terminal` (rustils#43, D1's `tcsetpgrp`
+/// give/reclaim): under cargo's non-tty harness this refuses with the
+/// same `ENOTTY` shape `enter_raw`/`window_size` already pin on a
+/// redirected stdin (`docs/behavior/term.md`). The real give/reclaim
+/// round-trip over a live controlling terminal needs a pty and is
+/// live-verified only, not parity-pinned (same discipline as
+/// `poll_readable`/`read_chunk`'s batching pin).
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_give_terminal_honest_when_redirected() {
+    use platform::term::JobControlTerminal;
+
+    let t = platform_linux::LinuxTerminal::new();
+    assert!(
+        t.give_terminal(std::process::id()).is_err(),
+        "no controlling terminal: give_terminal must refuse"
+    );
 }

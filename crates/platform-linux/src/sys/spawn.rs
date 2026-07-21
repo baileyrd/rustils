@@ -12,7 +12,7 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{EnvSpec, ExitStatus, GroupSpec, Stdio};
+use platform::process::{EnvSpec, ExitStatus, GroupSpec, Signal, Stdio};
 
 use crate::ffi::libc_surface as c;
 
@@ -254,13 +254,24 @@ pub fn spawn(
     }
 
     let mut attr = SpawnAttr::new()?;
-    if group == GroupSpec::NewGroup {
+    // `NewGroup` leads a fresh group (pgroup 0 means "use my own pid");
+    // `JoinGroup(pgid)` places the child straight into an existing one —
+    // D1's pipeline shape, where stage 2..n join the leader's pgid
+    // instead of each starting its own. Both go through the same
+    // race-free `POSIX_SPAWN_SETPGROUP` path: set before the child's
+    // first instruction, never a post-spawn `setpgid`.
+    let target_pgid: Option<c::pid_t> = match group {
+        GroupSpec::Inherit => None,
+        GroupSpec::NewGroup => Some(0),
+        GroupSpec::JoinGroup(pgid) => Some(pgid as c::pid_t),
+    };
+    if let Some(pgid) = target_pgid {
         // SAFETY: `attr.0` is initialized; setflags/setpgroup have no
         // pointer arguments beyond it.
         let r = unsafe {
             let r = c::posix_spawnattr_setflags(&mut attr.0, c::POSIX_SPAWN_SETPGROUP as _);
             if r == 0 {
-                c::posix_spawnattr_setpgroup(&mut attr.0, 0)
+                c::posix_spawnattr_setpgroup(&mut attr.0, pgid)
             } else {
                 r
             }
@@ -424,13 +435,27 @@ fn poll_once(fds: &mut [PollEntry], timeout_ms: c::c_int) -> Result<usize> {
     rusty_libc::fd::poll(fds, timeout_ms).map_err(|e| errno_err("poll", e.0, OsStr::new("")))
 }
 
-/// `SIGKILL` the whole process group led by `pid` (which must have been
-/// spawned with `GroupSpec::NewGroup`, making pid == pgid).
+/// Map the portable [`Signal`] to its raw Linux signal number.
+fn signum_of(sig: Signal) -> c::c_int {
+    match sig {
+        Signal::Term => c::SIGTERM,
+        Signal::Int => c::SIGINT,
+        Signal::Hup => c::SIGHUP,
+        Signal::Quit => c::SIGQUIT,
+        Signal::Kill => c::SIGKILL,
+        Signal::Stop => c::SIGSTOP,
+        Signal::Cont => c::SIGCONT,
+    }
+}
+
+/// Deliver `sig` to the whole process group led by `pid` (which must have
+/// been spawned with `GroupSpec::NewGroup`, making pid == pgid, or be an
+/// explicit `JoinGroup` target passed in directly by the caller).
 #[cfg(not(feature = "track-p"))]
-pub fn kill_group(pid: c::pid_t) -> Result<()> {
+pub fn kill_group(pid: c::pid_t, sig: Signal) -> Result<()> {
     // SAFETY: kill has no pointer arguments; the negative-pid form
     // targets the process group `pid` leads.
-    let r = unsafe { c::kill(-pid, c::SIGKILL) };
+    let r = unsafe { c::kill(-pid, signum_of(sig)) };
     if r != 0 {
         let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         return Err(errno_err("kill", code, OsStr::new("")));
@@ -438,19 +463,19 @@ pub fn kill_group(pid: c::pid_t) -> Result<()> {
     Ok(())
 }
 
-/// `SIGKILL` the process group — Track P: raw `SYS_kill` via `killpg`
-/// (the negative-pid form, named).
+/// Deliver `sig` to the process group — Track P: raw `SYS_kill` via
+/// `killpg` (the negative-pid form, named).
 #[cfg(feature = "track-p")]
-pub fn kill_group(pid: c::pid_t) -> Result<()> {
-    rusty_libc::process::killpg(pid, rusty_libc::signal::SIGKILL)
+pub fn kill_group(pid: c::pid_t, sig: Signal) -> Result<()> {
+    rusty_libc::process::killpg(pid, signum_of(sig))
         .map_err(|e| errno_err("kill", e.0, OsStr::new("")))
 }
 
-/// `SIGKILL` the single process `pid`.
+/// Deliver `sig` to the single process `pid`.
 #[cfg(not(feature = "track-p"))]
-pub fn kill_single(pid: c::pid_t) -> Result<()> {
+pub fn kill_single(pid: c::pid_t, sig: Signal) -> Result<()> {
     // SAFETY: kill has no pointer arguments.
-    let r = unsafe { c::kill(pid, c::SIGKILL) };
+    let r = unsafe { c::kill(pid, signum_of(sig)) };
     if r != 0 {
         let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         return Err(errno_err("kill", code, OsStr::new("")));
@@ -458,10 +483,10 @@ pub fn kill_single(pid: c::pid_t) -> Result<()> {
     Ok(())
 }
 
-/// `SIGKILL` the single process `pid` — Track P: raw `SYS_kill`.
+/// Deliver `sig` to the single process `pid` — Track P: raw `SYS_kill`.
 #[cfg(feature = "track-p")]
-pub fn kill_single(pid: c::pid_t) -> Result<()> {
-    rusty_libc::process::kill(pid, rusty_libc::signal::SIGKILL)
+pub fn kill_single(pid: c::pid_t, sig: Signal) -> Result<()> {
+    rusty_libc::process::kill(pid, signum_of(sig))
         .map_err(|e| errno_err("kill", e.0, OsStr::new("")))
 }
 
@@ -564,6 +589,119 @@ pub fn try_wait(pid: c::pid_t) -> Result<Option<ExitStatus>> {
         match rusty_libc::wait::waitpid(pid, rusty_libc::wait::WNOHANG) {
             Ok((0, _)) => return Ok(None),
             Ok((_, status)) => return Ok(Some(decode(status))),
+            Err(e) if e == rusty_libc::Errno::EINTR => continue,
+            Err(e) => return Err(errno_err("waitpid", e.0, OsStr::new(""))),
+        }
+    }
+}
+
+/// D10 status decode: `decode`'s exit/signal arms plus the
+/// `WUNTRACED`/`WCONTINUED` stop/continue arms — only reachable from
+/// [`wait_job`]/[`try_wait_job`], which are the only callers that ever
+/// pass those flags to `waitpid` in the first place.
+#[cfg(not(feature = "track-p"))]
+fn decode_job(status: c::c_int) -> ExitStatus {
+    if c::WIFEXITED(status) {
+        ExitStatus::Code(c::WEXITSTATUS(status))
+    } else if c::WIFSIGNALED(status) {
+        ExitStatus::Signaled(c::WTERMSIG(status))
+    } else if c::WIFSTOPPED(status) {
+        ExitStatus::Stopped(c::WSTOPSIG(status))
+    } else {
+        // The only bit pattern left once WIFEXITED/WIFSIGNALED/
+        // WIFSTOPPED are ruled out and WCONTINUED was requested.
+        ExitStatus::Continued
+    }
+}
+
+/// Track P `decode_job`: same arm order, rusty_libc's plain-fn W* set.
+#[cfg(feature = "track-p")]
+fn decode_job(status: c::c_int) -> ExitStatus {
+    use rusty_libc::wait as rw;
+    if rw::wifexited(status) {
+        ExitStatus::Code(rw::wexitstatus(status))
+    } else if rw::wifsignaled(status) {
+        ExitStatus::Signaled(rw::wtermsig(status))
+    } else if rw::wifstopped(status) {
+        ExitStatus::Stopped(rw::wstopsig(status))
+    } else {
+        ExitStatus::Continued
+    }
+}
+
+/// Blocking `waitpid(WUNTRACED|WCONTINUED)` on `pid` (D10): the
+/// Ctrl-Z-aware counterpart to [`wait`] — observes a stop or a resume in
+/// addition to exit/signal termination, decoded through [`decode_job`].
+#[cfg(not(feature = "track-p"))]
+pub fn wait_job(pid: c::pid_t) -> Result<ExitStatus> {
+    let mut status: c::c_int = 0;
+    loop {
+        // SAFETY: `status` is a valid out-pointer; `pid` is a child this
+        // process spawned. Unlike plain `wait`, a returned status here
+        // may be non-terminal (`Stopped`/`Continued`), so the caller
+        // (this layer's `Child::wait_job`) may call again on the same
+        // still-alive `pid` — sound because a non-terminal status never
+        // reaps the process (only `WIFEXITED`/`WIFSIGNALED` do).
+        let r = unsafe { c::waitpid(pid, &mut status, c::WUNTRACED | c::WCONTINUED) };
+        if r == pid {
+            break;
+        }
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        if code == libc::EINTR {
+            continue;
+        }
+        return Err(errno_err("waitpid", code, OsStr::new("")));
+    }
+    Ok(decode_job(status))
+}
+
+/// Blocking job-aware wait — Track P: raw `SYS_wait4` with
+/// `WUNTRACED|WCONTINUED`.
+#[cfg(feature = "track-p")]
+pub fn wait_job(pid: c::pid_t) -> Result<ExitStatus> {
+    use rusty_libc::wait::{WCONTINUED, WUNTRACED};
+    loop {
+        match rusty_libc::wait::waitpid(pid, WUNTRACED | WCONTINUED) {
+            Ok((_, status)) => return Ok(decode_job(status)),
+            Err(e) if e == rusty_libc::Errno::EINTR => continue,
+            Err(e) => return Err(errno_err("waitpid", e.0, OsStr::new(""))),
+        }
+    }
+}
+
+/// Non-blocking `waitpid(WNOHANG|WUNTRACED|WCONTINUED)` on `pid` (D10):
+/// the Ctrl-Z-aware counterpart to [`try_wait`]. `None` while `pid` is
+/// running and has neither stopped nor continued since the last poll.
+#[cfg(not(feature = "track-p"))]
+pub fn try_wait_job(pid: c::pid_t) -> Result<Option<ExitStatus>> {
+    let mut status: c::c_int = 0;
+    loop {
+        // SAFETY: same as `wait_job`, plus `WNOHANG`'s non-blocking
+        // contract (a returned pid of 0 means "nothing to report yet").
+        let r = unsafe { c::waitpid(pid, &mut status, c::WNOHANG | c::WUNTRACED | c::WCONTINUED) };
+        if r == pid {
+            return Ok(Some(decode_job(status)));
+        }
+        if r == 0 {
+            return Ok(None);
+        }
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        if code == libc::EINTR {
+            continue;
+        }
+        return Err(errno_err("waitpid", code, OsStr::new("")));
+    }
+}
+
+/// Non-blocking job-aware wait — Track P: raw `SYS_wait4` with
+/// `WNOHANG|WUNTRACED|WCONTINUED`.
+#[cfg(feature = "track-p")]
+pub fn try_wait_job(pid: c::pid_t) -> Result<Option<ExitStatus>> {
+    use rusty_libc::wait::{WCONTINUED, WNOHANG, WUNTRACED};
+    loop {
+        match rusty_libc::wait::waitpid(pid, WNOHANG | WUNTRACED | WCONTINUED) {
+            Ok((0, _)) => return Ok(None),
+            Ok((_, status)) => return Ok(Some(decode_job(status))),
             Err(e) if e == rusty_libc::Errno::EINTR => continue,
             Err(e) => return Err(errno_err("waitpid", e.0, OsStr::new(""))),
         }

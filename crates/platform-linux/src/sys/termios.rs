@@ -258,3 +258,60 @@ pub fn read_chunk(fd: i32, buf: &mut [u8]) -> Result<usize> {
 pub fn read_chunk(fd: i32, buf: &mut [u8]) -> Result<usize> {
     rusty_libc::fd::read(fd, buf).map_err(|e| term_err("read", e.0))
 }
+
+/// Ignore `SIGTTOU` in this process — the D1 precondition
+/// `give_terminal` must satisfy on every call: a background process that
+/// calls `tcsetpgrp` stops on `SIGTTOU` by default, and a shell about to
+/// hand off or reclaim the terminal is exactly that background process
+/// from the kernel's point of view at the moment it isn't yet (or no
+/// longer is) the foreground group. Idempotent: reinstalling `SIG_IGN`
+/// is a harmless no-op, so `give_terminal` can call this every time
+/// rather than trust a caller to have done it once at startup.
+#[cfg(not(feature = "track-p"))]
+fn ignore_sigttou() -> Result<()> {
+    // SAFETY: `signal` accepts a handler value for a valid signal
+    // number; `SIG_IGN` is a sentinel value, not a called function
+    // pointer, so there is no handler-safety contract to uphold.
+    let prev = unsafe { c::signal(c::SIGTTOU, c::SIG_IGN) };
+    if prev == c::SIG_ERR {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(term_err("signal(SIGTTOU, SIG_IGN)", code));
+    }
+    Ok(())
+}
+
+/// Ignore `SIGTTOU` — Track P: rusty_libc's `signal`, same `SIG_IGN`
+/// sentinel.
+#[cfg(feature = "track-p")]
+fn ignore_sigttou() -> Result<()> {
+    // SAFETY: `SIG_IGN` is a sentinel value, not a called function
+    // pointer, so rusty_libc's handler-safety contract does not apply.
+    unsafe { rusty_libc::signal::signal(c::SIGTTOU, rusty_libc::signal::SIG_IGN) }
+        .map(|_prev| ())
+        .map_err(|e| term_err("signal(SIGTTOU, SIG_IGN)", e.0))
+}
+
+/// Hand the controlling terminal's foreground process group to `pgid`
+/// (`tcsetpgrp(fd, pgid)`) — D1/D9's job-control terminal handoff, used
+/// both to give a foreground job the terminal and, once it stops or
+/// exits, to reclaim it for the shell's own group. Ensures `SIGTTOU` is
+/// ignored in this process first (see [`ignore_sigttou`]) rather than
+/// assuming the caller remembered to.
+#[cfg(not(feature = "track-p"))]
+pub fn give_terminal(fd: i32, pgid: c::pid_t) -> Result<()> {
+    ignore_sigttou()?;
+    // SAFETY: valid fd; tcsetpgrp has no pointer arguments.
+    let r = unsafe { c::tcsetpgrp(fd, pgid) };
+    if r != 0 {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(term_err("tcsetpgrp", code));
+    }
+    Ok(())
+}
+
+/// `give_terminal` — Track P: rusty_libc's `termios::tcsetpgrp`.
+#[cfg(feature = "track-p")]
+pub fn give_terminal(fd: i32, pgid: c::pid_t) -> Result<()> {
+    ignore_sigttou()?;
+    rusty_libc::termios::tcsetpgrp(fd, pgid).map_err(|e| term_err("tcsetpgrp", e.0))
+}

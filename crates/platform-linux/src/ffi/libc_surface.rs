@@ -20,6 +20,31 @@ pub use libc::{
     WNOHANG, WTERMSIG, W_OK, X_OK,
 };
 
+// D1/D46 job-control kill signals: `kill_tree`/`kill_single` grow a
+// portable `Signal` parameter (`kill_cmd`'s `-SIG`/`-9`/`-CONT`,
+// `fg_cmd`/`bg_cmd`'s `SIGCONT` resume). SIGKILL/SIGTERM/SIGINT/SIGHUP
+// already admitted above (SIGKILL for the pre-`Signal` hard-kill default,
+// SIGTERM/SIGINT/SIGHUP for the D6 received-signal source) — only the
+// three job-control-specific identities are new here.
+pub use libc::{SIGCONT, SIGQUIT, SIGSTOP};
+
+// D10 wait-status completion: WUNTRACED/WCONTINUED opt a wait call into
+// observing stop/continue transitions instead of only exit/signal
+// termination; WIFSTOPPED/WSTOPSIG/WIFCONTINUED decode the resulting
+// status word's stop/continue half (WIFEXITED/WIFSIGNALED/WEXITSTATUS/
+// WTERMSIG, the exit/signal half, are already admitted above).
+pub use libc::{WCONTINUED, WIFCONTINUED, WIFSTOPPED, WSTOPSIG, WUNTRACED};
+
+// D1/D9 job-control terminal handoff: `tcsetpgrp(STDIN_FILENO, pgid)`
+// gives/reclaims the controlling terminal's foreground process group.
+// Sound only once SIGTTOU is ignored in the calling process (the D1
+// precondition `JobControlTerminal::give_terminal` encodes rather than
+// assumes) — SIGTTOU/SIG_IGN/SIG_DFL are admitted alongside it so that
+// disposition can be set through this same curated surface rather than a
+// second escape hatch. `signal`/`sighandler_t` (SIG_IGN's type) are
+// already admitted above for the D6 signal source.
+pub use libc::{tcsetpgrp, SIGTTOU, SIG_DFL, SIG_IGN};
+
 // `test`'s file-mode predicates (faccessat slice's sibling, D11):
 // S_ISUID/S_ISGID/S_ISVTX decode `st_mode` for `-u/-g/-k`; `st_uid`/
 // `st_gid` (already reachable off `stat`, no separate admission needed)

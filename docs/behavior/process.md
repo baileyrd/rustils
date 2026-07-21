@@ -36,13 +36,38 @@ assertions.
   first instruction executes* (`POSIX_SPAWN_SETPGROUP`; suspended-spawn →
   Job-Object assign → resume) — there is no window in which the child or
   a fast-spawned grandchild escapes the group.
-- `Child::kill_tree` requires `NewGroup` and fails `Unsupported`
-  otherwise (the only alternative target is the parent's own group,
-  which is never what the caller meant). `kill_single` always works.
+- `GroupSpec::JoinGroup(pgid)` places the child straight into an
+  *existing* group, the same race-free way — D1's pipeline shape, where
+  stage 2..n join the first stage's pgid instead of each leading its
+  own. Unix only: Windows has no numeric process-group id a spawn can
+  join (Job Objects are handle-based), so `Spawner::spawn` fails
+  `Unsupported` for `JoinGroup` on that backend — divergence **008**.
+- `Child::kill_tree` requires `NewGroup` or `JoinGroup` and fails
+  `Unsupported` otherwise (the only alternative target is the parent's
+  own group, which is never what the caller meant). `kill_single`
+  always works (subject to the `Signal` restriction below).
+- `Child::kill_tree`/`kill_single` take a portable `Signal`
+  (`Term`/`Int`/`Hup`/`Quit`/`Kill`/`Stop`/`Cont`) — D1's `kill`/`fg`/
+  `bg` builtins need more than a hardcoded SIGKILL on an already-running
+  child. `Signal::Kill` is the only identity guaranteed on every
+  backend; Windows fails every other `Signal` with `Unsupported` — there
+  is no OS mechanism to deliver an arbitrary signal to a process here —
+  per divergence **008**.
 - A killed child must still be `wait`ed; the status it reports is
   OS-divergent — `Signaled(9)` vs `Code(1)` — per divergence **001**.
-- Dropping an un-waited `NewGroup` child: tree terminates on Windows
-  (kill-on-close), keeps running on unix — divergence **002**.
+- Dropping an un-waited `NewGroup`/`JoinGroup` child: tree terminates on
+  Windows (kill-on-close), keeps running on unix — divergence **002**.
+- `Child::wait_job`/`try_wait_job` are the `WUNTRACED`/`WCONTINUED` half
+  of wait (D10): they observe `ExitStatus::Stopped(sig)` (Ctrl-Z) and
+  `ExitStatus::Continued` (`SIGCONT`) transitions in addition to the
+  plain `Code`/`Signaled` pair — `wait`/`try_wait` never request those
+  flags and so can never produce `Stopped`/`Continued`. Neither method
+  consumes `self`: a `Stopped`/`Continued` result is not terminal, so
+  the caller keeps the child and may call again; a terminal result IS
+  stashed exactly like `try_wait` does, so a later `wait()`/`try_wait()`
+  returns it directly. Unix only — `Unsupported` on Windows, which has
+  no job-control stop/continue analog (already characterized as part of
+  divergence-registry-adjacent D8).
 - `Child::try_wait` never blocks and never loses a status: once it
   reports `Some`, every re-poll and the eventual consuming `wait` report
   the same status (unix `WNOHANG` reaps the zombie; the backend stashes
@@ -68,8 +93,13 @@ assertions.
 
 ## Deliberately unspecified (until the R2 hoist supplies them)
 
-- Pipe wiring, process groups / kill-tree, wait-any (the reactor), PTY —
-  contracted shapes per RFC v2 §5.6; their semantics arrive proven from
-  rush and are specified here when they land.
-- Signal identity mapping across OSes (`Signaled`'s payload is the raw
-  OS signal number for now; a portable signal enum is an R2 question).
+- PTY — a distinct Process×Terminal surface (D13), gated on an
+  emulator/mux consumer.
+- `ExitStatus::Signaled`/`Stopped`'s payload is still the raw OS signal
+  number, not the portable `Signal` — `kill_tree`/`kill_single` grew a
+  portable *sender*-side identity (rustils#46) without also converging
+  the *received*-signal payload; that stays a future question, not
+  something this slice needed to answer.
+- Job-control terminal handoff (`tcsetpgrp` give/reclaim) is a
+  `platform::term` extension trait (`JobControlTerminal`, Unix-only),
+  not part of process at all — see `docs/behavior/term.md`.

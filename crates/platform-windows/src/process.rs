@@ -7,7 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, GroupSpec, Spawner};
+use platform::process::{Child, Command, ExitStatus, GroupSpec, Signal, Spawner};
 
 use crate::sys::handle::OwnedWinHandle;
 use crate::sys::proc;
@@ -43,7 +43,16 @@ impl Child for WindowsChild {
         self.pid
     }
 
-    fn kill_tree(&self) -> Result<()> {
+    fn kill_tree(&self, sig: Signal) -> Result<()> {
+        if sig != Signal::Kill {
+            // No OS mechanism delivers an arbitrary signal identity to a
+            // process here — divergence 008.
+            return Err(PlatformError::new(
+                ErrorKind::Unsupported,
+                OsCode::None,
+                "kill_tree",
+            ));
+        }
         match &self.job {
             Some(job) => proc::terminate_job(job),
             None => Err(PlatformError::new(
@@ -54,7 +63,15 @@ impl Child for WindowsChild {
         }
     }
 
-    fn kill_single(&self) -> Result<()> {
+    fn kill_single(&self, sig: Signal) -> Result<()> {
+        if sig != Signal::Kill {
+            // Same divergence-008 limitation as `kill_tree`.
+            return Err(PlatformError::new(
+                ErrorKind::Unsupported,
+                OsCode::None,
+                "kill_single",
+            ));
+        }
         proc::terminate_process(&self.process)
     }
 
@@ -66,6 +83,24 @@ impl Child for WindowsChild {
             self.reaped = proc::try_wait(&self.process)?;
         }
         Ok(self.reaped)
+    }
+
+    fn wait_job(&mut self) -> Result<ExitStatus> {
+        // No stop/continue analog on Windows (D8): job-control suspend
+        // is a Unix-only concept (no `tcsetpgrp`/SIGTSTP equivalent).
+        Err(PlatformError::new(
+            ErrorKind::Unsupported,
+            OsCode::None,
+            "wait_job",
+        ))
+    }
+
+    fn try_wait_job(&mut self) -> Result<Option<ExitStatus>> {
+        Err(PlatformError::new(
+            ErrorKind::Unsupported,
+            OsCode::None,
+            "try_wait_job",
+        ))
     }
 
     fn take_stdin(&mut self) -> Option<Box<dyn platform::fs::File>> {
@@ -129,6 +164,18 @@ fn resolve_with_pathext(base: &Path, pathext: &OsStr) -> Option<PathBuf> {
 
 impl Spawner for WindowsSpawner {
     fn spawn(&self, cmd: &Command) -> Result<Box<dyn Child>> {
+        if matches!(cmd.group, GroupSpec::JoinGroup(_)) {
+            // Windows has no numeric process-group id a spawn can join —
+            // Job Objects are handle-based, with no equivalent to
+            // POSIX's "start this child already inside pgid N"
+            // (divergence 008). Refuse before spawning anything rather
+            // than silently falling back to `Inherit`/`NewGroup`.
+            return Err(PlatformError::new(
+                ErrorKind::Unsupported,
+                OsCode::None,
+                "spawn: GroupSpec::JoinGroup",
+            ));
+        }
         let resolved = self.resolve(&cmd.program)?;
         let args: Vec<&OsStr> = cmd.argv.iter().map(OsString::as_os_str).collect();
         // The security boundary: winargv classifies the resolved program
