@@ -109,6 +109,13 @@ pub use windows_sys::Win32::Networking::WinSock::{recvfrom, sendto, SOCK_DGRAM};
 // representation difference, not a behavior one, so not a registered
 // divergence.
 pub use windows_sys::Win32::Networking::WinSock::SO_RCVTIMEO;
+// Raw-socket-handle + non-blocking escape hatch (rustils#59, mirroring
+// the rustils#41/#42 Linux precedent): `ioctlsocket(FIONBIO, ...)` is
+// Winsock's equivalent of `fcntl(F_SETFL, O_NONBLOCK)` — forced by
+// rusty_tail's `rusty_tokio` scoping a Windows/IOCP reactor backend
+// (`rusty_tokio#6`), the same consumer #41/#48 already served on
+// Linux/macOS.
+pub use windows_sys::Win32::Networking::WinSock::{ioctlsocket, FIONBIO};
 
 // Security surface, CSPRNG slice (RFC v2 R5+, D15, first slice) —
 // rusty_rdp's five hand-rolled `/dev/urandom` reads. `BCryptGenRandom`

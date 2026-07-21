@@ -414,6 +414,31 @@ through `std`, not this crate's own connect/bind path. `x86_64`/Linux
 only for now, matching the issue's own scope — `platform-windows`
 untouched.
 
+**Landed (Windows raw-socket + non-blocking escape hatch) 2026-07-21**
+— rustils#59, the `platform-windows` half of the gap #41 left: the
+same `rusty_tokio` consumer scoping a Windows/IOCP reactor backend
+(`rusty_tokio#6`) hit the identical wall — no socket-handle accessor,
+no way to toggle non-blocking mode. Added to the five concrete Windows
+socket types (`WindowsTcpStream`/`WindowsTcpListener`/
+`WindowsUnixStream`/`WindowsUnixListener`/`WindowsUdpSocket`):
+`AsRawSocket` (raw-handle exposure only — no `AsSocket`/ownership-
+transfer interop, since `sysnet::OwnedSocket` is this crate's own
+newtype rather than std's `std::os::windows::io::OwnedSocket`, and
+nothing has asked for adopting an externally-created socket on Windows
+the way `From<OwnedFd>` does for Unix), `set_nonblocking`
+(`ioctlsocket(FIONBIO, ...)`, Winsock's equivalent of
+`fcntl(F_SETFL, O_NONBLOCK)`), and the same concrete
+`connect`/`bind`/`accept` constructors #41 added on Linux, for the
+identical reason (otherwise `AsRawSocket`/`set_nonblocking` would be
+unreachable behind `Net`'s boxed-trait-only methods). Cross-compile-
+checked only (`net_nonblocking.rs`, mirroring the Linux suite's own
+test names) — Winsock's `ioctlsocket(FIONBIO, ...)` is set-only with
+no matching query call, so verification there is behavioral (a
+would-otherwise-block `accept`/`recv_from` returns `WouldBlock`
+immediately) rather than a flag read-back, and real execution needs
+the `windows-latest` CI leg, same caveat every `platform-windows`
+addition carries until it runs there.
+
 **Landed (`TcpStream::set_read_timeout`) 2026-07-20.** The one thing
 that reopened this "done" domain: starting the rusty_rdp convergence
 this phase's own note above flags as cheapest (its `net.rs` driver is

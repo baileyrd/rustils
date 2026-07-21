@@ -19,6 +19,27 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.12.0
+
+- Added a raw-socket + non-blocking escape hatch to `platform-windows`'s
+  concrete Net socket types (`WindowsTcpStream`/`WindowsTcpListener`/
+  `WindowsUnixStream`/`WindowsUnixListener`/`WindowsUdpSocket`)
+  (rustils#59) — the `platform-windows` half of the gap rustils#41 left
+  on Linux. Forced by `rusty_tail`'s `rusty_tokio` hand-rolled async
+  runtime scoping a Windows/IOCP reactor backend (`rusty_tokio#6`), the
+  same consumer #41/#48 already served on Linux/macOS. Adds
+  `AsRawSocket` (raw-handle exposure only, delegating to the private
+  `sysnet::OwnedSocket`), `set_nonblocking` (`ioctlsocket(FIONBIO,
+  ...)`), and concrete `connect`/`bind`/`accept` constructors returning
+  the concrete type directly instead of `Box<dyn Trait>` (`Net`'s own
+  trait methods are now thin wrappers over these, mirroring the Linux
+  slice exactly). No `AsSocket`/ownership-transfer interop — this
+  crate's `OwnedSocket` is its own newtype, not std's
+  `std::os::windows::io::OwnedSocket`, and nothing has asked for
+  adopting an externally-created socket on Windows the way
+  `From<OwnedFd>` does for Unix. See the convergence roadmap's Phase 5
+  entry for the full backend notes.
+
 ### 0.11.0
 
 - Added the Tun / virtual-link surface (D14, convergence roadmap Phase
