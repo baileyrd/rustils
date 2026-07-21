@@ -16,16 +16,20 @@ three groups instead of flattening to either extreme (one version for
 everything, or six independent ones):
 
 - **The PAL group — `platform`, `platform-linux`, `platform-windows`,
-  `platform-mock` — stays lockstep**, one shared version. These four
-  change together in practice, not in theory: every Net slice this
-  phase touched all four in the same PR (the trait, both real
-  backends, and the mock), because a trait method that exists on
-  `platform` and not on one backend doesn't compile. Independent
-  per-crate SemVer here would mean bookkeeping four version numbers
-  that must already move in lockstep to stay buildable — busywork with
-  no compatibility signal behind it, since `platform-linux 0.4.0`
-  never means anything on its own without knowing which `platform` it
-  implements.
+  `platform-mock`, and (since rustils#48) `platform-macos` — stays
+  lockstep**, one shared version. These crates change together in
+  practice, not in theory: every Net slice this phase touched all the
+  then-existing members in the same PR (the trait, both real backends,
+  and the mock), because a trait method that exists on `platform` and
+  not on one backend doesn't compile. `platform-macos` joined the group
+  at whatever version was already current (its own arrival changed no
+  existing crate's public item shape, so it did not itself force a
+  bump) rather than starting independently, for the identical reason:
+  `platform-macos 0.9.0` means nothing without knowing which
+  `platform` 0.9.0 it implements. Independent per-crate SemVer here
+  would mean bookkeeping five version numbers that must already move
+  in lockstep to stay buildable — busywork with no compatibility
+  signal behind it.
 - **`winargv` versions independently.** It already has its own
   lifecycle distinct from the PAL's convergence churn: the extraction
   map's own "handback" plan (D3) has it flowing back to rush/

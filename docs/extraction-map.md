@@ -398,6 +398,33 @@ Linux including the fire-and-forget send-to-nobody behavior that has
 no TCP/Unix equivalent. D16's Net surface is now fully landed across
 all three named slices, with shared parity coverage for all three too.
 
+**Landed (`platform-macos` backend, net-only) 2026-07-21** — rustils#48:
+a third `Net` implementor, forced the same way D16 itself was — a real
+consumer (`rusty_tail`'s `rusty_tokio` async runtime, building a kqueue
+reactor backend for macOS/BSD) had no `platform-macos` to sit its socket
+lifecycle on and hand-rolled `MacosTcpStream`/`MacosTcpListener`/
+`MacosUdpSocket` directly against `libc` a second time — duplicating
+`platform-linux`'s sockaddr packing, `SO_REUSEADDR`/`TCP_NODELAY`
+handling, and error mapping instead of reusing it. `crates/platform-macos`
+mirrors `platform-linux`'s `ffi`→`sys`→trait-impl layering exactly, with
+the rustils#41 `AsFd`/`AsRawFd`/`From<OwnedFd>`/`set_nonblocking`/
+concrete-constructor surface ported in from day one (the issue's own
+request, not a follow-up). Three real BSD syscall differences, none of
+them a behavioral divergence at the `platform::net` trait boundary (see
+`docs/behavior/net.md`): no `SOCK_CLOEXEC`/`SOCK_NONBLOCK` type flags
+(`fcntl(F_SETFD, FD_CLOEXEC)`/`fcntl(F_SETFL, O_NONBLOCK)` after
+creation instead), no `accept4` (`accept` + the same post-creation
+`fcntl`), and a leading `sin_len`/`sin6_len`/`sun_len` byte on every
+sockaddr variant (built via `zeroed()` + field assignment so the extra
+field never needs naming). Deliberately net-only — no `fs`/`process`/
+`security`/`term`/`signals` slice, since nothing has forced one (RFC v2
+§3); scoped down from a "full backend" option specifically to match what
+the forcing consumer actually needs. Not yet run on real macOS hardware
+by this workspace's own CI (no macOS runner leg exists yet) — validated
+via `cargo check`/`clippy --target x86_64-apple-darwin`, the same
+Linux-host cross-compile-check discipline `platform-windows` was
+originally developed under.
+
 **Landed (`TcpStream::set_read_timeout`) 2026-07-20** — added while
 starting the rusty_rdp convergence this entry names as cheapest;
 rusty_rdp's `examples/connect.rs` idles a read loop out via

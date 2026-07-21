@@ -14,9 +14,47 @@ during that period to make the reconstruction meaningful.
 
 Three independently-versioned lines, per `docs/versioning.md` §1:
 **the PAL group** (`platform`/`platform-linux`/`platform-windows`/
-`platform-mock`, sharing one number), **`winargv`**, and **`coreutils`**.
+`platform-mock`/`platform-macos`, sharing one number), **`winargv`**,
+and **`coreutils`**.
 
-## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock`)
+## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
+
+### 0.9.0
+
+- Added the job-control slice (rustils#43–#46), converging
+  `platform::process`/`platform::term` onto what `nexus-rush/src/job.rs`
+  needs (`baileyrd/nexus#454`): `GroupSpec::JoinGroup(pgid)` (join an
+  existing process group at spawn, D1's pipeline shape); a portable
+  `Signal` enum (`Term`/`Int`/`Hup`/`Quit`/`Kill`/`Stop`/`Cont`) —
+  `Child::kill_tree`/`kill_single` now take a `Signal` instead of a
+  hardcoded `SIGKILL`; `ExitStatus::Stopped`/`Continued` plus
+  `Child::wait_job`/`try_wait_job` (D10, the `WUNTRACED`/`WCONTINUED`
+  half of wait); and `platform::term::JobControlTerminal::give_terminal`
+  (`tcsetpgrp`), a new Unix-only extension trait implemented only by
+  `LinuxTerminal`. Breaking for existing `Child` implementers
+  (`kill_tree`/`kill_single`'s signature changed, two new required
+  methods) — per `docs/versioning.md` §2 this is a `y`-bump regardless
+  of the additive/breaking split, same as `TcpStream::set_read_timeout`
+  was. Windows gains divergence-registry entry **008** for what it
+  can't do (only `Signal::Kill`; no `GroupSpec::JoinGroup`; no
+  `wait_job`/`try_wait_job`). This bump was missed at merge time and is
+  being recorded after the fact — no functional change since #49
+  landed, just the version/changelog catching up to it.
+- `platform-macos` joined the PAL group (rustils#48): a net-only
+  backend (`Net`/`TcpStream`/`TcpListener`/`UnixStream`/
+  `UnixListener`/`UdpSocket`, plus the rustils#41 `AsFd`/`AsRawFd`/
+  `From<OwnedFd>`/`set_nonblocking`/concrete-constructor surface from
+  day one), forced by `rusty_tail`'s `rusty_tokio` hand-rolling the
+  same socket lifecycle a second time for its macOS/BSD kqueue reactor.
+  No change to any existing crate's public API shape — a new
+  implementor joining the group's existing `platform::net` traits, not
+  a trait-shape change — so this entry is bookkeeping (which
+  `platform` this `platform-macos` build implements), not the reason
+  for this bump; see the job-control entry above for that. Not yet run
+  against real macOS hardware by this workspace's own CI — validated
+  via `cargo check`/`clippy --target x86_64-apple-darwin`. See
+  `docs/behavior/net.md` and the convergence roadmap's Phase 5 entry
+  for the full contract and backend notes.
 
 ### 0.9.0
 

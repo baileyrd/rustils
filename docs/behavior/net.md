@@ -1,11 +1,28 @@
 # Behavior Spec — net (Net / TcpStream / TcpListener / UdpSocket)
 
-The parity suite (`crates/platform-linux/tests/net_parity.rs` and
-`crates/platform-windows/tests/net_parity.rs`, kept textually identical —
-the same convention `parity.rs` established) asserts this spec against
-every backend. A backend that cannot honor a line gets a numbered entry in
-`../divergences.md` citing the OS limitation — never implementation
-convenience.
+The parity suite (`crates/platform-linux/tests/net_parity.rs`,
+`crates/platform-windows/tests/net_parity.rs`, and (net-only, rustils#48)
+`crates/platform-macos/tests/net_parity.rs`, all three kept textually
+identical — the same convention `parity.rs` established) asserts this
+spec against every backend. A backend that cannot honor a line gets a
+numbered entry in `../divergences.md` citing the OS limitation — never
+implementation convenience.
+
+`platform-macos` (landed rustils#48, forced by `rusty_tokio`'s
+hand-rolled macOS/BSD socket lifecycle duplicating what this trait
+already solved for Linux) implements exactly this spec with no
+behavioral divergence from it — every difference from
+`platform-linux`'s implementation (no `SOCK_CLOEXEC`/`SOCK_NONBLOCK`/
+`accept4`, an extra `sin_len`-style sockaddr field) is mechanism-only,
+invisible at this trait's boundary, so it earns no entry in
+`../divergences.md`. `platform-macos` is `fs`/`process`/`security`/
+`term`/`signals`-free — a deliberately net-only slice; those surfaces
+follow only if a consumer forces them, the same RFC v2 §3 discipline
+every other surface in this workspace already follows. Not yet run on
+real hardware by this workspace's own CI (no macOS runner today) —
+validated so far via `cargo check`/`clippy --target
+x86_64-apple-darwin`, mirroring how `platform-windows` was originally
+developed from a Linux host.
 
 ## Scope (all three D16 slices — TCP, Unix domain sockets, UDP)
 
