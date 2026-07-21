@@ -724,9 +724,18 @@ fn linux_wait_job_observes_stop_and_continue() {
     let tmp = std::env::temp_dir();
     let s = platform_linux::LinuxSpawner;
 
+    // The `sleep 0.2` between resuming and exiting is load-bearing, not
+    // padding: without it, a fast scheduler can run the resumed shell
+    // straight through to `exit 5` before the very next line's
+    // `wait_job()` call observes the continued transition at all — the
+    // kernel's wait notification collapses straight to the exit status
+    // once the child is already a zombie, silently skipping `Continued`.
+    // The sleep keeps the child alive and running long enough that the
+    // continued transition is reliably still pending when `wait_job()`
+    // (called within microseconds of the `SIGCONT` below) looks for it.
     let c = Command::new("sh", tmp)
         .arg("-c")
-        .arg("kill -STOP $$; exit 5");
+        .arg("kill -STOP $$; sleep 0.2; exit 5");
     let mut child = s.spawn(&c).expect("spawn");
 
     // Blocking: the child stops itself shortly after spawn.
