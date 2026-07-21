@@ -449,6 +449,52 @@ literal path — mock's own harmless-looking cleanup unlink could
 intermittently delete the real backend's *live* socket file mid-test.
 Fixed by keying the path on a per-backend label too.
 
+**Landed (`platform-macos` backend, net-only) 2026-07-21** — rustils#48.
+A third `Net` implementor forced the same way this whole phase was:
+`rusty_tail`'s `rusty_tokio` async runtime needed a kqueue reactor
+backend for macOS/BSD and had no `platform-macos` to sit its socket
+lifecycle on, so it hand-rolled `MacosTcpStream`/`MacosTcpListener`/
+`MacosUdpSocket` a second time against raw `libc`
+(`src/io/socket/macos.rs`) — the exact duplication this phase's Linux
+slice already solved once. Filed as rustils#48 asking for scope/priority
+input rather than assuming a full backend was wanted; scoped down to
+net-only (mirrors just the pieces `rusty_tokio` actually uses) with
+cross-compile-check-only validation (no macOS runner in this workspace's
+CI), both decided explicitly before implementation rather than guessed.
+`crates/platform-macos` mirrors `platform-linux`'s `ffi`→`sys`→trait-impl
+layering exactly, including the rustils#41 `AsFd`/`AsRawFd`/
+`From<OwnedFd>`/`set_nonblocking`/concrete-constructor surface from day
+one (the issue's own request, not deferred as a follow-up this time).
+Three real BSD-vs-Linux syscall differences, all mechanism-only —
+zero behavioral divergence at the `platform::net` boundary, so
+`docs/divergences.md` gains no new entry for this slice:
+
+- No `SOCK_CLOEXEC`/`SOCK_NONBLOCK` socket-type flags on Darwin —
+  `fcntl(F_SETFD, FD_CLOEXEC)` right after `socket`/`accept` stands in
+  for the former (a fork+exec race the atomic Linux flag avoids and
+  this crate's own doc comment names rather than hides); the rustils#41
+  `set_nonblocking` escape hatch already covers the latter via
+  `fcntl(F_SETFL, O_NONBLOCK)`, unchanged in shape from the Linux slice.
+- No `accept4(2)` — plain `accept(2)`, then the same post-creation
+  `fcntl(F_SETFD, FD_CLOEXEC)`.
+- `sockaddr_in`/`sockaddr_in6`/`sockaddr_un` all carry a leading
+  `sin_len`/`sin6_len`/`sun_len` byte Linux's variants don't. Built via
+  `zeroed()` + explicit field assignment rather than a full struct
+  literal specifically so this extra field is set without ever needing
+  to be named at a call site — the shape rustils#48's own issue body
+  suggested and this slice adopted as-is.
+
+Cross-compile-checked only (`cargo check`/`clippy --target
+x86_64-apple-darwin`, plus the existing Linux-native and
+`x86_64-pc-windows-gnu` legs unaffected — `platform-macos` compiles to
+an empty crate on both, the same `#![cfg(target_os = "…")]` discipline
+`platform-linux` already established for non-Linux hosts): no macOS
+runner exists in this workspace's CI yet, so real hardware verification
+is future work, not claimed here. `docs/behavior/net.md`'s parity-suite
+list and `docs/extraction-map.md`'s D16 entry are both updated for this
+slice; `fs`/`process`/`security`/`term`/`signals` stay out of scope
+until a consumer forces them (RFC v2 §3), same as every other surface.
+
 ## Phase 6 — Security surface (D15)
 
 **Lands here**, staged narrow-to-wide:

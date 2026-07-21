@@ -14,9 +14,10 @@ during that period to make the reconstruction meaningful.
 
 Three independently-versioned lines, per `docs/versioning.md` §1:
 **the PAL group** (`platform`/`platform-linux`/`platform-windows`/
-`platform-mock`, sharing one number), **`winargv`**, and **`coreutils`**.
+`platform-mock`/`platform-macos`, sharing one number), **`winargv`**,
+and **`coreutils`**.
 
-## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock`)
+## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
 ### 0.9.0
 
@@ -39,6 +40,21 @@ Three independently-versioned lines, per `docs/versioning.md` §1:
   `wait_job`/`try_wait_job`). This bump was missed at merge time and is
   being recorded after the fact — no functional change since #49
   landed, just the version/changelog catching up to it.
+- `platform-macos` joined the PAL group (rustils#48): a net-only
+  backend (`Net`/`TcpStream`/`TcpListener`/`UnixStream`/
+  `UnixListener`/`UdpSocket`, plus the rustils#41 `AsFd`/`AsRawFd`/
+  `From<OwnedFd>`/`set_nonblocking`/concrete-constructor surface from
+  day one), forced by `rusty_tail`'s `rusty_tokio` hand-rolling the
+  same socket lifecycle a second time for its macOS/BSD kqueue reactor.
+  No change to any existing crate's public API shape — a new
+  implementor joining the group's existing `platform::net` traits, not
+  a trait-shape change — so this entry is bookkeeping (which
+  `platform` this `platform-macos` build implements), not the reason
+  for this bump; see the job-control entry above for that. Not yet run
+  against real macOS hardware by this workspace's own CI — validated
+  via `cargo check`/`clippy --target x86_64-apple-darwin`. See
+  `docs/behavior/net.md` and the convergence roadmap's Phase 5 entry
+  for the full contract and backend notes.
 
 ### 0.8.0
 

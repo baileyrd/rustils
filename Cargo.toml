@@ -6,6 +6,7 @@ members = [
     "crates/platform-mock",
     "crates/platform-linux",
     "crates/platform-windows",
+    "crates/platform-macos",
     "crates/winargv",
     "crates/coreutils",
 ]
@@ -29,6 +30,7 @@ platform = { path = "crates/platform" }
 platform-mock = { path = "crates/platform-mock" }
 platform-linux = { path = "crates/platform-linux" }
 platform-windows = { path = "crates/platform-windows" }
+platform-macos = { path = "crates/platform-macos" }
 winargv = { path = "crates/winargv" }
 thiserror = "1"
 libc = "0.2"
