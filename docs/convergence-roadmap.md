@@ -646,6 +646,18 @@ against everything `write()` recorded. See `docs/behavior/tun.md` for
 the full contract. rusty_tail's own `ts-tun` convergence onto this is a
 follow-up in that repo, not this PR.
 
+**CI finding, same day** — the dev sandbox this landed against runs as
+root with `CAP_NET_ADMIN`, but CI's hosted `ubuntu-latest` runner
+executes the `test` job as an unprivileged user, so `tun_parity.rs`'s
+live tests failed there with `PermissionDenied` on `TUNSETIFF` —
+caught by CI itself, not by re-checking assumptions ahead of time (the
+same class of gap the Sandbox slice's Landlock `ENOSYS` finding was,
+just discovered a step later in the workflow this time). Fixed by
+having the tests skip gracefully rather than fail when lacking the
+capability (mirroring `security_sandbox.rs`'s `NotEnforced` degrade
+path), plus a dedicated `sudo`-elevated CI step so CI still gets
+genuine live coverage instead of only ever exercising the skip branch.
+
 ## Phase 9 — Windowing + Registry/Config (nexus-only)
 
 **Lands here** (trait) **+ nexus** (convergence), last and thinnest per

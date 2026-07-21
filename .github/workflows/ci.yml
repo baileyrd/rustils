@@ -39,6 +39,17 @@ jobs:
         run: |
           cargo clippy -p platform-linux --features track-p --all-targets -- -D warnings
           cargo test -p platform-linux --features track-p
+      # Tun surface (D14): TUNSETIFF needs CAP_NET_ADMIN, which the
+      # hosted ubuntu-latest runner's default user lacks — the `test`
+      # step above already ran tun_parity.rs, but every one of its
+      # tests skipped gracefully rather than exercising real kernel
+      # behavior (see tun_parity.rs's tun_or_skip! macro). Root via
+      # sudo has the capability, so re-run just that suite privileged
+      # to keep genuine live coverage in CI instead of silently losing
+      # it on every run.
+      - name: test platform-linux tun surface (privileged)
+        if: matrix.os == 'ubuntu-latest' && matrix.toolchain == 'stable'
+        run: sudo -E env "PATH=$PATH" cargo test -p platform-linux --test tun_parity
 
   # rustils#48: platform-macos's own real-hardware verification. A
   # separate job, not a `test` matrix leg — `cargo test --workspace` on

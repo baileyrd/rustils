@@ -26,6 +26,16 @@ on the "losing" interface hangs forever waiting for a packet the
 kernel delivered to the other test's device instead), not a
 theoretical one — it was hit and fixed during development.
 
+CI's hosted `ubuntu-latest` runner executes the `test` job as an
+unprivileged user, which lacks `CAP_NET_ADMIN` — `tun_parity.rs`'s
+tests skip gracefully (`eprintln!` + return, mirroring
+`security_sandbox.rs`'s `NotEnforced` degrade path) rather than fail
+when `Tun::create` reports `PermissionDenied`, so a contributor running
+`cargo test --workspace` locally without elevated privilege still gets
+an honest pass, not a hard requirement to run as root. A dedicated,
+`sudo`-elevated CI step re-runs just this suite so CI itself still gets
+genuine live coverage rather than only ever exercising the skip path.
+
 ## Specified
 
 - `Tun::create` opens a new TUN (not TAP — no consumer needs an

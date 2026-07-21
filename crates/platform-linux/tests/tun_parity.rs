@@ -15,8 +15,31 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::os::fd::AsRawFd;
 
+use platform::error::ErrorKind;
 use platform::tun::Tun;
 use platform_linux::{LinuxTun, LinuxTunDevice};
+
+/// Skip (not fail) when the environment lacks `CAP_NET_ADMIN` — the same
+/// honest-skip discipline `security_sandbox.rs` uses for Landlock's own
+/// environment gap, adapted to `Tun::create`'s hard `Err` (there is no
+/// `NotEnforced`-style status to check here the way `Sandbox` has one).
+/// GitHub Actions' hosted `ubuntu-latest` runners execute test steps as
+/// an unprivileged user by default — this was discovered by CI itself
+/// failing after this suite passed only against a root-privileged local
+/// sandbox, the same "verify, don't assume" lesson the Landlock `ENOSYS`
+/// finding taught earlier this project.
+macro_rules! tun_or_skip {
+    ($result:expr) => {
+        match $result {
+            Ok(device) => device,
+            Err(e) if e.kind == ErrorKind::PermissionDenied => {
+                eprintln!("skipping: CAP_NET_ADMIN unavailable in this environment ({e})");
+                return;
+            }
+            Err(e) => panic!("create tun device: {e}"),
+        }
+    };
+}
 
 /// CGNAT space (RFC 6598, 100.64.0.0/10) — Tailscale's own convention
 /// for exactly this reason (`ts-tun`'s doc comment): unused, safe to
@@ -138,9 +161,7 @@ fn kernel_reported_addr(name: &str) -> Ipv4Addr {
 fn linux_tun_create_configures_a_real_interface() {
     let addr = Ipv4Addr::new(100, 127, 0, 1);
     let tun = LinuxTun;
-    let device = tun
-        .create("rstuntest0", addr, TEST_PREFIX, TEST_MTU)
-        .expect("create tun device (needs CAP_NET_ADMIN)");
+    let device = tun_or_skip!(tun.create("rstuntest0", addr, TEST_PREFIX, TEST_MTU));
 
     assert_eq!(device.name(), "rstuntest0");
     assert_eq!(kernel_reported_mtu(device.name()), TEST_MTU);
@@ -152,9 +173,7 @@ fn linux_tun_outbound_packet_is_readable_from_the_device() {
     let addr = Ipv4Addr::new(100, 127, 1, 1);
     let peer = Ipv4Addr::new(100, 127, 1, 2);
     let tun = LinuxTun;
-    let device = tun
-        .create("rstuntest1", addr, TEST_PREFIX, TEST_MTU)
-        .expect("create tun device");
+    let device = tun_or_skip!(tun.create("rstuntest1", addr, TEST_PREFIX, TEST_MTU));
 
     // Assigning the address with a real prefix length auto-installs the
     // connected route for that subnet — no explicit route command
@@ -183,9 +202,7 @@ fn linux_tun_delivers_a_crafted_inbound_packet_to_the_local_stack() {
     let addr = Ipv4Addr::new(100, 127, 2, 1);
     let peer = Ipv4Addr::new(100, 127, 2, 2);
     let tun = LinuxTun;
-    let device = tun
-        .create("rstuntest2", addr, TEST_PREFIX, TEST_MTU)
-        .expect("create tun device");
+    let device = tun_or_skip!(tun.create("rstuntest2", addr, TEST_PREFIX, TEST_MTU));
 
     let listener = UdpSocket::bind(SocketAddr::new(IpAddr::V4(addr), 55555))
         .expect("bind listener on the tun's own address");
@@ -205,8 +222,12 @@ fn linux_tun_delivers_a_crafted_inbound_packet_to_the_local_stack() {
 #[test]
 fn linux_tun_as_raw_fd_reports_a_real_open_fd() {
     let addr = Ipv4Addr::new(100, 127, 3, 1);
-    let device = LinuxTunDevice::create("rstuntest3", addr, TEST_PREFIX, TEST_MTU)
-        .expect("create concrete tun device");
+    let device = tun_or_skip!(LinuxTunDevice::create(
+        "rstuntest3",
+        addr,
+        TEST_PREFIX,
+        TEST_MTU
+    ));
     let raw = device.as_raw_fd();
     assert!(raw >= 0);
 
