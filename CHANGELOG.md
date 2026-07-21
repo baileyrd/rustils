@@ -18,6 +18,22 @@ Three independently-versioned lines, per `docs/versioning.md` §1:
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock`)
 
+### 0.8.0
+
+- Added a raw-fd + non-blocking escape hatch to `platform-linux`'s
+  concrete Net socket types (`LinuxTcpStream`/`LinuxTcpListener`/
+  `LinuxUnixStream`/`LinuxUnixListener`/`LinuxUdpSocket`): `AsFd`,
+  `AsRawFd`, `From<OwnedFd>`, and `set_nonblocking` — plus concrete
+  `connect`/`bind`/`accept` constructors returning the concrete type
+  directly instead of `Box<dyn Trait>` (`Net`'s own trait methods are
+  now thin wrappers over these). Forced by rustils#41: rusty_tail's
+  `rusty_tokio` hand-rolled async runtime wants to register a socket
+  with its own reactor rather than reimplement socket setup from
+  scratch. Inherent-impl-only — the object-safe `platform::net` traits
+  are unchanged, matching `LinuxFile`/`LinuxDir`'s existing std-interop
+  precedent (`fs.rs`). Linux only; not part of the cross-backend
+  `docs/behavior/net.md` spec.
+
 ### 0.7.0
 
 - Added the Security surface's third slice: `platform::security::Sandbox`

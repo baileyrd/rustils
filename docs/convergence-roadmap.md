@@ -387,6 +387,33 @@ sockets, and UDP datagram all landed, and with the Unix-socket parity
 suite landed too (see the note above), Net's own parity coverage is
 complete across all three slices.
 
+**Landed (raw-fd + non-blocking escape hatch) 2026-07-21** — filed as
+rustils#41 by rusty_tail's own maintainer, mid-design on `rusty_tokio`
+(a hand-rolled async runtime): wants to sit on `platform-linux`'s
+sockaddr-packing/error-mapping/stale-socket-cleanup logic rather than
+reimplement it, but the net surface was blocking-only and fully
+encapsulated — no fd accessor, no way to toggle `O_NONBLOCK`, nothing
+reachable to register with a reactor. Added to the five concrete Linux
+socket types (`LinuxTcpStream`/`LinuxTcpListener`/`LinuxUnixStream`/
+`LinuxUnixListener`/`LinuxUdpSocket`): `AsFd`/`AsRawFd`, `From<OwnedFd>`,
+`set_nonblocking` (`fcntl(F_GETFL)`/`fcntl(F_SETFL)`), and concrete
+`connect`/`bind`/`accept` constructors that call the exact same
+`sysnet::` functions `Net`'s trait impl now just wraps — without the
+constructors, the accessors would have been unreachable dead code,
+since `Net::tcp_connect` and friends only ever hand out `Box<dyn
+TcpStream>`, which erases the concrete type with no safe way back
+(object-safe, not `Any`). Deliberately inherent-impl-only, not a change
+to the object-safe `platform::net` traits themselves — mirrors
+`LinuxFile`/`LinuxDir`'s existing std-interop precedent (`fs.rs`)
+rather than inventing a new one. Live-verified (`net_nonblocking.rs`):
+`O_NONBLOCK` actually flips in the kernel (checked via a raw `fcntl`
+call bypassing this crate's own code), a non-blocking `accept`/
+`recv_from` with nothing pending returns `WouldBlock` immediately
+rather than hanging, and `From<OwnedFd>` adopts a socket built entirely
+through `std`, not this crate's own connect/bind path. `x86_64`/Linux
+only for now, matching the issue's own scope — `platform-windows`
+untouched.
+
 **Landed (`TcpStream::set_read_timeout`) 2026-07-20.** The one thing
 that reopened this "done" domain: starting the rusty_rdp convergence
 this phase's own note above flags as cheapest (its `net.rs` driver is

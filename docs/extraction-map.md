@@ -390,6 +390,18 @@ none for. See the convergence roadmap's Phase 5 entry for the full
 backend notes, including a real pre-existing test-flake bug this work
 caught and fixed along the way (unrelated to the timeout itself).
 
+**Landed (raw-fd + non-blocking escape hatch) 2026-07-21** — filed as
+rustils#41 by rusty_tail's own maintainer, mid-design on `rusty_tokio`
+(a hand-rolled async runtime wanting to sit on this crate's
+sockaddr-packing/stale-cleanup logic instead of reimplementing it).
+`AsFd`/`AsRawFd`/`From<OwnedFd>`/`set_nonblocking` plus concrete
+`connect`/`bind`/`accept` constructors on the five Linux socket types —
+inherent-impl-only, the object-safe `Net`/`TcpStream`/etc. traits
+themselves are unchanged. See the convergence roadmap's Phase 5 entry
+for the full backend notes and why the constructors were necessary
+(without them, the accessors would be unreachable — `Box<dyn Trait>`
+erases the concrete type with no safe way back).
+
 ### Cross-cutting notes from the full-ecosystem survey
 
 - **nexus re-derived already-landed rustils work**: its

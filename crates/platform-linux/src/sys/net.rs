@@ -302,6 +302,31 @@ pub fn set_read_timeout(fd: &OwnedFd, timeout: Option<Duration>) -> Result<()> {
     Ok(())
 }
 
+/// `fcntl(F_GETFL)` + `fcntl(F_SETFL)` to toggle `O_NONBLOCK` on an
+/// already-open socket (rustils#41: rusty_tail's `rusty_tokio` reactor
+/// needs a non-blocking fd to register with its own poll loop).
+pub fn set_nonblocking(fd: &OwnedFd, nonblocking: bool) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `fd` is caller-owned and valid; `fcntl(F_GETFL)` takes no
+    // variadic argument.
+    let flags = unsafe { c::fcntl(fd.as_raw_fd(), c::F_GETFL) };
+    if flags < 0 {
+        return Err(net_err("fcntl(F_GETFL)"));
+    }
+    let new_flags = if nonblocking {
+        flags | c::O_NONBLOCK
+    } else {
+        flags & !c::O_NONBLOCK
+    };
+    // SAFETY: `fd` is caller-owned and valid; `new_flags` is a plain
+    // integer, the sole variadic argument `F_SETFL` expects.
+    let r = unsafe { c::fcntl(fd.as_raw_fd(), c::F_SETFL, new_flags) };
+    if r < 0 {
+        return Err(net_err("fcntl(F_SETFL)"));
+    }
+    Ok(())
+}
+
 /// `getpeername`.
 pub fn peer_addr(fd: &OwnedFd) -> Result<SocketAddr> {
     use std::os::fd::AsRawFd;
