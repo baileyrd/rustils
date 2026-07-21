@@ -419,11 +419,14 @@ sockaddr variant (built via `zeroed()` + field assignment so the extra
 field never needs naming). Deliberately net-only — no `fs`/`process`/
 `security`/`term`/`signals` slice, since nothing has forced one (RFC v2
 §3); scoped down from a "full backend" option specifically to match what
-the forcing consumer actually needs. Not yet run on real macOS hardware
-by this workspace's own CI (no macOS runner leg exists yet) — validated
-via `cargo check`/`clippy --target x86_64-apple-darwin`, the same
-Linux-host cross-compile-check discipline `platform-windows` was
-originally developed under.
+the forcing consumer actually needs. Initially validated only via
+`cargo check`/`clippy --target x86_64-apple-darwin` from a Linux host
+(the same cross-compile discipline `platform-windows` was originally
+developed under) — a dedicated `macos` CI job (real `macos-latest`
+runner, scoped to `platform`/`platform-mock`/`platform-macos` rather
+than `cargo test --workspace`, since `coreutils`'s bins aren't portable
+to macOS yet either) now runs `clippy`/`test` on real hardware on every
+push and PR, closing that gap.
 
 **Landed (`TcpStream::set_read_timeout`) 2026-07-20** — added while
 starting the rusty_rdp convergence this entry names as cheapest;
