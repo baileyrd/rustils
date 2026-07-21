@@ -9,14 +9,19 @@ systems, and the ecosystem's own precedents actually offer, and the real open
 questions that follow, for the owner to decide. Per §3, this document produces
 rows and gate conditions, not code.
 
-One honesty note up front, since the sandbox discussion set the standard of
-verifying donors against their source: the donor repos (shh, rusty_rdp,
-rusty_tail, rusty_llama) are not checked out in this workspace. Claims about
-them below are grounded in this repo's own records (the extraction map's D16
-survey, `docs/behavior/net.md`, `docs/behavior/security.md`'s Csprng history)
-and in rustils#70's own description of `rusty_request` — not fresh source
-verification. Anything that turns on a donor detail this repo hasn't recorded
-is flagged as such.
+**Amended 2026-07-21**, in two ways. First, the original draft's honesty note
+— that donor claims were grounded in this repo's records rather than fresh
+source verification — is now superseded: a source-level survey of shh,
+rusty_tail, rusty_rdp, rusty_provider, rusty_request, and rusty_tokio was
+performed and its findings are folded in below (see *Prior art* and open
+question 5's resolution; rusty_llama remains unverified and is still flagged
+where it matters). Second, review of the merged first draft found three
+technical claims about trust-store access that were wrong or understated —
+the macOS anchor-enumeration API, Windows's lazily-populated root store, and
+the inability of an anchor list to express distrust — all corrected in place
+below, and all cutting the same direction: B1 is *best-effort* anchor
+loading, materially less faithful than OS verification (B2) on Windows and
+macOS.
 
 ## Context: the standing stance, restated precisely
 
@@ -80,19 +85,33 @@ asymmetric, and every design option inherits that asymmetry.
   `CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_SSL, ...)` performs
   complete validation — chain building against the ROOT store, revocation if
   asked, hostname matching — as one OS call.
-- **Trust anchors as an OS object.** `CertOpenSystemStoreW(L"ROOT")` +
-  `CertEnumCertificatesInStore` yields the roots as DER blobs, honoring
-  enterprise group-policy-deployed roots — something a bundled cert file can
-  never do.
+- **Trust anchors as an OS object — with a lazy-population trap.**
+  `CertOpenSystemStoreW(L"ROOT")` + `CertEnumCertificatesInStore` yields the
+  roots as DER blobs, honoring enterprise group-policy-deployed roots —
+  something a bundled cert file can never do. But the ROOT store is *lazily
+  populated*: Windows ships most roots via AuthRoot auto-update and fetches
+  them on demand *during chain building*, so enumeration returns only what is
+  currently cached. An anchor list built this way can fail validation for a
+  site whose perfectly-trusted root simply hasn't been fetched yet; only the
+  chain engine (`CertGetCertificateChain`) triggers the on-demand fetch. This
+  is a documented limitation of the enumeration approach, and it bounds what
+  B1 below can honestly promise on Windows.
 
 ### macOS — half a TLS service, a whole trust service
 
 - **Trust evaluation is first-class and current:** `SecTrustCreateWithCertificates`
   + `SecTrustEvaluateWithError` with an SSL policy (`SecPolicyCreateSSL`)
   validates a chain including hostname, against the keychain's trust settings
-  (again including MDM/enterprise-deployed roots). Anchor enumeration exists
-  (`SecTrustCopyAnchorCertificates`), though Apple steers callers toward
-  evaluation rather than enumeration.
+  (again including MDM/enterprise-deployed roots). Anchor *enumeration* is
+  where the first draft of this document was wrong:
+  `SecTrustCopyAnchorCertificates` returns only Apple's *built-in* system
+  roots — it does **not** include user- or MDM/admin-added anchors.
+  Enumerating *effective* trust means walking the trust-settings domains via
+  `SecTrustSettingsCopyCertificates` and interpreting per-certificate trust
+  settings (including partial-trust and distrust records) — famously messy,
+  and exactly why Apple steers callers toward evaluation rather than
+  enumeration. Evaluation (B2's shape) is the first-class citizen here;
+  enumeration (B1's shape) is a best-effort reconstruction.
 - **The TLS engine story is worse:** Secure Transport (custom-IO callbacks, so
   it *can* layer over an external stream) is deprecated since 10.15; its
   replacement, Network.framework, owns the connection down to the socket —
@@ -134,27 +153,77 @@ probing on Linux), and `rustls-platform-verifier` exists solely to do row 2
 via the OS on Windows/macOS *with a webpki fallback on Linux* — because on
 Linux there is nothing to delegate to.
 
-## Prior art inside the ecosystem
+## Prior art inside the ecosystem (source-verified, 2026-07-21 amendment)
 
-- **rusty_rdp** (per the extraction map): the injection seam works in
-  production — rustls optional, injected, over `Read + Write`-generic code —
-  and the Csprng extraction proves the "retire the OS-facing duplication into
-  one narrow primitive" motion works from exactly this neighborhood.
-- **shh and rusty_tail hand-roll their wire crypto — and that does *not*
-  argue TLS is similarly hand-rollable.** SSH-style and Noise-style protocols
-  have no X.509/PKI, no ASN.1, no version-and-ciphersuite negotiation matrix,
-  and (in those tools' deployments) pinned or TOFU keys. TLS + WebPKI is a
-  different order of attack surface, and its characteristic failures are
-  *silent* — a validator that accepts a bad chain passes every happy-path
-  test ever written for it. The parity regime has no oracle for "rejects what
-  an attacker sends"; contrast Track P, where a wrong syscall wrapper fails
-  loudly under the existing suite. M1's own rule — hand-rolled only counts
-  when it's *correct* — is unusually hard to satisfy here and unusually
-  expensive to check.
+Everything below except the rusty_llama row was verified against the actual
+repos, per the sandbox discussion's standard.
+
+- **rusty_rdp** (`src/tls.rs`, feature `tls`): the injection seam works in
+  production — rustls optional, injected, the RDP-over-TLS protocol logic
+  staying in a dependency-free core generic over the stream. Two facts the
+  extraction map never recorded, both load-bearing here:
+  1. `connect_tls` **performs no certificate verification at all** — a
+     deliberate, documented `danger::ServerCertVerifier` that accepts every
+     chain, because RDP servers overwhelmingly present self-signed
+     certificates and rely on out-of-band trust; callers who want real
+     verification are pointed at building their own rustls stream and using
+     `new_enhanced`. So rdp loads **no trust anchors today** — it is not a
+     B1 call site, and the ecosystem's one shipped TLS path is knowingly
+     MITM-unprotected. If rdp ever grows real verification, *it* becomes a
+     trust-anchor consumer too.
+  2. Its module docs independently state this document's Option-D
+     conclusion, verbatim: "A TLS stack is the one piece that cannot be
+     hand-rolled responsibly." And it already consumes rustils in this exact
+     path — `connect_tls_with_csprng` threads `platform::security::Csprng`
+     into the CredSSP exchange behind an optional `platform` feature.
+  Separately, rdp *does* hand-roll a large set of protocol-mandated legacy
+  primitives (MD4/MD5/SHA-1/RC4/RSA/AES/HMAC/PBKDF2, `src/crypto/`) under an
+  explicit "not safe for new designs" warning — obsolete algorithms the RDP
+  wire format forces, not a counterexample to the TLS stance.
+- **shh and rusty_tail hand-roll their *protocols*, not their primitives** —
+  a correction to this document's first draft (and to the extraction map's
+  shorthand). shh hand-rolls the SSH protocol (packet sealing, hybrid
+  ML-KEM-768+X25519 kex, KDF, OpenSSH-compatible Ed25519 user certificates)
+  but takes its primitives from dalek/RustCrypto crates (`x25519-dalek`,
+  `ed25519-dalek`, `chacha20`, `aes-gcm`, `sha2`); rusty_tail's data plane is
+  `boringtun`/`crypto_box` crates, and its control plane is Noise over
+  **plain HTTP** against Headscale, with HTTPS explicitly "not yet
+  supported" and its DERP client http-only. Even the hand-rolled-ethos repos
+  drew the line *above* the crypto primitives — which strengthens, not
+  weakens, the argument below against hand-rolling TLS. It also makes
+  rusty_tail a **latent second HTTPS consumer**: real Tailscale control and
+  DERP both run over TLS, so targeting production infrastructure eventually
+  hits the same client-TLS wall as rusty_request.
+- **rusty_provider** (not part of D16's survey, and not part of the
+  hand-rolled family — a pragmatic tokio/reqwest stack): does real TLS three
+  ways today — reqwest with `rustls-tls-native-roots` for provider APIs,
+  `tokio-postgres-rustls` for the database, and a hand-built
+  `rustls::ClientConfig` (`crates/router/src/persistence.rs`) that calls
+  `rustls_native_certs::load_native_certs()`, warns per failed cert, and
+  fails closed on zero roots. **The B1 operation already runs live in this
+  ecosystem** — served by the ecosystem crate, with no expressed gap. That
+  is CredentialStore-shaped evidence (complete, working, no desire to
+  migrate), and it reshapes B1's gate condition below.
+- **rusty_request and rusty_tokio**: verified exactly as rustils#70
+  described — rusty_request rejects `https://` as a tracked gap (its proxy
+  module defers CONNECT tunneling "until HTTPS lands"; even its jitter RNG's
+  docs invoke "same reasoning as the TLS gap"), and rusty_tokio contains no
+  TLS concept anywhere.
 - **rusty_llama's optional server** is recorded in D16 as one of the four
-  bring-your-own-crypto consumers; nothing in this repo's records suggests it
-  has a TLS shape beyond the same injection pattern. (Flag: if its actual
-  source shows otherwise, that's new information this document didn't have.)
+  bring-your-own-crypto consumers; it was **not** part of the 2026-07-21
+  survey, so this remains the one donor claim still resting on this repo's
+  records rather than source.
+
+The hand-rollability argument itself is unchanged and now better-grounded:
+SSH-style and Noise-style protocols have no X.509/PKI, no ASN.1, no
+version-and-ciphersuite negotiation matrix, and (in these tools'
+deployments) pinned or TOFU keys. TLS + WebPKI is a different order of
+attack surface, and its characteristic failures are *silent* — a validator
+that accepts a bad chain passes every happy-path test ever written for it.
+The parity regime has no oracle for "rejects what an attacker sends";
+contrast Track P, where a wrong syscall wrapper fails loudly under the
+existing suite. M1's own rule — hand-rolled only counts when it's *correct*
+— is unusually hard to satisfy here and unusually expensive to check.
 
 ## The options
 
@@ -168,7 +237,7 @@ exactly as rdp does synchronously.
 needs from the stream underneath: read/write with honest `WouldBlock`
 (`rusty_tokio`'s reactor path — raw-fd/raw-socket access + `set_nonblocking`,
 landed as rustils#41/#48/#59 for Linux/macOS/Windows precisely for this
-consumer), or blocking read with `set_read_timeout` (landed 0.13-era, forced
+consumer), or blocking read with `set_read_timeout` (landed 2026-07-20 at the start of the rdp convergence, forced
 by rdp). Nothing else — TLS needs no socket options `Net` doesn't already
 expose. **The seam is complete today; Option A costs rustils zero code.**
 
@@ -184,16 +253,33 @@ The issue's "certificate validation / trust-store access via the OS" is
 splits them cleanly:
 
 - **B1 — trust-anchor access: "give me the OS's root certificates," as raw
-  DER blobs.** Implementable *symmetrically* on all three backends
-  (CertEnumCertificatesInStore / SecTrustCopyAnchorCertificates / distro-path
-  probing + `SSL_CERT_FILE` on Linux). No cryptography enters rustils — the
-  consumer's TLS layer does all validation; rustils only answers the genuinely
-  OS-personality question of *where the roots live and how to read them*.
-  Naturally one method; naturally mockable (a mock backend with configurable
-  anchors gives TLS-using consumers hermetic tests, the same service
-  `platform-mock` provides everywhere else); honors enterprise-deployed roots
-  on Windows/macOS, which no bundled-certs approach can. **This is the
-  Csprng-shaped candidate.**
+  DER blobs.** Implementable on all three backends
+  (CertEnumCertificatesInStore / trust-settings enumeration on macOS /
+  distro-path probing + `SSL_CERT_FILE` on Linux). No cryptography enters
+  rustils — the consumer's TLS layer does all validation; rustils only
+  answers the genuinely OS-personality question of *where the roots live and
+  how to read them*. Naturally one method; naturally mockable (a mock
+  backend with configurable anchors gives TLS-using consumers hermetic
+  tests, the same service `platform-mock` provides everywhere else).
+  **This is the Csprng-shaped candidate — but its honest contract is
+  *best-effort* anchor loading**, with three fidelity limits the first draft
+  understated (2026-07-21 amendment):
+  1. *Windows misses uncached roots* — the ROOT store is lazily populated
+     via AuthRoot (see the platform survey above), so enumeration can omit a
+     trusted root the chain engine would have fetched on demand, producing
+     false validation failures.
+  2. *macOS enumeration is a reconstruction, not an API* — the one-call
+     anchor API returns built-in roots only; effective trust requires
+     walking trust-settings domains and interpreting per-cert settings.
+  3. *A DER list cannot express distrust* — OS stores carry negative and
+     partial-trust records (explicitly distrusted certs, constrained roots);
+     `Vec<CertDer>` has no way to say "never accept this one," so a consumer
+     validating against B1's output can accept a chain the OS itself would
+     reject.
+  These are the documented limits of the rustls-native-certs approach
+  industry-wide, and they are simultaneously the strongest argument *for*
+  B2 on the platforms that have it — recorded here so the B1-vs-B2 trade is
+  weighed on accurate facts, not the first draft's tilt.
 - **B2 — OS chain *verification*: "validate this presented chain for this
   hostname."** A real one-call OS API on Windows and macOS; **no OS API at
   all on Linux.** A Linux backend would have to hand-roll X.509 path
@@ -207,12 +293,20 @@ splits them cleanly:
   consumer that specifically wants OS-policy semantics on Windows/macOS —
   the exact posture rustls-platform-verifier takes.
 
-Gate condition to record for B1 (drafted here so whoever files it isn't
-guessing): *`rusty_request` (or any consumer) ships working HTTPS with an
-injected TLS layer, and is observed hand-rolling OS-anchor loading — distro
-path probing, cert-store reading — at real call sites.* That is the same
-duplication signal that gated Csprng, and it cannot exist before Option A
-happens first.
+Gate condition to record for B1, revised by the 2026-07-21 survey: *a
+**hand-rolled-family** consumer (rusty_request once HTTPS lands, rusty_tail's
+control plane going TLS, or rusty_rdp growing real verification) needs OS
+trust anchors **without** taking `rustls-native-certs`, and is observed
+hand-rolling anchor loading — distro path probing, cert-store reading — at
+real call sites.* That is the same duplication signal that gated Csprng, and
+it cannot exist before Option A happens first. The family qualifier is new
+and matters: rusty_provider already performs this exact operation in
+production via the ecosystem crate, contentedly — which is CredentialStore-
+shaped evidence (a complete, working implementation with no live gap is not
+a forcing consumer), not Csprng-shaped evidence. rusty_provider's
+`persistence.rs` config builder is, however, the best in-ecosystem design
+reference for what B1's semantics should be if it ever gates in: per-cert
+error tolerance with warnings, fail-closed on zero roots.
 
 ### Option C — an OS-native TLS engine surface (`SChannel`/Secure Transport behind a trait)
 
@@ -286,10 +380,13 @@ Keeping that stance and eventually landing B1 are fully compatible.
   above. `rusty_request` stays `http://`-only or injects TLS at Layer 3 when
   ready; rustils changes nothing.
 - **Pre-identified gated slice:** B1 (`load OS trust anchors as DER blobs`),
-  fourth Security slice alongside Csprng/Sandbox, unparked only on the gate
-  condition drafted above. Raw DER at the boundary — no ASN.1 types in
-  rustils, the byte-oriented §5.2 instinct applied to certificates; parsing
-  stays consumer-side.
+  fourth Security slice alongside Csprng/Sandbox, unparked only on the
+  revised gate condition above (hand-rolled-family consumer, no
+  `rustls-native-certs`), and specified as *best-effort* per its documented
+  fidelity limits. Raw DER at the boundary — no ASN.1 types in rustils, the
+  byte-oriented §5.2 instinct applied to certificates; parsing stays
+  consumer-side; rusty_provider's config builder is the semantics reference
+  (warn per bad cert, fail closed on zero).
 - **Recorded as researched-and-declined:** C (no backend on the consumer's
   platform), D (unverifiable correctness in a trust-critical artifact), E
   (no consumer, trivially revisitable).
@@ -300,30 +397,44 @@ Keeping that stance and eventually landing B1 are fully compatible.
 
 1. **Does B1 wait for its gate, or is a Sandbox-style speculative build
    acceptable?** The Sandbox precedent shows the owner may explicitly accept
-   speculative-build risk when a validated donor design exists. B1 has no
-   equivalent donor implementation in the ecosystem (rdp injects rustls but
-   this repo has no record of it loading *native* anchors) — which argues for
-   waiting, per the CredentialStore outcome rather than the Sandbox one.
+   speculative-build risk when a validated donor design exists. The
+   2026-07-21 survey sharpened this question's facts in both directions:
+   there *is* now a validated in-ecosystem design to mirror
+   (rusty_provider's `build_rustls_client_config`), but its very existence
+   — complete, working, no expressed desire to migrate — is the exact
+   CredentialStore signal that argued for holding. And no hand-rolled-family
+   consumer loads anchors at all yet (rdp verified as loading none — it
+   skips verification entirely). The evidence now leans toward waiting.
 2. **Which domain does B1 land in if/when gated — `security` (beside Csprng,
    as trust *material*) or `net`?** Recommendation embedded above: `security`,
    which also keeps `net.md`'s "Deliberately unspecified — any TLS/crypto"
    line true forever.
 3. **Linux anchor-source policy for B1:** probe the known distro paths only,
    honor `SSL_CERT_FILE`/`SSL_CERT_DIR` first, or both — and what does
-   `platform-mock` assert about ordering/precedence? (This is where all the
-   real Linux design content lives; Windows/macOS are single API calls.)
+   `platform-mock` assert about ordering/precedence? Note the two on-disk
+   layouts: a single bundle file *and* a directory of hashed symlinks
+   (`/etc/ssl/certs` on Debian is both at once) — a probing policy has to
+   decide which wins and whether directories are enumerated. (This is where
+   most of the real Linux design content lives; and per the amended platform
+   survey above, Windows/macOS are *not* the "single API call" the first
+   draft claimed — enumeration has real fidelity limits on both.)
 4. **Who is the consumer for gating purposes — `rusty_request` or
    `rusty_tokio`?** The TLS layer could live in either (request-level vs. a
    runtime-provided stream wrapper). It changes nothing about rustils' seam,
    but §3's table wants a *name*, and the anchor-loading call sites will live
    wherever the TLS layer does.
-5. **Is fresh donor verification needed before any of this advances?** This
-   document could not check shh/rdp/llama source directly (noted up top). The
-   sandbox discussion's standard says: verify against source, not docs'
-   framing, before the RFC-level call — in particular whether rusty_llama's
-   server TLS shape matches D16's record, and whether rdp's rustls path loads
-   native anchors today (which would make rdp, not rusty_request, B1's first
-   real call site).
+5. **~~Is fresh donor verification needed before any of this advances?~~
+   Resolved 2026-07-21** — the survey ran against shh, rusty_tail, rusty_rdp,
+   rusty_provider, rusty_request, and rusty_tokio at source level; findings
+   are folded into the *Prior art* section above. The headline answers: rdp
+   loads **no** native anchors (it skips verification entirely, by
+   documented design), so rusty_request remains B1's first hand-rolled-family
+   call-site candidate; rusty_provider — outside the original survey — turns
+   out to already perform B1's operation via `rustls-native-certs`,
+   reshaping the gate condition; and rusty_tail's plain-HTTP control plane
+   is a latent second HTTPS consumer. The one residue: rusty_llama was not
+   surveyed, and its optional server's TLS shape still rests on D16's record
+   rather than source.
 
 ## What this document does not decide
 
