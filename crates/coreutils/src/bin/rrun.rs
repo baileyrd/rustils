@@ -33,6 +33,9 @@ fn main() -> std::process::ExitCode {
         // ExitStatus is what makes this expressible portably.
         Ok(ExitStatus::Code(code)) => std::process::ExitCode::from((code & 0xff) as u8),
         Ok(ExitStatus::Signaled(sig)) => std::process::ExitCode::from((128 + (sig & 0x7f)) as u8),
+        // Child::wait only ever produces Code/Signaled — Stopped/Continued
+        // are wait_job/try_wait_job-only (D10).
+        Ok(ExitStatus::Stopped(_) | ExitStatus::Continued) => unreachable!(),
         Err(e) => {
             eprintln!("rrun: {e}");
             std::process::ExitCode::FAILURE

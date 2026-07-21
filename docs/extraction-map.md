@@ -38,6 +38,16 @@ and commented in place:
 Stays rush-side (policy): job tables, `%n` specs, `$!` = last-stage pid,
 `128+sig` conventions, `jobs`/`fg`/`bg`/`wait`/`disown` builtins.
 
+**Landed (job-control slice) 2026-07-21** — forced by `nexus-rush/src/job.rs`
+converging onto `platform::process`/`platform::term` (`baileyrd/nexus#454`,
+split into rustils#43–#46): `GroupSpec::JoinGroup` (the pipeline-stage
+group-join half, shared with D2 below), `Signal` +
+`kill_tree`/`kill_single(sig)`, `ExitStatus::Stopped`/`Continued` +
+`Child::wait_job`/`try_wait_job` (D10, below), and
+`platform::term::JobControlTerminal::give_terminal` (`tcsetpgrp`,
+`docs/behavior/term.md`) gated on `ignore_sigttou`. Unix-only throughout;
+`docs/divergences.md` #008 records the Windows gaps.
+
 ### D2 — `rush/src/winjob.rs` + `rusty_win32`: Windows jobs & spawn
 
 - Suspended-spawn → assign-to-Job-Object → resume: membership guaranteed
@@ -212,6 +222,12 @@ rusty_lines' host. Windows fg/bg absence is already characterized (D8).
   `WIFSTOPPED`/`WIFCONTINUED` decode — the Ctrl-Z/fg/bg half of the
   status set; the landed `ExitStatus` covers exit+signal only.
   Unix-only (Windows divergence already in D8's list).
+
+**Landed** 2026-07-21, with D1's job-control slice — see D1's landed note.
+`ExitStatus::Stopped(sig)`/`Continued` plus `Child::wait_job`/
+`try_wait_job` (`WUNTRACED`/`WCONTINUED`-aware wait, both blocking and
+non-blocking, mirroring `wait`/`try_wait`'s pair). `waitid`+`WNOWAIT`
+peek-without-reap remains unlanded — no consumer has forced it yet.
 
 ### D11 — Fs second wave: mutation layer, predicates, memfd
 

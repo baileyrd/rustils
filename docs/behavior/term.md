@@ -103,13 +103,38 @@ because the existing surface already covers them:
   separate `suspend`/`resume` pair would duplicate this surface, not
   extend it.
 
+## Job-control terminal handoff (landed, rustils#43)
+
+- `JobControlTerminal::give_terminal(pgid)` — `tcsetpgrp(STDIN_FILENO,
+  pgid)` — hands the controlling terminal's foreground process group to
+  `pgid`, or reclaims it for the caller's own group. A deliberately
+  separate trait from `Terminal`: every backend (including Windows)
+  implements `Terminal`, but there is no Windows equivalent for this one
+  (D8: "no `fg`/`bg`/Ctrl-Z... no `tcsetpgrp` equivalent") — only
+  `LinuxTerminal` implements `JobControlTerminal`.
+- Sound only once `SIGTTOU` is ignored in the calling process (D1's
+  precondition: a background process calling `tcsetpgrp` is stopped by
+  `SIGTTOU` by default otherwise). The implementation encodes this
+  itself — every `give_terminal` call first sets `SIGTTOU` to `SIG_IGN`
+  (idempotent) — rather than documenting it as a caller obligation that
+  could be forgotten.
+- **Parity-pinned:** with stdin redirected (no controlling terminal),
+  `give_terminal` returns `Err` — the same `ENOTTY` refusal
+  `enter_raw`/`window_size` give on the same stream.
+- **Live-verified only** (not parity-pinned, same discipline as
+  `poll_readable`/`read_chunk`'s batching pin above): the real
+  give/reclaim round-trip needs a live controlling terminal (a pty) —
+  exercising it against a real job-control consumer is what proves the
+  SIGTTOU-ignore precondition actually holds, not something CI's
+  redirected-stream harness can observe.
+- SIGTSTP/SIGCONT suspend-resume signal *delivery* stays out of this
+  surface: `Child::kill_tree`/`kill_single`'s portable `Signal::Stop`/
+  `Signal::Cont` (rustils#46, `docs/behavior/process.md`) already cover
+  *sending* those signals to a job; this trait is only the
+  terminal-ownership half.
+
 ## Not in slice 1 or 2 (recorded, gated)
 
-- Job-control terminal handoff (`tcsetpgrp` give/reclaim with the
-  SIGTTOU-ignored precondition) and SIGTSTP/SIGCONT suspend-resume are
-  Unix-only D9 donors with no Windows twin — they enter later as an
-  extension trait plus a divergence-registry entry, when a job-control
-  consumer forces them.
 - PTY hosting (D13) is a distinct Process×Terminal surface (openpty vs
   ConPTY), not part of raw-mode/winsize.
 - Console *acquisition* for GUI-subsystem processes (attach/alloc/

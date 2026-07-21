@@ -167,3 +167,38 @@ implementation convenience.
   the mode-narrowing half has a real cross-backend gap.
 - **Accepted**: 2026-07-20, with the Unix sockets slice (D16, convergence
   roadmap Phase 5).
+
+## 008 — no general signal delivery or numeric process-group join on Windows
+
+- **Linux**: `Child::kill_tree`/`kill_single` deliver any portable
+  `Signal` (`Term`/`Int`/`Hup`/`Quit`/`Kill`/`Stop`/`Cont`) via `kill`/
+  `killpg`; `GroupSpec::JoinGroup(pgid)` places a spawned child straight
+  into an existing process group via `POSIX_SPAWN_SETPGROUP` with that
+  pgid, the same race-free at-spawn placement `NewGroup` already uses.
+- **Windows**: `kill_tree`/`kill_single` accept only `Signal::Kill`
+  (`TerminateJobObject`/`TerminateProcess`, unchanged from this trait's
+  pre-`Signal` behavior); every other `Signal` variant is `Unsupported`.
+  `GroupSpec::JoinGroup` is `Unsupported` at `spawn` — refused before
+  spawning anything, not silently downgraded to `Inherit`/`NewGroup`.
+- **OS limitation**: Windows has no general signal-delivery mechanism —
+  `TerminateProcess`/`TerminateJobObject` (unconditional termination)
+  and `GenerateConsoleCtrlEvent` (console control events, restricted to
+  processes sharing the sender's console — already the divergence-003
+  identity set) are the only asynchronous notifications the OS can send
+  to an arbitrary already-running process; there is no `SIGSTOP`/
+  `SIGCONT`/`SIGTERM`/`SIGQUIT` analog to route the other `Signal`
+  variants to. Separately, Windows process groups are Job Object
+  *handles*, not the small integer pgids POSIX process groups are —
+  there is no "start this child already inside numeric group N"
+  primitive for `JoinGroup` to call.
+- **Pinning tests**: `windows_kill_signal_is_kill_only` /
+  `windows_join_group_is_unsupported` /
+  `windows_wait_job_is_unsupported` in
+  `platform-windows/tests/parity.rs`; the Linux-side positive behavior
+  is pinned by `linux_kill_signal_is_portable` /
+  `linux_process_group_join` /
+  `linux_wait_job_observes_stop_and_continue` in
+  `platform-linux/tests/parity.rs`.
+- **Accepted**: 2026-07-21, with the `kill_cmd`/`fg_cmd`/`bg_cmd`
+  forcing-consumer slice (rustils#44/#46 — `nexus-rush/src/job.rs` via
+  `baileyrd/nexus#454`).

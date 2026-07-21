@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, GroupSpec, Spawner};
+use platform::process::{Child, Command, ExitStatus, GroupSpec, Signal, Spawner};
 
 use crate::ffi::libc_surface as c;
 use crate::sys::spawn;
@@ -19,7 +19,12 @@ pub struct LinuxSpawner;
 /// A spawned child; `wait` consumes it (double-wait unrepresentable).
 pub struct LinuxChild {
     pid: c::pid_t,
-    own_group: bool,
+    /// The group [`Child::kill_tree`] targets: `Some(pid)` for
+    /// `GroupSpec::NewGroup` (this child leads it — pid == pgid) or
+    /// `GroupSpec::JoinGroup(pgid)` (this child joined an existing one —
+    /// the explicit target, not this child's own pid); `None` for
+    /// `GroupSpec::Inherit`, where `kill_tree` has no sound target.
+    group: Option<c::pid_t>,
     /// Set by a successful `try_wait`: `WNOHANG` reaps the zombie, so the
     /// decoded status must be stashed for the eventual consuming `wait`.
     reaped: Option<ExitStatus>,
@@ -39,21 +44,21 @@ impl Child for LinuxChild {
         self.pid as u32
     }
 
-    fn kill_tree(&self) -> Result<()> {
-        if !self.own_group {
+    fn kill_tree(&self, sig: Signal) -> Result<()> {
+        match self.group {
             // Killing the parent's own group is the only alternative
             // target and never what the caller meant (trait contract).
-            return Err(PlatformError::new(
+            None => Err(PlatformError::new(
                 ErrorKind::Unsupported,
                 OsCode::None,
                 "kill_tree",
-            ));
+            )),
+            Some(pgid) => spawn::kill_group(pgid, sig),
         }
-        spawn::kill_group(self.pid)
     }
 
-    fn kill_single(&self) -> Result<()> {
-        spawn::kill_single(self.pid)
+    fn kill_single(&self, sig: Signal) -> Result<()> {
+        spawn::kill_single(self.pid, sig)
     }
 
     fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
@@ -61,6 +66,30 @@ impl Child for LinuxChild {
             self.reaped = spawn::try_wait(self.pid)?;
         }
         Ok(self.reaped)
+    }
+
+    fn wait_job(&mut self) -> Result<ExitStatus> {
+        if let Some(status) = self.reaped {
+            return Ok(status);
+        }
+        let status = spawn::wait_job(self.pid)?;
+        if !matches!(status, ExitStatus::Stopped(_) | ExitStatus::Continued) {
+            self.reaped = Some(status);
+        }
+        Ok(status)
+    }
+
+    fn try_wait_job(&mut self) -> Result<Option<ExitStatus>> {
+        if let Some(status) = self.reaped {
+            return Ok(Some(status));
+        }
+        let status = spawn::try_wait_job(self.pid)?;
+        if let Some(s) = status {
+            if !matches!(s, ExitStatus::Stopped(_) | ExitStatus::Continued) {
+                self.reaped = Some(s);
+            }
+        }
+        Ok(status)
     }
 
     fn take_stdin(&mut self) -> Option<Box<dyn platform::fs::File>> {
@@ -104,9 +133,16 @@ impl Spawner for LinuxSpawner {
             [cmd.stdin, cmd.stdout, cmd.stderr],
             cmd.group,
         )?;
+        let group = match cmd.group {
+            GroupSpec::Inherit => None,
+            // A fresh group's pgid IS the leader's own pid (pgroup 0 at
+            // spawn means exactly that).
+            GroupSpec::NewGroup => Some(pid),
+            GroupSpec::JoinGroup(pgid) => Some(pgid as c::pid_t),
+        };
         Ok(Box::new(LinuxChild {
             pid,
-            own_group: cmd.group == GroupSpec::NewGroup,
+            group,
             reaped: None,
             pipes,
         }))

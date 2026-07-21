@@ -56,6 +56,15 @@ pub enum GroupSpec {
     /// kill-on-close, so dropping the child without waiting terminates
     /// the tree (see `docs/behavior/process.md`).
     NewGroup,
+    /// Join the group led by `pgid` — a pipeline stage 2..n placed into
+    /// the group its first stage's spawn already created with
+    /// `NewGroup` (D1's shape: the leader's own pid becomes the
+    /// pipeline's pgid; every later stage joins it instead of leading
+    /// its own). Race-free the same way `NewGroup` is: placed before the
+    /// child's first instruction, not `setpgid` after the fact. Unix
+    /// only — Windows has no numeric process-group id a spawn can join;
+    /// `Spawner::spawn` fails `Unsupported` (divergence 008).
+    JoinGroup(u32),
 }
 
 /// A fully-specified spawn request.
@@ -134,12 +143,52 @@ pub enum ExitStatus {
     Code(i32),
     /// Terminated by a signal (unix); never produced on Windows.
     Signaled(i32),
+    /// Stopped by a signal (`WIFSTOPPED`/`SIGTSTP`-class — Ctrl-Z), not
+    /// terminated: the process is still alive and waitable again later.
+    /// Only produced by [`Child::wait_job`]/[`Child::try_wait_job`]
+    /// (D10) — the plain `wait`/`try_wait` pair never requests
+    /// `WUNTRACED` and so can never observe it. Unix only; never
+    /// produced on Windows (no job-control stop analog — D8).
+    Stopped(i32),
+    /// Resumed from a stop (`WIFCONTINUED`/`SIGCONT`) — like `Stopped`,
+    /// not terminal: the process is running again. Same
+    /// `wait_job`/`try_wait_job`-only, Unix-only scoping as `Stopped`.
+    Continued,
 }
 
 impl ExitStatus {
     pub fn success(self) -> bool {
         matches!(self, ExitStatus::Code(0))
     }
+}
+
+/// Portable signal identities for [`Child::kill_tree`]/[`Child::kill_single`]
+/// (extraction map D1's `kill`/`fg`/`bg` builtins: `kill_cmd`'s
+/// `-SIG`/`-9`/`-CONT` argument, `fg_cmd`/`bg_cmd`'s resume step) — a small
+/// mechanism-level set, the same naming-not-raw-numbers discipline
+/// [`crate::events::SignalEvent`] already applies to received signals.
+/// `Kill` is the only member guaranteed on every backend: Windows has no
+/// general signal-delivery mechanism, so every other variant is
+/// `Unsupported` there (divergence 008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    /// Graceful termination request: `SIGTERM`.
+    Term,
+    /// Interrupt: `SIGINT`.
+    Int,
+    /// Controlling-terminal / session hangup: `SIGHUP`.
+    Hup,
+    /// Quit with core-dump semantics: `SIGQUIT`.
+    Quit,
+    /// Unconditional termination: `SIGKILL`. Windows maps this to
+    /// `TerminateJobObject`/`TerminateProcess` (unchanged from this
+    /// trait's pre-`Signal` behavior; divergence 001 still applies to
+    /// the resulting status).
+    Kill,
+    /// Suspend: `SIGSTOP` — the Ctrl-Z half of job control.
+    Stop,
+    /// Resume a stopped process: `SIGCONT` — `fg`/`bg`'s resume step.
+    Cont,
 }
 
 /// A spawned child. Object-safe.
@@ -153,17 +202,23 @@ pub trait Child {
     /// OS process identifier, for display/diagnostics.
     fn id(&self) -> u32;
 
-    /// Forcibly terminate the child's whole group (the child and every
-    /// descendant). Requires [`GroupSpec::NewGroup`] at spawn — on a
-    /// child spawned with `Inherit` this fails `Unsupported` rather than
-    /// guessing at a target (killing the parent's own group is the
-    /// alternative, and it is never what the caller meant). The child
-    /// must still be `wait`ed to observe the resulting status; the form
-    /// that status takes is OS-divergent (divergence 001).
-    fn kill_tree(&self) -> Result<()>;
+    /// Deliver `sig` to the child's whole group (the child and every
+    /// descendant). Requires [`GroupSpec::NewGroup`] or
+    /// [`GroupSpec::JoinGroup`] at spawn — on a child spawned with
+    /// `Inherit` this fails `Unsupported` rather than guessing at a
+    /// target (killing the parent's own group is the alternative, and it
+    /// is never what the caller meant). `Signal::Kill` must still be
+    /// `wait`ed to observe the resulting status; the form that status
+    /// takes is OS-divergent (divergence 001). Every `Signal` other than
+    /// `Kill` is `Unsupported` on Windows (divergence 008): there is no
+    /// OS mechanism to deliver an arbitrary signal identity to a process
+    /// this backend didn't just terminate.
+    fn kill_tree(&self, sig: Signal) -> Result<()>;
 
-    /// Forcibly terminate the child process only — descendants survive.
-    fn kill_single(&self) -> Result<()>;
+    /// Deliver `sig` to the child process only — descendants survive.
+    /// Same `Signal::Kill`-only guarantee on Windows as [`kill_tree`](
+    /// Child::kill_tree) (divergence 008).
+    fn kill_single(&self, sig: Signal) -> Result<()>;
 
     /// Non-blocking poll: `Some(status)` if the child has terminated,
     /// `None` if it is still running. A child that has reported a status
@@ -171,6 +226,28 @@ pub trait Child {
     /// result), and the consuming [`Child::wait`] afterwards returns it —
     /// polling never loses the exit status.
     fn try_wait(&mut self) -> Result<Option<ExitStatus>>;
+
+    /// Blocking counterpart of [`Child::try_wait_job`]: block until the
+    /// child terminates, stops, or (if already stopped) continues — the
+    /// `WUNTRACED`/`WCONTINUED` half of wait (D10), the foreground-job
+    /// shape `rush`'s `wait_pgid` needs to notice a Ctrl-Z'd pipeline
+    /// without conflating it with exit/signal termination. Does not
+    /// consume `self`: unlike plain [`Child::wait`], a `Stopped`/
+    /// `Continued` result is not terminal, so the caller keeps the
+    /// child and may call again. A terminal `Code`/`Signaled` result IS
+    /// stashed exactly like `try_wait` does, so a later `wait()` returns
+    /// it directly rather than re-blocking. Unix only — `Unsupported` on
+    /// Windows (no stop/continue analog, D8).
+    fn wait_job(&mut self) -> Result<ExitStatus>;
+
+    /// Non-blocking counterpart of [`Child::wait_job`]:
+    /// `WNOHANG|WUNTRACED|WCONTINUED`, the shape `rush`'s
+    /// `reap_background` needs to track a background job transitioning
+    /// stopped ↔ running. `None` while the child is running and has
+    /// neither stopped nor continued since the last poll. Same
+    /// stash-on-terminal, non-consuming, Unix-only contract as
+    /// [`Child::wait_job`].
+    fn try_wait_job(&mut self) -> Result<Option<ExitStatus>>;
 
     /// The parent's write end of the child's stdin, if that slot was
     /// [`Stdio::Pipe`]. Yields `Some` exactly once; dropping the handle
