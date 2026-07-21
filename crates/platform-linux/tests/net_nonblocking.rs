@@ -5,11 +5,19 @@
 //! of the cross-backend `docs/behavior/net.md` spec or the shared
 //! `net_parity.rs` suite, so it lives in its own file.
 //!
+//! `#![cfg(target_os = "linux")]`: integration test files don't inherit
+//! the library crate's own `#![cfg(target_os = "linux")]` — each one
+//! needs its own gate, or `cargo check --target x86_64-pc-windows-gnu
+//! --all-targets` tries to build this file too, where `libc` isn't even
+//! a dependency (target-gated in `Cargo.toml`). The exact mistake
+//! `security_sandbox.rs` made and fixed first, per its own doc comment.
+//!
 //! `#![allow(unsafe_code)]`: this file makes raw `libc` calls directly
 //! (bypassing `platform-linux`'s own code entirely) specifically to
 //! verify the actual kernel-visible state a wrapper call produced, the
 //! same live-verification discipline the CSPRNG/Sandbox work established
 //! — not something this crate's own `sys/` layer needs to expose.
+#![cfg(target_os = "linux")]
 #![allow(unsafe_code)]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
