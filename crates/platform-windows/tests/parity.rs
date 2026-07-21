@@ -778,9 +778,22 @@ fn windows_stdio_file_try_clone_shares_offset_for_dup_style_redirect() {
         .expect("create both.txt");
     let err_file = out_file.try_clone().expect("try_clone");
 
+    // rustils#57: `echo`'s own literal argument text and a redirect
+    // operator appended directly after it don't tokenize cleanly —
+    // `echo err- 1>&2` echoed `err- ` (the fd-digit token gets
+    // stripped, but the space before it doesn't), and `echo
+    // err-1>&2` echoed `err-1` (with no separating whitespace, the
+    // digit is consumed into the preceding word instead of being
+    // recognized as an isolated handle number). Grouping the echo in
+    // parens sidesteps both: `echo err-` finishes producing its own
+    // output (just `err-\r\n`, nothing appended) before the group
+    // closes, so the redirect that follows the closing paren applies
+    // to the *group's* stdout — a separate parsing context from
+    // echo's own literal-text consumption — with no ambiguity left
+    // for a stray digit or space to leak into what was echoed.
     let mut c = Command::new("cmd", tmp.clone())
         .arg("/c")
-        .arg("echo out-&echo err- 1>&2");
+        .arg("echo out-&(echo err-) 1>&2");
     c.stdout = Stdio::File(out_file);
     c.stderr = Stdio::File(err_file);
     let child = s.spawn(&c).expect("spawn");
