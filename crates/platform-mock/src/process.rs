@@ -7,7 +7,22 @@ use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, GroupSpec, Signal, Spawner, Stdio};
+use platform::process::{Child, Command, EnvSpec, ExitStatus, GroupSpec, Signal, Spawner, Stdio};
+
+/// A lightweight record of one spawn request, logged in
+/// [`MockSpawner::spawned`] for test assertions. Distinct from
+/// [`Command`] because `Command` is no longer `Clone` once `Stdio::File`
+/// holds a `Box<dyn platform::fs::File>` — this keeps only the fields
+/// tests actually assert against, built explicitly at spawn time instead
+/// of cloning the whole request.
+#[derive(Debug, Clone)]
+pub struct SpawnRecord {
+    pub program: OsString,
+    pub argv: Vec<OsString>,
+    pub cwd: OsString,
+    pub env: EnvSpec,
+    pub group: GroupSpec,
+}
 
 /// A scripted response for a program name.
 #[derive(Debug, Clone)]
@@ -43,6 +58,10 @@ impl platform::fs::File for MemPipe {
     fn sync_all(&mut self) -> Result<()> {
         Ok(())
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Spawner whose children terminate exactly as scripted.
@@ -50,7 +69,7 @@ impl platform::fs::File for MemPipe {
 pub struct MockSpawner {
     scripts: BTreeMap<OsString, Script>,
     /// Log of every spawn request, for assertions.
-    pub spawned: Arc<Mutex<Vec<Command>>>,
+    pub spawned: Arc<Mutex<Vec<SpawnRecord>>>,
 }
 
 impl MockSpawner {
@@ -166,7 +185,13 @@ fn mem_pipe(data: Vec<u8>) -> Box<dyn platform::fs::File> {
 
 impl Spawner for MockSpawner {
     fn spawn(&self, cmd: &Command) -> Result<Box<dyn Child>> {
-        crate::sync::lock(&self.spawned).push(cmd.clone());
+        crate::sync::lock(&self.spawned).push(SpawnRecord {
+            program: cmd.program.clone(),
+            argv: cmd.argv.clone(),
+            cwd: cmd.cwd.clone(),
+            env: cmd.env.clone(),
+            group: cmd.group,
+        });
         let script = self.scripts.get(&cmd.program).ok_or_else(|| {
             PlatformError::new(ErrorKind::NotFound, OsCode::None, "spawn")
                 .with_path(cmd.program.clone())
@@ -174,9 +199,9 @@ impl Spawner for MockSpawner {
         Ok(Box::new(MockChild {
             status: script.status,
             own_group: !matches!(cmd.group, GroupSpec::Inherit),
-            stdin: (cmd.stdin == Stdio::Pipe).then(|| mem_pipe(Vec::new())),
-            stdout: (cmd.stdout == Stdio::Pipe).then(|| mem_pipe(script.stdout.clone())),
-            stderr: (cmd.stderr == Stdio::Pipe).then(|| mem_pipe(Vec::new())),
+            stdin: matches!(cmd.stdin, Stdio::Pipe).then(|| mem_pipe(Vec::new())),
+            stdout: matches!(cmd.stdout, Stdio::Pipe).then(|| mem_pipe(script.stdout.clone())),
+            stderr: matches!(cmd.stderr, Stdio::Pipe).then(|| mem_pipe(Vec::new())),
         }))
     }
 

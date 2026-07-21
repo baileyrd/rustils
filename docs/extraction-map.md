@@ -121,6 +121,27 @@ versus re-deriving it; either way this material is the curriculum (M1).
 - Parent-side pipe-end lifetime lessons (a lingering write end starves
   the reader of EOF — the deadlock class, documented at each site).
 
+**Landed (`Stdio::File`) 2026-07-21** — rustils#51: forced by actually
+converting `nexus-rush/src/job.rs::spawn_pipeline` onto `Spawner::spawn`
+once #43–#46 landed — every one of those (`GroupSpec::JoinGroup`,
+`Signal`-based kill, `wait_job`/`try_wait_job`) is a `Child`-trait method,
+reachable only on a child `Spawner::spawn` itself produced, and
+`spawn_pipeline`'s shell redirects (`> file`, `< file`, `2>&1`) had no way
+to reach `Spawner::spawn` at all before this. Added `Stdio::File(Box<dyn
+crate::fs::File>)`: the child's slot gets a duplicate of the given
+file's OS handle (`dup2` via `posix_spawn_file_actions_adddup2` on Linux,
+an inheritable `DuplicateHandle` on Windows), recovered from the portable
+`Box<dyn File>` via a new `File::as_any` downcast hook mirroring
+`Child::as_any_mut`'s existing pattern — a mismatched backend's file
+fails `InvalidInput` at spawn time rather than silently doing nothing.
+**Breaking**: `Stdio` and `Command` are no longer `Clone`/`Copy`/
+`PartialEq` (a `Box<dyn File>` supports none of those generically — the
+same reason `std::process::Stdio` itself has none either).
+`platform-mock`'s `MockSpawner::spawned` changed from `Vec<Command>` to
+a new `Vec<SpawnRecord>` (a lighter, still-`Clone` struct with just the
+fields tests actually assert against) as the one consumer of `Command`'s
+old `Clone` bound in this workspace.
+
 ### D6 — `rush/src/trap.rs`: the signal-deferral core
 
 Handler = one atomic store; consumption at safe points via `swap(0)`.

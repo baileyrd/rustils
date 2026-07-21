@@ -107,6 +107,10 @@ impl File for LinuxFile {
     fn sync_all(&mut self) -> Result<()> {
         fdio::fsync(&self.fd)
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 fn open_flags(opts: &OpenOptions) -> Result<i32> {

@@ -29,7 +29,13 @@ pub enum EnvSpec {
 }
 
 /// Stdio wiring for the child.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+///
+/// Not `Clone`/`Copy`/`PartialEq` (unlike before [`Stdio::File`] existed):
+/// a `Box<dyn crate::fs::File>` doesn't support any of those generically,
+/// the same reason `std::process::Stdio` itself has none of them either.
+/// Use `matches!` in place of the equality checks this crate's own tests
+/// used to write against `Stdio::Pipe`.
+#[derive(Default)]
 pub enum Stdio {
     #[default]
     Inherit,
@@ -41,6 +47,30 @@ pub enum Stdio {
     /// drain (or drop) captured output before blocking in `wait`, and
     /// drop the stdin end to deliver EOF.
     Pipe,
+    /// Wire this slot directly to an already-open file (extraction map
+    /// D5 — the shell-redirect shape: `> file`, `>> file`, `< file`,
+    /// `2>&1`). The spawned child gets a duplicate of the given file's
+    /// OS handle in this slot; the caller keeps (and remains responsible
+    /// for) their own copy, exactly like `Stdio::Pipe`'s parent end
+    /// stays open and independent of the child's dup'd copy.
+    ///
+    /// Must be the same backend [`Spawner::spawn`] is called on — a
+    /// `Box<dyn crate::fs::File>` built by a different backend (e.g. a
+    /// `platform-mock` file handed to `platform-linux`'s `Spawner`)
+    /// fails `InvalidInput` at spawn time, via
+    /// [`crate::fs::File::as_any`]'s downcast.
+    File(Box<dyn crate::fs::File>),
+}
+
+impl std::fmt::Debug for Stdio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Stdio::Inherit => write!(f, "Inherit"),
+            Stdio::Null => write!(f, "Null"),
+            Stdio::Pipe => write!(f, "Pipe"),
+            Stdio::File(_) => write!(f, "File(..)"),
+        }
+    }
 }
 
 /// Process-group placement for the child (RFC v2 §5.4 — groups are
@@ -73,7 +103,13 @@ pub enum GroupSpec {
 /// discrete arguments end to end; any joining or quoting an OS requires is
 /// backend-internal and never caller-visible (the Windows backend's quoting
 /// module is the security boundary here — RFC v2 §5.4).
-#[derive(Debug, Clone)]
+///
+/// Not `Clone` (unlike before [`Stdio::File`] existed): `Stdio` no longer
+/// is either, for the same reason. A consumer that needs to log/record
+/// spawn requests (`platform-mock`'s own `MockSpawner::spawned` did) now
+/// records the fields it actually needs rather than cloning the whole
+/// `Command`.
+#[derive(Debug)]
 pub struct Command {
     pub program: OsString,
     pub argv: Vec<OsString>,

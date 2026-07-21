@@ -90,6 +90,16 @@ assertions.
   and never let a parent-side copy of a write end leak into another
   child (the backends guarantee their own ends don't: CLOEXEC on unix,
   explicit non-inheritance on Windows).
+- `Stdio::File(file)` (rustils#51, D5): the child's slot gets a duplicate
+  of `file`'s OS handle (Linux: `dup2` via `posix_spawn_file_actions_adddup2`;
+  Windows: an inheritable `DuplicateHandle`) — `file` itself, and whatever
+  its owner does with it afterward, is completely unaffected; the caller
+  keeps their own independent copy, the same "duplicate, don't transfer"
+  shape `Stdio::Pipe`'s ends already have relative to each other. `file`
+  must be the same backend `Spawner::spawn` is called on — a `Box<dyn
+  crate::fs::File>` from a different backend fails `InvalidInput` at
+  spawn time (checked via `crate::fs::File::as_any`'s downcast, never
+  silently accepted or silently ignored).
 
 ## Deliberately unspecified (until the R2 hoist supplies them)
 

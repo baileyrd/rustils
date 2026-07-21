@@ -19,6 +19,34 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.10.0
+
+- Added `Stdio::File(Box<dyn crate::fs::File>)` (rustils#51, D5): wires a
+  process slot directly to an already-open file — the shell-redirect
+  shape (`> file`, `< file`, `2>&1`) — instead of `Inherit`/`Null`/`Pipe`.
+  The child gets a duplicate of the given file's OS handle (`dup2` via
+  `posix_spawn_file_actions_adddup2` on Linux, an inheritable
+  `DuplicateHandle` on Windows); the caller keeps their own independent
+  copy. Forced by actually converting `nexus-rush/src/job.rs::spawn_pipeline`
+  onto `Spawner::spawn` once the job-control slice (#43–#46) landed:
+  every one of those is a `Child`-trait method, reachable only on a
+  child `Spawner::spawn` itself produced, and `spawn_pipeline`'s shell
+  redirects had no way to reach `Spawner::spawn` at all without this.
+  Recovers the concrete file out of the portable `Box<dyn File>` via a
+  new `crate::fs::File::as_any` downcast hook (mirroring
+  `Child::as_any_mut`'s existing pattern) — a `Box<dyn File>` from a
+  different backend fails `InvalidInput` at spawn time.
+  - **Breaking**: `Stdio` and `Command` are no longer `Clone`/`Copy`/
+    `PartialEq` — a `Box<dyn File>` supports none of those generically,
+    the same reason `std::process::Stdio` itself has none either.
+    `platform::fs::File` gained a new required method (`as_any`), also
+    breaking for any external implementor.
+  - `platform-mock`'s `MockSpawner::spawned` changed from `Vec<Command>`
+    to `Vec<SpawnRecord>` (a new, still-`Clone` struct carrying just
+    `program`/`argv`/`cwd`/`env`/`group` — the fields tests actually
+    assert against), the one place in this workspace that relied on
+    `Command`'s old `Clone` bound.
+
 ### 0.9.0
 
 - Added the job-control slice (rustils#43–#46), converging

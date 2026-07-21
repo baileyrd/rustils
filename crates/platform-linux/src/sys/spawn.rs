@@ -164,7 +164,7 @@ pub fn spawn(
     args: &[OsString],
     cwd: &OsStr,
     env: &EnvSpec,
-    stdio: [Stdio; 3],
+    stdio: [&Stdio; 3],
     group: GroupSpec,
 ) -> Result<(c::pid_t, ParentPipes)> {
     // Every allocation happens here, before the spawn call (B-1/B-2 fix
@@ -249,6 +249,43 @@ pub fn spawn(
                 }
                 child_ends[fd] = Some(child);
                 parent_ends[fd] = Some(parent);
+            }
+            Stdio::File(file) => {
+                use std::os::fd::{AsFd, AsRawFd};
+                // Downcast to this backend's own concrete file type (D5):
+                // `Stdio::File` is a portable `Box<dyn crate::fs::File>`
+                // that could in principle wrap a different backend's
+                // handle entirely — never actually meaningful, since a
+                // caller builds a `Command` and a `Spawner` from the same
+                // backend, but checked rather than assumed.
+                let Some(linux_file) = file.as_any().downcast_ref::<crate::fs::LinuxFile>() else {
+                    return Err(PlatformError::new(
+                        ErrorKind::InvalidInput,
+                        OsCode::None,
+                        "Stdio::File is not this backend's own File type",
+                    ));
+                };
+                // SAFETY: `actions.0` is initialized; the fd behind
+                // `linux_file` is caller-owned and stays open for at
+                // least this whole function call (borrowed from the
+                // `Command`/`Stdio` this function's own caller holds),
+                // which is all `adddup2` needs — the OS dups it into the
+                // child's slot at spawn time, then the caller's own copy
+                // remains independently open and owned exactly as before.
+                let r = unsafe {
+                    c::posix_spawn_file_actions_adddup2(
+                        &mut actions.0,
+                        linux_file.as_fd().as_raw_fd(),
+                        fd as c::c_int,
+                    )
+                };
+                if r != 0 {
+                    return Err(errno_err(
+                        "posix_spawn adddup2 (Stdio::File)",
+                        r,
+                        OsStr::new(""),
+                    ));
+                }
             }
         }
     }

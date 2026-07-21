@@ -102,6 +102,10 @@ impl File for WindowsFile {
     fn sync_all(&mut self) -> Result<()> {
         fileio::sync_all(&self.handle)
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// (access, disposition) for a file open — the Windows analog of the Linux

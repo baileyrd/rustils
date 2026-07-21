@@ -145,6 +145,13 @@ pub trait File {
     /// consumer needed it. [`Dir::write_atomic`] (D11, convergence
     /// roadmap Phase 3) is that consumer.
     fn sync_all(&mut self) -> Result<()>;
+
+    /// Downcast hook, mirroring [`crate::process::Child::as_any_mut`] —
+    /// lets a backend's `Spawner::spawn` recover its own concrete file
+    /// type out of a `Box<dyn File>` passed via
+    /// [`crate::process::Stdio::File`], to duplicate that file's OS
+    /// handle into the spawned child. Not for consumers.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// An open directory: the capability all filesystem operations flow through.

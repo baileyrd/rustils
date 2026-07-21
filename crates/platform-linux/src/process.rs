@@ -130,7 +130,7 @@ impl Spawner for LinuxSpawner {
             &cmd.argv,
             &cmd.cwd,
             &cmd.env,
-            [cmd.stdin, cmd.stdout, cmd.stderr],
+            [&cmd.stdin, &cmd.stdout, &cmd.stderr],
             cmd.group,
         )?;
         let group = match cmd.group {

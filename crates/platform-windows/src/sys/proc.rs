@@ -140,15 +140,26 @@ fn inheritable_dup_of_std(slot: u32) -> Result<Option<SlotHandle>> {
         // empty rather than fail the whole spawn.
         return Ok(None);
     }
+    inheritable_dup_of_handle(current).map(Some)
+}
+
+/// An inheritable duplicate of an already-open handle — the `Stdio::File`
+/// (extraction map D5) counterpart of `inheritable_dup_of_std` above,
+/// generalized from "duplicate the parent's own std handle" to an
+/// arbitrary handle a caller already has open (this crate's own
+/// `WindowsFile`, downcast out of the portable `Stdio::File`'s `Box<dyn
+/// crate::fs::File>`).
+fn inheritable_dup_of_handle(handle: w::HANDLE) -> Result<SlotHandle> {
     let mut dup: w::HANDLE = std::ptr::null_mut();
-    // SAFETY: source process/handle are this process's own valid handles;
-    // `dup` is a valid out-pointer; DUPLICATE_SAME_ACCESS with
-    // bInheritHandle=1 is the documented way to mint an inheritable
-    // duplicate.
+    // SAFETY: source process/handle are this process's own valid handles
+    // (`handle` is caller-owned and outlives this call — borrowed from
+    // the `Command`/`Stdio` this function's own caller holds); `dup` is a
+    // valid out-pointer; DUPLICATE_SAME_ACCESS with bInheritHandle=1 is
+    // the documented way to mint an inheritable duplicate.
     let ok = unsafe {
         w::DuplicateHandle(
             w::GetCurrentProcess(),
-            current,
+            handle,
             w::GetCurrentProcess(),
             &mut dup,
             0,
@@ -159,7 +170,9 @@ fn inheritable_dup_of_std(slot: u32) -> Result<Option<SlotHandle>> {
     if ok == 0 {
         return Err(errmap::last_win32_err("DuplicateHandle", OsStr::new("")));
     }
-    Ok(OwnedWinHandle::from_raw(dup).map(SlotHandle::Owned))
+    OwnedWinHandle::from_raw(dup)
+        .map(SlotHandle::Owned)
+        .ok_or_else(|| PlatformError::new(ErrorKind::Other, OsCode::None, "DuplicateHandle"))
 }
 
 /// Create a kill-on-close Job Object (extraction map D2: the group
@@ -208,7 +221,7 @@ pub fn spawn(
     command_line: &[u16],
     cwd: &OsStr,
     env: &EnvSpec,
-    stdio: [Stdio; 3],
+    stdio: [&Stdio; 3],
     new_group: bool,
 ) -> Result<(OwnedWinHandle, Option<OwnedWinHandle>, u32, ParentPipes)> {
     let mut line: Vec<u16> = command_line.to_vec();
@@ -216,7 +229,9 @@ pub fn spawn(
     let cwd_w = to_wide_nul(cwd);
     let block = env_block(env);
 
-    let use_handles = stdio.iter().any(|s| matches!(s, Stdio::Null | Stdio::Pipe));
+    let use_handles = stdio
+        .iter()
+        .any(|s| matches!(s, Stdio::Null | Stdio::Pipe | Stdio::File(_)));
     let mut parent_pipes: ParentPipes = [None, None, None];
     let mut slot_handles: [Option<SlotHandle>; 3] = [None, None, None];
     // SAFETY: STARTUPINFOW is plain-old-data for which all-zeroes is a
@@ -237,6 +252,22 @@ pub fn spawn(
                     let (child, parent) = make_pipe(i == 0)?;
                     parent_pipes[i] = Some(parent);
                     Some(SlotHandle::Owned(child))
+                }
+                Stdio::File(file) => {
+                    use std::os::windows::io::{AsHandle, AsRawHandle};
+                    // Downcast to this backend's own concrete file type
+                    // (D5) — see `platform-linux`'s identical check for
+                    // why this is verified, not assumed.
+                    let Some(win_file) = file.as_any().downcast_ref::<crate::fs::WindowsFile>()
+                    else {
+                        return Err(PlatformError::new(
+                            ErrorKind::InvalidInput,
+                            OsCode::None,
+                            "Stdio::File is not this backend's own File type",
+                        ));
+                    };
+                    let raw = win_file.as_handle().as_raw_handle() as w::HANDLE;
+                    Some(inheritable_dup_of_handle(raw)?)
                 }
             };
         }

@@ -551,6 +551,84 @@ fn windows_process_pipes() {
     assert!(child.wait().expect("wait").success());
 }
 
+/// `Stdio::File` (rustils#51, D5): a shell-redirect shape (`> file`,
+/// `< file`) wired directly to an already-open file, not a fresh pipe.
+/// Both directions in one test: stdin reads from a real input file,
+/// stdout writes to a real output file — proving the duplicated handle
+/// actually carries the right bytes both ways, and that the caller's own
+/// file handles remain open and independently readable afterward (the
+/// "caller keeps their own copy" half of the contract).
+#[test]
+fn windows_stdio_file_redirect_reads_and_writes_through_real_files() {
+    use platform::fs::{Dir, OpenOptions};
+    use platform::process::{Command, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir().join(format!("rustils-stdio-file-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mkdir");
+    let root = platform_windows::WindowsDir::open_ambient(&tmp).expect("open ambient");
+
+    let mut input = root
+        .open(OsStr::new("in.txt"), &OpenOptions::create_truncate())
+        .expect("create input");
+    input.write(b"redirected input\r\n").expect("write input");
+    input.flush().expect("flush");
+    // Re-open for read: the write handle above is still write-only —
+    // exactly like a caller wiring `< file` reopens their own copy for
+    // whatever they need it for next.
+    let input_for_child = root
+        .open(OsStr::new("in.txt"), &OpenOptions::read())
+        .expect("reopen input for read");
+    let output_for_child = root
+        .open(OsStr::new("out.txt"), &OpenOptions::create_truncate())
+        .expect("create output");
+
+    let s = platform_windows::WindowsSpawner;
+    // findstr "^" echoes every stdin line — the same line-oriented
+    // stdin-to-stdout copy `windows_process_pipes` already uses above.
+    let mut c = Command::new("findstr", tmp.clone()).arg("^");
+    c.stdin = Stdio::File(input_for_child);
+    c.stdout = Stdio::File(output_for_child);
+    let child = s.spawn(&c).expect("spawn");
+    assert!(child.wait().expect("wait").success());
+
+    let mut output = root
+        .open(OsStr::new("out.txt"), &OpenOptions::read())
+        .expect("reopen output for read");
+    let mut got = Vec::new();
+    let mut buf = [0u8; 64];
+    loop {
+        let n = output.read(&mut buf).expect("read");
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&buf[..n]);
+    }
+    assert_eq!(got, b"redirected input\r\n");
+}
+
+/// A `Box<dyn File>` from the wrong backend must fail cleanly, not panic
+/// or silently do nothing — `Stdio::File`'s own contract (D5).
+#[test]
+fn windows_stdio_file_from_wrong_backend_fails_cleanly() {
+    use platform::process::{Command, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir();
+    let mock_file: Box<dyn platform::fs::File> = platform_mock::MockDir::root()
+        .open(
+            OsStr::new("x"),
+            &platform::fs::OpenOptions::create_truncate(),
+        )
+        .expect("mock create");
+    let s = platform_windows::WindowsSpawner;
+    let mut c = Command::new("findstr", tmp).arg("^");
+    c.stdin = Stdio::File(mock_file);
+    let err = match s.spawn(&c) {
+        Ok(_) => panic!("mismatched backend must fail"),
+        Err(e) => e,
+    };
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
 /// Many children through the multiplexer (R3): 70 processes collected to
 /// completion — past WaitForMultipleObjects's 64-handle cap, forcing the
 /// chunked sweep that absorbs the documented limit (RFC v2 5.6).

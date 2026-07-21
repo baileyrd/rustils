@@ -186,7 +186,7 @@ impl Spawner for WindowsSpawner {
             &line,
             &cmd.cwd,
             &cmd.env,
-            [cmd.stdin, cmd.stdout, cmd.stderr],
+            [&cmd.stdin, &cmd.stdout, &cmd.stderr],
             cmd.group == GroupSpec::NewGroup,
         )?;
         Ok(Box::new(WindowsChild {

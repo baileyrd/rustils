@@ -127,6 +127,10 @@ impl File for MockFile {
         // In-memory: writes are already "durable" the instant they land.
         Ok(())
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl Dir for MockDir {
