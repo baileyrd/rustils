@@ -98,17 +98,21 @@ fn mock_credential_store_conforms() {
     assert_credential_store_behavior(&platform_mock::MockCredentialStore::new());
 }
 
-/// rustils#76's Linux stub: the real Secret Service implementation is
-/// #77/#78's own slice, not this one. Reports `Unsupported` and a clean
-/// `Ok(None)`/`Ok(())`, never an `Err`, for `get`/`set` — a caller that
-/// checks `available()` first never hits a surprising failure.
+/// rustils#78's real Linux backend (Secret Service over D-Bus), run in
+/// this suite's own environment where no D-Bus session bus is reachable
+/// (no `DBUS_SESSION_BUS_ADDRESS`, no daemon running): `available()`
+/// reports `Unavailable` — a real mechanism exists on this OS, it's just
+/// not reachable right now — and `get`/`set` surface that as a real
+/// `Err` rather than a silent `Ok(None)`/`Ok(())`, per the trait's own
+/// contract (a clean miss and "the store isn't reachable" are different
+/// claims). Live round-trip coverage against a real, reachable Secret
+/// Service lives in `tests/secret_service.rs`, which spawns its own
+/// `dbus-daemon`/`gnome-keyring-daemon` pair.
 #[cfg(target_os = "linux")]
 #[test]
-fn linux_credential_store_stub_reports_unsupported() {
+fn linux_credential_store_reports_unavailable_with_no_bus_reachable() {
     let store = platform_linux::LinuxCredentialStore;
-    assert_eq!(store.available(), CredentialStoreStatus::Unsupported);
-    assert_eq!(store.get("svc", "acct").unwrap(), None);
-    store.set("svc", "acct", b"secret").unwrap();
-    // Still nothing stored — this stub discards `set`, as documented.
-    assert_eq!(store.get("svc", "acct").unwrap(), None);
+    assert_eq!(store.available(), CredentialStoreStatus::Unavailable);
+    assert!(store.get("svc", "acct").is_err());
+    assert!(store.set("svc", "acct", b"secret").is_err());
 }

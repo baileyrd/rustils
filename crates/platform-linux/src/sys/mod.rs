@@ -5,6 +5,7 @@ pub mod dbus;
 pub mod fdio;
 pub mod identity;
 pub mod net;
+pub mod secret_service;
 pub mod security;
 pub mod signals;
 pub mod spawn;
