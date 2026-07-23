@@ -9,4 +9,5 @@ pub mod handle;
 pub mod net;
 pub mod nt;
 pub mod proc;
+pub mod pty;
 pub mod security;

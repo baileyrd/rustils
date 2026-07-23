@@ -759,6 +759,30 @@ not just a successful `posix_spawn` return — see
 `docs/behavior/pty.md` for the full contract. Windows (issue #83) not
 yet landed.
 
+**Landed (part 2/2: Windows ConPTY backend), 2026-07-23** —
+`platform_windows::{WindowsPty, WindowsPtyMaster}` (rustils#83).
+`CreatePseudoConsole` wired to the child at `CreateProcessW` time via
+`STARTUPINFOEXW`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` — the only way to
+attach one at all, unlike Unix's separable-in-theory (though not taken)
+open/attach steps. Always grouped via the same suspended → assign →
+resume Job Object sequence `Spawner::spawn`'s `NewGroup` path already
+uses. `read`/`write` are ordinary blocking `ReadFile`/`WriteFile` on the
+two pipe handles ConPTY's master genuinely is — no background thread for
+I/O, only a bounded `PeekNamedPipe` drain at teardown to avoid a real
+`ClosePseudoConsole` deadlock (a design refinement made during
+implementation; the original design pass proposed a permanent
+thread-bridge that turned out not to be needed — see
+`docs/design-discussion-pty.md`). New divergence: `docs/divergences.md`
+#011 (single pollable fd on Linux vs two non-pollable handles on
+Windows). CI-verified only (no Windows execution available in the
+implementing session) — `platform-windows/tests/pty.rs`, including a
+dedicated test that drops an undrained master against a child producing
+far more output than a pipe's default buffer holds, to actually exercise
+the teardown fix. Both halves of the PTY surface (#82 Linux, #83
+Windows) are now landed; only macOS (no donor evidence) remains
+unaddressed within this phase's scope. See `docs/behavior/pty.md` for
+the full contract.
+
 ## Phase 8 — Tun / virtual-link surface (D14)
 
 **Lands here**, single named consumer (rusty_tail) — sufficient per the

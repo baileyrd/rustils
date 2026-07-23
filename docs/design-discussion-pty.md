@@ -16,7 +16,10 @@ re-verifying source directly — flagged here so the gap is visible, not hidden.
 live consumer (Phase 7's two "real candidates" — a job-control rush-interactive,
 or rusty_naner hosting rusty_term through a PAL PTY — are both still
 hypothetical), accepting the same speculative-build risk those two slices were
-held for explicitly. Trait shape and backend split below as proposed.
+held for explicitly. Trait shape and backend split below as proposed, with one
+refinement made during #83's actual implementation (see the Windows bullet
+below): no always-on background thread turned out to be needed after all,
+just a bounded drain at teardown — see that bullet for why.
 
 ## What D13 already established
 
@@ -99,18 +102,27 @@ a shared contract:
   precedent) — a consumer needing to register it with an async reactor can.
 - **Windows**: ConPTY's master side is a pair of anonymous pipes
   (`CreatePipe`), which are **not** waitable/pollable the way a socket
-  handle is. `WindowsPtyMaster` bridges this internally with a dedicated
-  reader thread forwarding into a channel, the same shape rusty_term's own
-  donor code uses to get a non-blocking-feeling read out of a fundamentally
-  blocking pipe handle — this is the "blocking-thread bridge" D13's own text
-  already flagged as the expected Windows divergence, not a new finding.
-  `WindowsPtyMaster`'s raw-handle escape hatch is documented as non-pollable
-  for this reason (a consumer that `AsRawHandle`s it and hands it to its own
-  reactor gets a handle that will not signal readiness the way a socket
-  does — this is inherent to anonymous pipes, not a limitation of this
-  crate). The teardown-deadlock lesson above is handled by ordering:
-  `WindowsPtyMaster::drop` closes the pipe write-adjacent handles and joins
-  the reader thread *before* `ClosePseudoConsole` runs, not after.
+  handle is — this is the "blocking-thread bridge" D13's own text
+  flagged as the expected Windows divergence. **Refined during
+  implementation**: `PtyMaster::read`/`write`'s own contract is already
+  synchronous/blocking (matching Linux's shape exactly), so no
+  background thread turns out to be needed for I/O itself —
+  `WindowsPtyMaster::read`/`write` are ordinary blocking
+  `ReadFile`/`WriteFile` calls, just like `LinuxPtyMaster`'s. The only
+  place a thread was ever going to be *load-bearing* is teardown: closing
+  a pseudo console (`ClosePseudoConsole`) blocks until conhost's internal
+  writer thread finishes, which can deadlock against an un-drained output
+  pipe. Rather than a permanent background reader thread for the whole
+  session, `sys::pty::close` does a bounded, non-blocking drain
+  (`PeekNamedPipe` to check for data without blocking, `ReadFile` only
+  when there's something to read, a short overall time budget) right
+  before calling `ClosePseudoConsole` — solving the actual hazard with no
+  thread and no `Send`-across-threads handle-ownership complexity at all.
+  `WindowsPtyMaster` has no single-handle `AsHandle`/`AsRawHandle` impl
+  (there is no single handle — see divergence 011 in
+  `docs/divergences.md`), just two named accessors
+  (`input_handle`/`output_handle`), each documented non-pollable for the
+  same anonymous-pipe reason.
 
 ## The `posix_spawn` substitute for `fork`+`TIOCSCTTY`
 

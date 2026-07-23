@@ -44,6 +44,18 @@ round-tripping through the pty's line discipline (write, read back local
 echo plus the child's own output), `Ok(0)` at EOF after the child exits,
 and `resize` visible to the child's own `stty size` query.
 
+The Windows backend (`crates/platform-windows/tests/pty.rs`) is
+CI-verified only — this crate's whole backend is developed from a Linux
+host against `cargo check --target x86_64-pc-windows-gnu`
+(`platform-windows/src/lib.rs`'s own module doc), so nothing in it has
+run outside CI's `windows-latest` leg. Covered there: a real spawned
+child's output arriving on the master, master→child input round-tripping
+through `cmd`'s own `set /p`, `Ok(0)` at EOF, a real `ResizePseudoConsole`
+call, and — the load-bearing test — dropping a master that was never
+drained, against a child producing far more output than a pipe's default
+buffer holds, to exercise the teardown-deadlock fix for real rather than
+just by inspection.
+
 ## Specified
 
 - `Pty::spawn(cmd, size)` opens a fresh pty pair and spawns `cmd`
@@ -79,6 +91,33 @@ and `resize` visible to the child's own `stty size` query.
   escape hatch rustils#41/#42 established for `Net`/`Tun`, for a
   consumer that wants to register the master fd with its own reactor
   rather than drive I/O through this trait's blocking calls.
+- Windows (`platform_windows::{WindowsPty, WindowsPtyMaster}`,
+  rustils#83): `CreatePseudoConsole` + a `PROC_THREAD_ATTRIBUTE_LIST`
+  carrying `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`, passed to
+  `CreateProcessW` via `STARTUPINFOEXW`/`EXTENDED_STARTUPINFO_PRESENT`
+  — the only way to wire a pseudo console to a child at all, since there
+  is no Win32 call to attach one after the fact. Always grouped (a
+  fresh kill-on-close Job Object, suspended → assign → resume, the same
+  race-free sequence `Spawner::spawn`'s `GroupSpec::NewGroup` path
+  uses) — a pty-hosted child is unconditionally its own session on
+  Linux, and this mirrors that with `kill_tree` semantics. `resize`
+  calls `ResizePseudoConsole`. `WindowsPtyMaster::read`/`write` are
+  ordinary blocking `ReadFile`/`WriteFile` on the two pipe handles
+  ConPTY's master side actually is (see divergence 011) — no background
+  thread for I/O itself, since the trait's own contract is already
+  blocking, matching Linux's shape. `ERROR_BROKEN_PIPE` on read
+  collapses to `Ok(0)`, the existing translation
+  `sys::fileio::read` already performs for every other pipe in this
+  backend, reused unchanged rather than re-implemented. Dropping a
+  `WindowsPtyMaster` drains its output pipe (a bounded,
+  non-blocking `PeekNamedPipe` loop) before calling
+  `ClosePseudoConsole`, avoiding a real deadlock: `ClosePseudoConsole`
+  blocks until conhost's internal writer thread finishes, which can
+  itself be blocked writing into a pipe nobody is reading. See
+  `docs/design-discussion-pty.md` and divergence 011 for the full
+  reasoning, including why the master here is two named handles
+  (`input_handle`/`output_handle`) rather than a single `AsHandle`/
+  `AsRawHandle` impl.
 - `platform-mock`'s `MockPty`/`MockPtyMaster`: scriptable, not a real
   pty — `MockPtyMaster::queue_inbound` queues bytes for a future
   `read()` to hand back (standing in for "the child wrote this to the
@@ -92,14 +131,6 @@ and `resize` visible to the child's own `stty size` query.
 
 ## Deliberately unspecified
 
-- Windows (ConPTY): no backend yet — issue #83, split out from this
-  landing given real size (`CreatePseudoConsole` +
-  `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` + `CreateProcessW`,
-  `ResizePseudoConsole`, a thread-bridged master since ConPTY's pipes
-  aren't pollable the way a socket is, and the EOF-vs-exit teardown
-  ordering `docs/design-discussion-pty.md` documents). Not present at
-  all yet, not even an `Unsupported` stub — the same posture `WindowsTun`
-  took before its own Phase 8 landing.
 - macOS: no backend — no donor evidence (D13 only surveys shh/
   rusty_term, both Linux+Windows).
 - Job-control terminal handoff (`tcsetpgrp` on the pty-hosted child) —

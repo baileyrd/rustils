@@ -31,6 +31,24 @@ pub struct WindowsChild {
     pipes: proc::ParentPipes,
 }
 
+impl WindowsChild {
+    /// Construct directly from a process/job pair and pid — `pub(crate)`
+    /// for `crate::pty`'s `Pty::spawn` (rustils#83), which spawns
+    /// through `sys::pty::spawn_attached` rather than `sys::proc::spawn`,
+    /// so has no [`proc::ParentPipes`] of its own (a pty-hosted child's
+    /// stdio is the pseudo console, never a `Stdio::Pipe`) and no
+    /// [`Spawner::spawn`] call site to construct one from.
+    pub(crate) fn from_parts(process: OwnedWinHandle, job: OwnedWinHandle, pid: u32) -> Self {
+        Self {
+            process,
+            job: Some(job),
+            pid,
+            reaped: None,
+            pipes: [None, None, None],
+        }
+    }
+}
+
 impl Child for WindowsChild {
     fn wait(self: Box<Self>) -> Result<ExitStatus> {
         match self.reaped {

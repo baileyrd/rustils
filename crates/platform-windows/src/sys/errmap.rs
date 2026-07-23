@@ -59,6 +59,26 @@ pub fn last_win32_err(op: &'static str, path: &OsStr) -> PlatformError {
     }
 }
 
+/// Error from a failed ConPTY HRESULT (`CreatePseudoConsole`/
+/// `ResizePseudoConsole`, rustils#83). An `HRESULT` isn't `GetLastError`'s
+/// or `NtCreateFile`'s number space, but a Win32-facility HRESULT
+/// (`HRESULT_FROM_WIN32`'s shape — the common case for a wrapped OS
+/// failure) carries the original Win32 code in its low 16 bits: extracted
+/// here so [`kind_of_win32`]'s classification still applies when it can,
+/// rather than every ConPTY failure falling back to `ErrorKind::Other`.
+/// A non-Win32-facility `HRESULT` (rare for this call — an allocation
+/// failure, say) stores its own bit pattern verbatim; still diagnosable,
+/// just not classified beyond `Other`.
+pub fn hresult_err(hr: i32, op: &'static str) -> PlatformError {
+    const FACILITY_WIN32: i32 = 0x7;
+    let facility = (hr >> 16) & 0x1FFF;
+    if hr < 0 && facility == FACILITY_WIN32 {
+        let code = (hr & 0xFFFF) as u32;
+        return PlatformError::new(kind_of_win32(code), OsCode::Win32(code), op);
+    }
+    PlatformError::new(ErrorKind::Other, OsCode::Win32(hr as u32), op)
+}
+
 /// Error from a failed `NtCreateFile`-family NTSTATUS.
 pub fn nt_err(status: w::NTSTATUS, op: &'static str, path: &OsStr) -> PlatformError {
     // SAFETY: `RtlNtStatusToDosError` is a pure translation function with

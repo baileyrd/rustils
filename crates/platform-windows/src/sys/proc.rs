@@ -27,7 +27,10 @@ use crate::util::wide::to_wide_nul;
 /// Build the `CREATE_UNICODE_ENVIRONMENT` block for an explicit env, or
 /// `None` to inherit. Each entry is `NAME=value\0`, with a final extra
 /// NUL (double-NUL for the empty block).
-fn env_block(env: &EnvSpec) -> Option<Vec<u16>> {
+/// `pub(crate)`: shared with `sys::pty` (rustils#83), which builds its own
+/// `CreateProcessW` call for the ConPTY-attached spawn path rather than
+/// duplicating this exact env-block boilerplate.
+pub(crate) fn env_block(env: &EnvSpec) -> Option<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
     let map = match env {
         EnvSpec::Inherit => return None,
@@ -184,8 +187,12 @@ fn inheritable_dup_of_std(slot: u32) -> Result<Option<SlotHandle>> {
 
 /// Create a kill-on-close Job Object (extraction map D2: the group
 /// mechanism — closing the last handle terminates every member, so a
-/// dropped-unwaited grouped child cannot leak its tree).
-fn create_kill_on_close_job() -> Result<OwnedWinHandle> {
+/// dropped-unwaited grouped child cannot leak its tree). `pub(crate)`:
+/// shared with `sys::pty` (rustils#83), which always groups a pty-hosted
+/// child the same way a `GroupSpec::NewGroup` spawn does here — see that
+/// module's own doc comment for why (a pty-hosted child is unconditionally
+/// its own session, mirroring the Linux backend's identical reasoning).
+pub(crate) fn create_kill_on_close_job() -> Result<OwnedWinHandle> {
     // SAFETY: null security attributes and name are documented-valid.
     let job = unsafe { w::CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
     let job = OwnedWinHandle::from_raw(job)

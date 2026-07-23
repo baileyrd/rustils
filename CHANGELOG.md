@@ -19,6 +19,36 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.20.0
+
+- Added `platform_windows::{WindowsPty, WindowsPtyMaster}` (rustils#83),
+  part 2/2 of the PTY surface (Phase 7, D13) — the Windows ConPTY
+  backend for `platform::pty` (part 1/2, `0.19.0`). `CreatePseudoConsole`
+  wired to the child at `CreateProcessW` time via
+  `STARTUPINFOEXW`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` — the only way
+  to attach a pseudo console at all. Always grouped via the same
+  suspended → assign → resume Job Object sequence `Spawner::spawn`'s
+  `NewGroup` path already uses. `read`/`write` are ordinary blocking
+  `ReadFile`/`WriteFile` on ConPTY's two pipe handles — no background
+  thread for I/O; only `Drop` does a bounded `PeekNamedPipe` drain
+  before `ClosePseudoConsole`, avoiding a real deadlock
+  (`ClosePseudoConsole` blocks until conhost's internal writer finishes,
+  which can block against an un-drained pipe). New divergence
+  (`docs/divergences.md` #011): a single pollable fd on Linux vs two
+  non-pollable handles on Windows — `WindowsPtyMaster` exposes
+  `input_handle`/`output_handle` rather than a single `AsHandle`/
+  `AsRawHandle`. CI-verified only (no Windows execution available in the
+  implementing session) — `platform-windows/tests/pty.rs`, including a
+  dedicated test that drops an undrained master against a child
+  producing far more output than a pipe's default buffer holds, to
+  actually exercise the teardown fix rather than trust it by inspection.
+  See `docs/behavior/pty.md` and `docs/design-discussion-pty.md` for the
+  full contract and reasoning.
+  **Breaking**: none — an entirely new backend for an already-landed
+  trait; nothing existing changed shape. Bumps `y` per
+  `docs/versioning.md` §2's "additive counts too" rule (new `pub`
+  items).
+
 ### 0.19.0
 
 - Added `platform::pty::{Pty, PtyMaster}` (rustils#82), part 1/2 of the
