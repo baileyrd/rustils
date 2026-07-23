@@ -36,6 +36,28 @@ use platform_windows::{winargv, WindowsPty};
 const READ_BUDGET: Duration = Duration::from_secs(15);
 const WAIT_BUDGET: Duration = Duration::from_secs(15);
 
+/// Serializes every test that creates a real pseudo console.
+/// `cargo test`'s default parallelism ran all of this file's tests
+/// concurrently, each creating its own independent `HPCON` — and CI
+/// showed exactly one test's *entire* child output nondeterministically
+/// leaking to the job's own ambient console on each run (a different
+/// test each time), while every test's own dedicated pipe only ever
+/// received conhost's initial VT-mode negotiation and nothing past it.
+/// That pattern — a race, not a fixed logic bug, since neither which
+/// test "won" nor the earlier `CREATE_SUSPENDED` removal changed the
+/// shape of the failure — points at concurrent pseudo-console
+/// creation/attachment from one process not being safe on this runner,
+/// not at anything wrong with a single spawn's own sequence. Serializing
+/// is the direct test, not a guess: if it fixes the failure, the theory
+/// was right; if not, the real cause is still elsewhere.
+static PTY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_pty_tests() -> std::sync::MutexGuard<'static, ()> {
+    PTY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn size() -> WinSize {
     WinSize { rows: 24, cols: 80 }
 }
@@ -113,6 +135,7 @@ fn read_until(output: &OwnedWinHandle, needle: &str, attempts: usize) -> String 
 
 #[test]
 fn spawn_attaches_a_real_child_to_the_pseudo_console() {
+    let _guard = lock_pty_tests();
     let pty = TestPty::create();
     let line = command_line("cmd", &["/c", "echo hello-from-conpty"]);
     let (process, _job, _pid) =
@@ -131,6 +154,7 @@ fn spawn_attaches_a_real_child_to_the_pseudo_console() {
 
 #[test]
 fn master_io_round_trips_with_the_spawned_child() {
+    let _guard = lock_pty_tests();
     let pty = TestPty::create();
     let line = command_line("cmd", &["/c", "set /p REPLY= & echo got:%REPLY%"]);
     let (process, _job, _pid) =
@@ -150,6 +174,7 @@ fn master_io_round_trips_with_the_spawned_child() {
 
 #[test]
 fn eof_is_reported_as_ok_zero_after_the_child_exits() {
+    let _guard = lock_pty_tests();
     let pty = TestPty::create();
     let line = command_line("cmd", &["/c", "exit 0"]);
     let (process, _job, _pid) =
@@ -193,6 +218,7 @@ fn join_group_is_rejected() {
 
 #[test]
 fn resize_succeeds_against_a_real_pseudo_console() {
+    let _guard = lock_pty_tests();
     let pty = TestPty::create();
     let line = command_line("cmd", &["/c", "exit 0"]);
     let (process, _job, _pid) =
@@ -223,6 +249,7 @@ fn resize_succeeds_against_a_real_pseudo_console() {
 /// regression in that internal budget is what this test exists to catch.
 #[test]
 fn dropping_an_undrained_master_does_not_deadlock() {
+    let _guard = lock_pty_tests();
     let pty = TestPty::create();
     let line = command_line("cmd", &["/c", "for /L %i in (1,1,20000) do @echo line %i"]);
     let (process, _job, _pid) =
