@@ -152,6 +152,37 @@ fn spawn_attaches_a_real_child_to_the_pseudo_console() {
     assert!(status.success());
 }
 
+/// Isolates whether `cmd.exe /c` itself (as opposed to this crate's
+/// spawn sequence) is the source of the still-open bug where a
+/// pty-hosted child's real console output never reaches the master pipe
+/// (only conhost's own initial VT-mode negotiation does). Microsoft's
+/// own ConPTY sample (`samples/ConPTY/EchoCon`, verified against the
+/// primary source rather than memory) spawns `ping localhost` directly
+/// — never a shell — so this mirrors that exactly, with no `cmd.exe`
+/// anywhere in the process tree, as the most isolated comparison point
+/// available. If this passes while every `cmd`-spawning test still
+/// fails, `cmd.exe` specifically is implicated; if this fails too, the
+/// bug is somewhere more fundamental and `cmd.exe` was never the
+/// differentiator.
+#[test]
+fn spawn_a_plain_executable_with_no_shell_in_the_tree() {
+    let _guard = lock_pty_tests();
+    let pty = TestPty::create();
+    let line = command_line("ping", &["-n", "1", "127.0.0.1"]);
+    let (process, _pid) =
+        syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
+            .expect("spawn_attached");
+
+    let output = read_until(&pty.output, "Pinging", 32);
+    assert!(
+        output.contains("Pinging"),
+        "expected 'Pinging' in master output, saw: {output:?}"
+    );
+
+    let status = wait_bounded(&process);
+    assert!(status.success());
+}
+
 #[test]
 fn master_io_round_trips_with_the_spawned_child() {
     let _guard = lock_pty_tests();
