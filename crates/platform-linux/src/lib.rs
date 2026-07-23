@@ -20,6 +20,7 @@ pub mod sys;
 mod fs;
 mod net;
 mod process;
+mod pty;
 mod security;
 mod signals;
 mod term;
@@ -30,6 +31,7 @@ pub use net::{
     LinuxNet, LinuxTcpListener, LinuxTcpStream, LinuxUdpSocket, LinuxUnixListener, LinuxUnixStream,
 };
 pub use process::{LinuxChild, LinuxSpawner};
+pub use pty::{LinuxPty, LinuxPtyMaster};
 pub use security::{LinuxCredentialStore, LinuxCsprng, LinuxSandbox};
 pub use signals::LinuxSignalSource;
 pub use sys::identity::{group_name, user_name};

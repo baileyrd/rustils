@@ -16,12 +16,16 @@ use platform::process::{EnvSpec, ExitStatus, GroupSpec, Signal, Stdio};
 
 use crate::ffi::libc_surface as c;
 
-fn to_cstring(s: &OsStr, op: &'static str) -> Result<CString> {
+/// `pub(crate)`: shared with `sys::pty`, which builds its own
+/// `posix_spawn` file actions/attributes for the "spawn attached to a pty
+/// slave" path (`docs/design-discussion-pty.md`) rather than duplicating
+/// this exact CString-conversion boilerplate.
+pub(crate) fn to_cstring(s: &OsStr, op: &'static str) -> Result<CString> {
     CString::new(s.as_bytes())
         .map_err(|_| PlatformError::new(ErrorKind::InvalidInput, OsCode::None, op).with_path(s))
 }
 
-fn errno_err(op: &'static str, code: i32, path: &OsStr) -> PlatformError {
+pub(crate) fn errno_err(op: &'static str, code: i32, path: &OsStr) -> PlatformError {
     let kind = match code {
         libc::ENOENT => ErrorKind::NotFound,
         libc::EACCES | libc::EPERM => ErrorKind::PermissionDenied,
@@ -39,8 +43,9 @@ fn errno_err(op: &'static str, code: i32, path: &OsStr) -> PlatformError {
 
 /// The environment for the child, fully materialized. `Inherit` snapshots
 /// the parent's environment at spawn time (the same semantics std's
-/// spawn has); `Explicit` contains exactly the given variables.
-fn build_env(env: &EnvSpec) -> Result<Vec<CString>> {
+/// spawn has); `Explicit` contains exactly the given variables. `pub(crate)`
+/// for `sys::pty`'s reuse — see [`to_cstring`].
+pub(crate) fn build_env(env: &EnvSpec) -> Result<Vec<CString>> {
     let pairs: Vec<(OsString, OsString)> = match env {
         EnvSpec::Inherit => std::env::vars_os().collect(),
         EnvSpec::Explicit(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -56,11 +61,11 @@ fn build_env(env: &EnvSpec) -> Result<Vec<CString>> {
 }
 
 /// RAII for `posix_spawn_file_actions_t` so every early-error path
-/// destroys what it initialized.
-struct FileActions(c::posix_spawn_file_actions_t);
+/// destroys what it initialized. `pub(crate)`, shared with `sys::pty`.
+pub(crate) struct FileActions(pub(crate) c::posix_spawn_file_actions_t);
 
 impl FileActions {
-    fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         // SAFETY: `actions` is a valid out-pointer; init writes it before
         // any use, and the value is destroyed exactly once by Drop.
         let (r, actions) = unsafe {
@@ -89,11 +94,12 @@ impl Drop for FileActions {
     }
 }
 
-/// RAII for `posix_spawnattr_t`, mirroring [`FileActions`].
-struct SpawnAttr(c::posix_spawnattr_t);
+/// RAII for `posix_spawnattr_t`, mirroring [`FileActions`]. `pub(crate)`,
+/// shared with `sys::pty`.
+pub(crate) struct SpawnAttr(pub(crate) c::posix_spawnattr_t);
 
 impl SpawnAttr {
-    fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         // SAFETY: `attr` is a valid out-pointer; init writes it before
         // any use, and the value is destroyed exactly once by Drop.
         let (r, attr) = unsafe {

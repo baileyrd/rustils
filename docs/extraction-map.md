@@ -365,6 +365,14 @@ NOT part of Terminal slice 1: PTY *hosting* is its own surface, gated
 on an emulator/mux consumer. Divergences to register when it lands:
 ConPTY vs openpty; pollable master fd vs blocking-thread bridge.
 
+**Landed (part 1/2: trait + Linux backend), 2026-07-23** — built on the
+owner's explicit call, still no confirmed consumer (rustils#82); see
+`docs/design-discussion-pty.md` and `docs/convergence-roadmap.md`'s
+Phase 7 entry for the full reasoning, including why the Linux backend
+does *not* port shh's `fork`+`TIOCSCTTY` mechanism as-is (raw `fork`
+stays parked behind its own separate roadmap decision). Windows ConPTY
+(rustils#83) not yet landed.
+
 ### D14 — Tun/virtual-link surface (rusty_tail)
 
 rusty_tail is a Tailscale-style mesh VPN (not a log follower — the

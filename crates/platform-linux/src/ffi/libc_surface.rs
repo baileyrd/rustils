@@ -197,3 +197,23 @@ pub use libc::{getgrgid_r, getpwuid_r, group, passwd, ERANGE};
 // SASL EXTERNAL just asks the peer to state it, not prove it out-of-band
 // the way a password mechanism would).
 pub use libc::getuid;
+
+// PTY surface (RFC v2 R5+, D13, convergence roadmap Phase 7, rustils#82).
+// `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` are the standard POSIX
+// pty-pair-opening sequence (`ptsname_r`, not the non-reentrant
+// `ptsname`, for the same shared-static-buffer reason `getpwuid_r` was
+// chosen over `getpwuid` above); `size_t` is `ptsname_r`'s buffer-length
+// parameter type, not otherwise admitted. `O_NOCTTY` guards the *master*
+// open only — the slave is deliberately opened without it (see
+// `sys::pty`'s own doc comment: that's what lets a session leader with no
+// controlling terminal acquire one automatically). `TIOCSWINSZ` is
+// `TIOCGWINSZ`'s write-side sibling (already admitted above), for
+// `PtyMaster::resize`. `POSIX_SPAWN_SETSID` (a glibc extension since
+// 2.24) is the `posix_spawn`-native substitute for `fork`+`TIOCSCTTY`
+// this crate uses instead — see `docs/design-discussion-pty.md`'s "The
+// `posix_spawn` substitute for `fork`+`TIOCSCTTY`" section for why: raw
+// `fork` stays parked behind its own separate roadmap decision, not
+// reopened here.
+pub use libc::{
+    grantpt, posix_openpt, ptsname_r, size_t, unlockpt, O_NOCTTY, POSIX_SPAWN_SETSID, TIOCSWINSZ,
+};

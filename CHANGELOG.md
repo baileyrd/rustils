@@ -19,6 +19,36 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.19.0
+
+- Added `platform::pty::{Pty, PtyMaster}` (rustils#82), part 1/2 of the
+  PTY surface (Phase 7, D13) — built without a confirmed live consumer,
+  the owner's explicit call, same posture `CredentialStore`/`Sandbox`'s
+  confinement half were built under. One atomic `Pty::spawn(cmd, size)`
+  opens a fresh pty pair and spawns `cmd` attached to its slave side —
+  not a separate open/attach pair, since Windows's ConPTY structurally
+  can't attach to an already-running process. `Ok(0)` at EOF, matching
+  `File::read`/`Terminal::read_chunk`'s existing convention.
+  `platform_linux::{LinuxPty, LinuxPtyMaster}`: real pty pair +
+  `posix_spawn`-based attach — **not** raw `fork`+`TIOCSCTTY`
+  (shh's own donor mechanism): `POSIX_SPAWN_SETSID` plus a file action
+  that opens the slave by pathname reaches the identical session-
+  leader-with-controlling-terminal outcome without reopening the
+  async-signal-safety hazard `sys::spawn`'s `posix_spawn`-only design
+  exists to close (raw `fork` stays parked behind its own separate,
+  still-undecided roadmap decision). Live-verified against
+  `/proc/<pid>/stat` kernel ground truth, not just a successful
+  `posix_spawn` return. `LinuxPtyMaster` ships `AsFd`/`AsRawFd` on the
+  concrete type (Net/Tun precedent). `platform_mock::{MockPty,
+  MockPtyMaster}`: scriptable, not a real pty (mirrors `MockTun`).
+  See `docs/behavior/pty.md` for the full contract,
+  `docs/design-discussion-pty.md` for the design reasoning.
+  **Breaking**: none — an entirely new module and new backend types;
+  nothing existing changed shape. Bumps `y` per `docs/versioning.md`
+  §2's "additive counts too" rule (new `pub` items).
+- Windows (ConPTY) not yet landed — issue #83, part 2/2, split out from
+  this release given its own real size.
+
 ### 0.18.0
 
 - Added `platform_linux::sys::secret_service` (rustils#78) — the Secret

@@ -32,6 +32,23 @@ pub struct LinuxChild {
     pipes: spawn::ParentPipes,
 }
 
+impl LinuxChild {
+    /// Construct directly from a pid and its group target — `pub(crate)`
+    /// for `crate::pty`'s `Pty::spawn` (rustils#82), which spawns through
+    /// `sys::pty::spawn_attached` rather than `sys::spawn::spawn`, so has
+    /// no [`spawn::ParentPipes`] of its own (a pty-hosted child's stdio is
+    /// the slave, never a `Stdio::Pipe`) and no [`Spawner::spawn`] call
+    /// site to construct one from.
+    pub(crate) fn from_pid(pid: c::pid_t, group: Option<c::pid_t>) -> Self {
+        Self {
+            pid,
+            group,
+            reaped: None,
+            pipes: [None, None, None],
+        }
+    }
+}
+
 impl Child for LinuxChild {
     fn wait(self: Box<Self>) -> Result<ExitStatus> {
         match self.reaped {
