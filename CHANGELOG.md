@@ -19,6 +19,33 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.18.0
+
+- Added `platform_linux::sys::secret_service` (rustils#78) — the Secret
+  Service API (`org.freedesktop.secrets`) over `sys::dbus`'s transport
+  (rustils#77), part 3/3 of `CredentialStore` (Phase 6 item 2).
+  `LinuxCredentialStore` now delegates to it in place of the #76 stub:
+  `available()` opens a session, resolves the default collection via
+  `ReadAlias`, and unlocks it if locked and unlockable
+  non-interactively (no `Prompt` completion — this is a headless
+  backend); `get`/`set` search/create items keyed on the
+  `service`/`account` attribute pair. Stateless — a fresh D-Bus
+  connection and Secret Service session per call, mirroring the
+  Windows backend's fresh `CredWriteW`/`CredReadW` per call.
+  Reachability failures (no session bus, no provider, no default
+  collection, a collection that can't be unlocked headlessly) report
+  `Unavailable` from `available()` and a real `Err` from `get`/`set` —
+  never a silent `Ok(None)`/`Ok(())`, per the trait's own contract.
+  Live-verified against a real `dbus-daemon --session` +
+  `gnome-keyring-daemon --unlock --components=secrets` pair spawned as
+  a CI test fixture (round-trip, per-account isolation, replace-on-set,
+  binary payloads), the same bar #77's transport was held to — CI now
+  also installs `gnome-keyring` alongside `dbus`.
+  **Breaking**: none — `LinuxCredentialStore`'s trait impl signature is
+  unchanged from #76; only its behavior moved from stub to real. Bumps
+  `y` because `pub mod secret_service` under `sys` (itself `pub`) is a
+  new public item, the same reasoning #77's `pub mod dbus` bump used.
+
 ### 0.17.0
 
 - Added `platform_linux::sys::dbus` (rustils#77) — a hand-rolled D-Bus

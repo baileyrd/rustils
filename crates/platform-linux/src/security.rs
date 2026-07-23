@@ -6,6 +6,7 @@ use std::path::Path;
 use platform::error::Result;
 use platform::security::{CredentialStore, CredentialStoreStatus, Csprng, Sandbox, SandboxStatus};
 
+use crate::sys::secret_service;
 use crate::sys::security as syssec;
 
 /// The Linux backend's [`Csprng`] capability. Stateless — every call is
@@ -18,29 +19,26 @@ impl Csprng for LinuxCsprng {
     }
 }
 
-/// The Linux backend's [`CredentialStore`] capability (rustils#76): a
-/// stub reporting [`CredentialStoreStatus::Unsupported`] and a clean
-/// `Ok(None)`/`Ok(())` for `get`/`set` — the real Secret Service
-/// (`org.freedesktop.secrets`) implementation is rustils#77/#78's own
-/// slice, not part of this one. `get`/`set` are `Ok`, not `Err`: a
-/// caller that only ever checks `available()` before deciding whether to
-/// rely on stored secrets (the documented contract) never hits an
-/// `Err` here it wasn't expecting — matching how a real backend that's
-/// merely `Unavailable` right now would also prefer a clean miss over a
-/// surprising failure on an operation the caller was told not to trust.
+/// The Linux backend's [`CredentialStore`] capability (rustils#78): the
+/// Secret Service API (`org.freedesktop.secrets`) over `sys::dbus`'s
+/// hand-rolled transport (rustils#77) — see `sys::secret_service`'s own
+/// doc comment for the full reachability/error-shape contract. Stateless
+/// — every call opens a fresh D-Bus connection and Secret Service
+/// session, mirroring how [`LinuxCsprng`]/[`LinuxSandbox`] hold no state
+/// either.
 pub struct LinuxCredentialStore;
 
 impl CredentialStore for LinuxCredentialStore {
     fn available(&self) -> CredentialStoreStatus {
-        CredentialStoreStatus::Unsupported
+        secret_service::available()
     }
 
-    fn get(&self, _service: &str, _account: &str) -> Result<Option<Vec<u8>>> {
-        Ok(None)
+    fn get(&self, service: &str, account: &str) -> Result<Option<Vec<u8>>> {
+        secret_service::get(service, account)
     }
 
-    fn set(&self, _service: &str, _account: &str, _secret: &[u8]) -> Result<()> {
-        Ok(())
+    fn set(&self, service: &str, account: &str, secret: &[u8]) -> Result<()> {
+        secret_service::set(service, account, secret)
     }
 }
 

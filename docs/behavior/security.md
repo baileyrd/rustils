@@ -45,8 +45,10 @@ Linux — no existing D-Bus dependency, matching this repo's raw-bindings
 philosophy — landed as `platform_linux::sys::dbus`, an internal
 prerequisite with no `CredentialStore` behavior wired up yet; see that
 module's own doc comment for the transport contract), #78 (the Secret
-Service protocol on top of #77, wired into
-the real Linux implementation).
+Service protocol (`org.freedesktop.secrets`) on top of #77, wired into
+the real Linux implementation — landed as
+`platform_linux::sys::secret_service`, with `LinuxCredentialStore` now
+delegating to it in place of the #76 stub).
 
 **`Sandbox`** (third slice, Phase 6 item 3): unlike `Csprng`, this
 slice has **no confirmed live consumer** — it mirrors nexus's
@@ -111,10 +113,28 @@ calls shape exactly, not an invented combined API.
   `service` alone, so that two different `account`s under the same
   `service` land as two distinct Credential Manager entries instead of
   silently clobbering each other.
-- Linux stub (rustils#76, ahead of #77/#78): `Unsupported`, `Ok(None)`/
-  `Ok(())` for `get`/`set` — never an `Err`, so a caller that checks
-  `available()` first never hits a surprising failure from an operation
-  it was told not to trust yet.
+- Linux (`LinuxCredentialStore`, rustils#78): the Secret Service API
+  (`org.freedesktop.secrets`) over `sys::dbus`'s hand-rolled transport
+  (rustils#77) — `platform_linux::sys::secret_service`. Stateless: every
+  call opens a fresh D-Bus connection and Secret Service session rather
+  than holding one open, mirroring how the Windows backend also makes a
+  fresh `CredWriteW`/`CredReadW` call each time. `available()` reports
+  `Unavailable` for every reachability failure (no session bus, no
+  Secret Service provider registered, no default collection, or a
+  locked collection this non-interactive backend has no window handle
+  to unlock via `Prompt`) — this is where `Unavailable` gets its first
+  real forcing case in this slice, unlike Windows. Unlike the #76 stub
+  this replaced, an unreachable store is a real `Err` from `get`/`set`,
+  not a silent `Ok(None)`/`Ok(())` — a clean miss ("nothing stored
+  under this name") and "the store isn't reachable right now" are
+  different claims, and only the caller checking `available()` first
+  opts into treating them the same way. Item identity is the
+  `service`/`account` attribute pair (Secret Service's own
+  attribute-dictionary addressing), matching the trait's contract
+  directly with no `TargetName`-style composition needed. Live-verified
+  against a real `dbus-daemon --session` + `gnome-keyring-daemon`
+  pair spawned as a CI test fixture, the same live-verification bar
+  #77's transport was held to.
 - `platform-mock`'s `MockCredentialStore`: a faithful in-memory fake
   (unlike `MockSandbox`) — a get/set secret store genuinely can be
   faked without lying about a security property, unlike kernel-level

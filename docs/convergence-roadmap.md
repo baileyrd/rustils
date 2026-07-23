@@ -638,7 +638,13 @@ until a consumer forces them (RFC v2 §3), same as every other surface.
    against a real `dbus-daemon --session` spawned as a CI test
    fixture, not just round-trip unit tests), rustils#78 (the Secret
    Service protocol on top of #77, wired into the real Linux
-   implementation — not yet landed). `get`/`set`/`available` only,
+   implementation — **landed**: `platform_linux::sys::secret_service`,
+   `LinuxCredentialStore` now delegates to it in place of the #76 stub.
+   Live-verified the same way #77 was, against a real `dbus-daemon
+   --session` + `gnome-keyring-daemon --unlock --components=secrets`
+   pair spawned as a CI test fixture — round-trip, per-account
+   isolation, replace-on-set, and binary payloads, not just the
+   unreachable-bus degrade path). `get`/`set`/`available` only,
    exactly the roadmap's documented shape — no `delete`, not
    freelanced beyond what was asked. See
    `docs/behavior/security.md` for the full contract.
