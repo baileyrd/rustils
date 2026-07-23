@@ -213,6 +213,37 @@ fn create_kill_on_close_job() -> Result<OwnedWinHandle> {
     Ok(job)
 }
 
+/// Open an already-running process by pid and place it into a fresh
+/// kill-on-close Job Object (`Spawner::adopt`, rustils#47) — the
+/// after-the-fact counterpart to `spawn`'s suspended-spawn → assign →
+/// resume sequence, for a pid this backend did not itself create (e.g.
+/// `portable-pty::Child::process_id()`). No suspend-before-assign
+/// ordering to preserve here (unlike `spawn`'s pre-first-instruction
+/// guarantee): the target is already running arbitrary code by the time
+/// any caller could have observed its pid, so "before its first
+/// instruction" was never a reachable guarantee for an adopted process
+/// the way it is for one this crate spawned suspended. Returns (process
+/// handle, job handle).
+pub fn adopt(pid: u32) -> Result<(OwnedWinHandle, OwnedWinHandle)> {
+    // SAFETY: `pid` is caller-supplied and may not name a live process at
+    // all — `OpenProcess` reports that as a `NULL` return, checked by
+    // `OwnedWinHandle::from_raw` below, not as UB.
+    let handle = unsafe { w::OpenProcess(w::PROCESS_SET_QUOTA | w::PROCESS_TERMINATE, 0, pid) };
+    let process = OwnedWinHandle::from_raw(handle)
+        .ok_or_else(|| errmap::last_win32_err("OpenProcess", OsStr::new("")))?;
+    let job = create_kill_on_close_job()?;
+    // SAFETY: `job`/`process` are both valid, currently-open handles for
+    // the life of this call.
+    let ok = unsafe { w::AssignProcessToJobObject(job.as_raw(), process.as_raw()) };
+    if ok == 0 {
+        return Err(errmap::last_win32_err(
+            "AssignProcessToJobObject",
+            OsStr::new(""),
+        ));
+    }
+    Ok((process, job))
+}
+
 /// Parent-side pipe ends for piped stdio slots: `[stdin write, stdout
 /// read, stderr read]`.
 pub type ParentPipes = [Option<OwnedWinHandle>; 3];

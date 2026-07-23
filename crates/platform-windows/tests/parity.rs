@@ -769,6 +769,61 @@ fn windows_join_group_is_unsupported() {
     );
 }
 
+/// `Spawner::adopt` (rustils#47): a real, already-running pid — standing
+/// in for one a third-party library spawned (e.g.
+/// `portable-pty::Child::process_id()`) — placed into a fresh
+/// kill-on-close Job Object after the fact. `kill_tree` on the *adopted*
+/// handle must reach the *original* child (proving `AssignProcessToJobObject`
+/// actually landed on the real process, not just that `adopt` returned
+/// `Ok`), which the original `Child`'s own `wait()` then observes.
+#[test]
+fn windows_adopt_places_a_real_pid_into_a_new_job() {
+    use platform::process::{Command, ExitStatus, Signal, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_windows::WindowsSpawner;
+
+    let mut c = Command::new("ping", tmp)
+        .arg("-n")
+        .arg("30")
+        .arg("127.0.0.1");
+    c.stdout = Stdio::Null;
+    let child = s.spawn(&c).expect("spawn");
+    let pid = child.id();
+
+    let adopted = s.adopt(pid).expect("adopt a real, running pid");
+    adopted.kill_tree(Signal::Kill).expect("kill_tree");
+    assert_eq!(child.wait().expect("wait"), ExitStatus::Code(1));
+}
+
+/// `Spawner::adopt` of a pid naming no live process — `OpenProcess`
+/// itself fails, surfaced as a real `Err`, not a handle that silently
+/// fails every later operation.
+#[test]
+fn windows_adopt_of_a_dead_pid_fails() {
+    use platform::process::{Command, Spawner, Stdio};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_windows::WindowsSpawner;
+
+    // A pid that certainly doesn't name a live process: spawn, wait for
+    // exit, then reuse its now-dead pid.
+    let mut c = Command::new("cmd", tmp).arg("/c").arg("exit 0");
+    c.stdout = Stdio::Null;
+    let child = s.spawn(&c).expect("spawn");
+    let pid = child.id();
+    child.wait().expect("wait for it to actually exit");
+
+    let e = s.adopt(pid);
+    // Best-effort: pid reuse means this could theoretically race a new
+    // process claiming the same pid, but immediately after `wait()`
+    // returns that's not realistically going to happen in CI.
+    assert!(
+        e.is_err(),
+        "adopting a dead pid must fail, not silently succeed"
+    );
+}
+
 /// D8/D10 (Windows side): no job-control stop/continue analog —
 /// `wait_job`/`try_wait_job` are `Unsupported` rather than silently
 /// degrading to plain `wait`/`try_wait` semantics.

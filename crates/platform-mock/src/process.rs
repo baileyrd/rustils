@@ -7,7 +7,9 @@ use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, EnvSpec, ExitStatus, GroupSpec, Signal, Spawner, Stdio};
+use platform::process::{
+    Child, Command, EnvSpec, ExitStatus, GroupHandle, GroupSpec, Signal, Spawner, Stdio,
+};
 
 /// A scripted response for a program name.
 #[derive(Debug, Clone)]
@@ -128,6 +130,8 @@ pub struct MockSpawner {
     scripts: BTreeMap<OsString, Script>,
     /// Log of every spawn request, for assertions.
     pub spawned: Arc<Mutex<Vec<SpawnRecord>>>,
+    /// Log of every `adopt` call, for assertions — mirrors `spawned`.
+    pub adopted: Arc<Mutex<Vec<u32>>>,
 }
 
 impl MockSpawner {
@@ -241,6 +245,23 @@ fn mem_pipe(data: Vec<u8>) -> Box<dyn platform::fs::File> {
     Box::new(MemPipe { data, pos: 0 })
 }
 
+/// `MockSpawner::adopt`'s return type. No real OS process behind an
+/// adopted pid to fail against, so both operations just succeed — same
+/// "no OS limitations to model here" stance `MockChild::kill_single`
+/// already takes for every `Signal` (the mock doesn't model Windows's
+/// divergence-008 `Signal::Kill`-only restriction either).
+struct MockGroupHandle;
+
+impl GroupHandle for MockGroupHandle {
+    fn kill_tree(&self, _sig: Signal) -> Result<()> {
+        Ok(())
+    }
+
+    fn kill_single(&self, _sig: Signal) -> Result<()> {
+        Ok(())
+    }
+}
+
 impl Spawner for MockSpawner {
     fn spawn(&self, cmd: &Command) -> Result<Box<dyn Child>> {
         crate::sync::lock(&self.spawned).push(SpawnRecord::from(cmd));
@@ -263,6 +284,11 @@ impl Spawner for MockSpawner {
         } else {
             Err(PlatformError::new(ErrorKind::NotFound, OsCode::None, "resolve").with_path(program))
         }
+    }
+
+    fn adopt(&self, pid: u32) -> Result<Box<dyn GroupHandle>> {
+        crate::sync::lock(&self.adopted).push(pid);
+        Ok(Box::new(MockGroupHandle))
     }
 }
 
@@ -320,5 +346,14 @@ mod tests {
         let spawned = crate::sync::lock(&log);
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].cwd, OsString::from("/work"));
+    }
+
+    #[test]
+    fn adopt_succeeds_and_logs_the_pid() {
+        let spawner = MockSpawner::new();
+        let handle = spawner.adopt(4242).expect("adopt");
+        handle.kill_tree(Signal::Kill).expect("kill_tree");
+        handle.kill_single(Signal::Term).expect("kill_single");
+        assert_eq!(*crate::sync::lock(&spawner.adopted), vec![4242]);
     }
 }

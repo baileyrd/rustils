@@ -121,6 +121,24 @@ assertions.
   requested, not the `Command`/`Stdio` values themselves), not clones
   of the original `Command`.
 
+- `Spawner::adopt(pid)` (rustils#47): places an already-running process
+  this `Spawner` did not itself spawn (e.g. one created by a
+  third-party library — `portable-pty::Child::process_id()` is the
+  forcing case) into a fresh kill-on-close group, returning a
+  [`GroupHandle`] — narrower than `Child`, `kill_tree`/`kill_single`
+  only, since an adopted pid was never spawned through this crate and
+  `wait`/stdio have no meaning here. Windows: `OpenProcess` + a fresh
+  kill-on-close Job Object (`AssignProcessToJobObject`) — the same
+  mechanism `GroupSpec::NewGroup` uses at spawn time, applied after the
+  fact. Unix: always `Unsupported` — POSIX `setpgid(pid, pgid)` can
+  only retarget a process that is both the caller's own child *and*
+  has not yet exec'd, which is never true by the time a caller has a
+  pid to adopt — divergence **010**. `platform-mock` succeeds
+  unconditionally (no real OS process to fail against, same "no OS
+  limitation to model" stance `kill_single` already takes for every
+  `Signal`), logging each call to `MockSpawner::adopted` for
+  assertions, mirroring `spawned`.
+
 ## Deliberately unspecified (until the R2 hoist supplies them)
 
 - PTY — a distinct Process×Terminal surface (D13), gated on an
