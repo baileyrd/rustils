@@ -15,6 +15,7 @@
 pub mod fs;
 pub mod net;
 pub mod process;
+pub mod pty;
 pub mod security;
 pub mod signals;
 mod sync;
@@ -24,6 +25,7 @@ pub mod tun;
 pub use fs::MockDir;
 pub use net::MockNet;
 pub use process::MockSpawner;
+pub use pty::{MockPty, MockPtyMaster};
 pub use security::{MockCredentialStore, MockCsprng, MockSandbox};
 pub use signals::MockSignalSource;
 pub use term::MockTerminal;

@@ -729,6 +729,36 @@ note). Real candidates: a job-control-capable rush-interactive
 PTY instead of a raw subprocess launch. **Action: raise with the owner
 before starting** — don't build speculatively.
 
+**Raised with the owner, 2026-07-23** — built anyway, the owner's
+explicit call, same posture as `CredentialStore`/`Sandbox`'s
+confinement half: still no confirmed live consumer (both candidates
+above stay hypothetical), accepted as the speculative-build risk those
+two slices were already held under. Design pass held first per this
+entry's own "expect an RFC-level discussion" instruction — see
+`docs/design-discussion-pty.md` for the full donor-shape reconciliation
+(one atomic `Pty::spawn` rather than separable open/attach steps, since
+Windows's `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` structurally can't
+attach after the fact; `Ok(0)`-at-EOF unifying Unix's `EIO` and
+Windows's broken-pipe signal). Split across two issues given its size,
+the same reasoning `CredentialStore` was split across three: rustils#82
+(trait shape + Linux backend + mock), rustils#83 (Windows ConPTY
+backend, depends on #82's shape landing first).
+
+**Landed (part 1/2: trait + Linux backend + mock), 2026-07-23** —
+`platform::pty::{Pty, PtyMaster}`, `platform_linux::{LinuxPty,
+LinuxPtyMaster}`, `platform_mock::{MockPty, MockPtyMaster}` (rustils#82).
+Notably: shh's own `fork`+`TIOCSCTTY` mechanism was **not** ported as-is
+— raw `fork` stays parked behind its own separate roadmap decision
+above, so the Linux backend reaches the identical outcome (child ends up
+session leader with the pty slave as its controlling terminal) through
+`posix_spawn`'s own `POSIX_SPAWN_SETSID` flag plus a file action that
+opens the slave by pathname, rather than reopening the async-signal-
+safety hazard `sys::spawn` exists to close. Live-verified against
+`/proc/<pid>/stat` kernel ground truth (`sid == pid`, `tty_nr != 0`),
+not just a successful `posix_spawn` return — see
+`docs/behavior/pty.md` for the full contract. Windows (issue #83) not
+yet landed.
+
 ## Phase 8 — Tun / virtual-link surface (D14)
 
 **Lands here**, single named consumer (rusty_tail) — sufficient per the
