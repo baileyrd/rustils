@@ -152,17 +152,32 @@ pub fn spawn_attached(
     // here on — computed as a value first, cleaned up once after,
     // rather than duplicating the call at every early return.
     let result = (|| -> Result<(OwnedWinHandle, OwnedWinHandle, u32)> {
+        // `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`'s `lpValue` is the raw
+        // `HPCON` value itself, reinterpreted as the pointer-sized
+        // argument — not a pointer *to* a variable holding it. This
+        // matches Microsoft's own ConPTY sample exactly
+        // (`UpdateProcThreadAttribute(..., hPC, sizeof(HPCON), ...)`,
+        // `hPC` passed by value); passing `&hpc` here instead (the
+        // address of the local variable) was this issue's actual first
+        // bug — it compiled, `UpdateProcThreadAttribute` and
+        // `CreateProcessW` both reported success, and the child process
+        // spawned and exited normally, but with no pseudo console
+        // genuinely attached at all: every live test that depends on
+        // reading real child output timed out having seen zero bytes,
+        // while the tests that never read output (resize, the
+        // drop-without-draining teardown check) passed — caught by CI,
+        // not by inspection, exactly the kind of thing this untestable
+        // (no local Windows execution) code needed live verification for.
+        //
         // SAFETY: `attr_list` was just successfully initialized above;
         // `hpc` is a valid, live pseudo console handle for the duration
-        // of this call (the caller's — it outlives the spawned process);
-        // `size_of::<HPCON>()` matches the pointed-to value's actual
-        // size.
+        // of this call (the caller's — it outlives the spawned process).
         let ok = unsafe {
             w::UpdateProcThreadAttribute(
                 attr_list,
                 0,
                 w::PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
-                (&hpc as *const w::HPCON).cast(),
+                hpc as *const core::ffi::c_void,
                 std::mem::size_of::<w::HPCON>(),
                 std::ptr::null_mut(),
                 std::ptr::null(),
