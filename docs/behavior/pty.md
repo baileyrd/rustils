@@ -118,13 +118,37 @@ just by inspection.
   duplication. `resize` calls `ResizePseudoConsole`.
   `WindowsPtyMaster::read`/`write` are
   ordinary blocking `ReadFile`/`WriteFile` on the two pipe handles
-  ConPTY's master side actually is (see divergence 011) — no background
-  thread for I/O itself, since the trait's own contract is already
-  blocking, matching Linux's shape. `ERROR_BROKEN_PIPE` on read
-  collapses to `Ok(0)`, the existing translation
+  ConPTY's master side actually is (see divergence 011). `ERROR_BROKEN_PIPE`
+  on read collapses to `Ok(0)`, the existing translation
   `sys::fileio::read` already performs for every other pipe in this
-  backend, reused unchanged rather than re-implemented. Dropping a
-  `WindowsPtyMaster` drains its output pipe (a bounded,
+  backend, reused unchanged rather than re-implemented.
+
+  Making that `Ok(0)` actually happen once the child exits — the
+  portable contract `platform::pty::PtyMaster::read`'s own doc promises
+  ("Windows's broken-pipe-on-child-exit" collapsing to it, matching
+  Unix) — needs one background thread ConPTY doesn't give for free.
+  Unlike a Unix pty slave, which the kernel closes automatically once
+  its last holder (the child) exits, ConPTY's output pipe stays open
+  until `ClosePseudoConsole` is explicitly called; live testing
+  confirmed reads block indefinitely even after the child has
+  genuinely already exited. `WindowsPty::spawn` installs
+  `sys::pty::spawn_exit_watcher`, which waits on a *duplicated* process
+  handle (independent of `WindowsChild`'s own, so the two owners don't
+  fight over one handle's lifecycle) and forces the same bounded-drain-
+  then-`ClosePseudoConsole` teardown once the child exits. A shared
+  `closed` flag (compare-exchange) guards against a double-close race
+  with `WindowsPtyMaster::drop` — whichever of "the child exits" or
+  "the caller drops the master" happens first performs the real close;
+  the loser is a no-op. Accepted trade-off, not a free lunch: that
+  forced close's own drain can race a caller's own concurrent `read()`
+  for the same trailing bytes on the same handle — a caller that reads
+  in a loop up to `Ok(0)` (exactly the shape the contract itself
+  invites, and how every live test in `platform-windows/tests/pty.rs`
+  is written) is effectively unaffected; the alternative (skip the
+  watcher) is strictly worse, since it leaves the documented contract
+  silently unmet on Windows (reads hang forever instead).
+
+  Dropping a `WindowsPtyMaster` drains its output pipe (a bounded,
   non-blocking `PeekNamedPipe` loop) before calling
   `ClosePseudoConsole`, avoiding a real deadlock: `ClosePseudoConsole`
   blocks until conhost's internal writer thread finishes, which can

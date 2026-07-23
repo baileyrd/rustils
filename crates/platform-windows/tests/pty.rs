@@ -23,6 +23,8 @@
 #![cfg(windows)]
 
 use std::ffi::OsStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use platform::process::{EnvSpec, ExitStatus, GroupSpec};
@@ -70,24 +72,54 @@ fn command_line(program: &str, args: &[&str]) -> Vec<u16> {
 
 /// Owns a pseudo console + its two master pipe handles, mirroring
 /// `WindowsPtyMaster`'s own shape but at the `sys::pty` level so tests
-/// can reach the raw handles `wait_readable` needs. `Drop` calls the
-/// same `syspty::close` teardown the production type uses.
+/// can reach the raw handles `wait_readable` needs. `output`/`closed`
+/// are `Arc`s (not bare values) for the same reason `WindowsPtyMaster`
+/// uses them: [`TestPty::watch_exit`] installs the same background
+/// exit-watcher `WindowsPty::spawn` always installs in production
+/// (`syspty::spawn_exit_watcher` — see its own doc comment), so this
+/// helper stays a faithful mirror rather than silently not exercising
+/// that fix. `Drop` races the same `closed` compare-exchange the watcher
+/// thread does, calling `syspty::close` at most once either way.
 struct TestPty {
     hpc: w::HPCON,
     input: OwnedWinHandle,
-    output: OwnedWinHandle,
+    output: Arc<OwnedWinHandle>,
+    closed: Arc<AtomicBool>,
 }
 
 impl TestPty {
     fn create() -> Self {
         let (hpc, input, output) = syspty::create_pty(size()).expect("create_pty");
-        Self { hpc, input, output }
+        Self {
+            hpc,
+            input,
+            output: Arc::new(output),
+            closed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Install the same exit-watcher production spawns always install —
+    /// call once, right after `syspty::spawn_attached` returns a process
+    /// handle, in every test that actually spawns a child.
+    fn watch_exit(&self, process: &OwnedWinHandle) {
+        syspty::spawn_exit_watcher(
+            process,
+            self.hpc,
+            Arc::clone(&self.output),
+            Arc::clone(&self.closed),
+        );
     }
 }
 
 impl Drop for TestPty {
     fn drop(&mut self) {
-        syspty::close(self.hpc, &self.output);
+        if self
+            .closed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            syspty::close(self.hpc, &self.output);
+        }
     }
 }
 
@@ -141,6 +173,7 @@ fn spawn_attaches_a_real_child_to_the_pseudo_console() {
     let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
+    pty.watch_exit(&process);
 
     let output = read_until(&pty.output, "hello-from-conpty", 32);
     assert!(
@@ -172,6 +205,7 @@ fn spawn_a_plain_executable_with_no_shell_in_the_tree() {
     let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
+    pty.watch_exit(&process);
 
     let output = read_until(&pty.output, "Pinging", 32);
     assert!(
@@ -203,6 +237,7 @@ fn master_io_round_trips_with_the_spawned_child() {
     let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
+    pty.watch_exit(&process);
 
     fileio::write(&pty.input, b"hello\r\n").expect("write");
     let output = read_until(&pty.output, "got:hello", 32);
@@ -215,6 +250,16 @@ fn master_io_round_trips_with_the_spawned_child() {
     assert!(status.success());
 }
 
+/// Confirmed live (before `TestPty::watch_exit` existed) that ConPTY does
+/// *not* spontaneously EOF its output pipe when the last attached
+/// process exits — this test's own read blocked the full `READ_BUDGET`
+/// even after `wait_bounded` had already confirmed the child was gone.
+/// `syspty::spawn_exit_watcher` (installed via `watch_exit` below,
+/// exactly like `WindowsPty::spawn` always installs it in production)
+/// is what makes this pass: it forces `ClosePseudoConsole` once the
+/// child exits, which is what actually breaks the pipe. See that
+/// function's own doc comment for the full reasoning and the read-race
+/// trade-off it accepts.
 #[test]
 fn eof_is_reported_as_ok_zero_after_the_child_exits() {
     let _guard = lock_pty_tests();
@@ -223,6 +268,7 @@ fn eof_is_reported_as_ok_zero_after_the_child_exits() {
     let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
+    pty.watch_exit(&process);
     wait_bounded(&process);
 
     let deadline = Instant::now() + READ_BUDGET;
@@ -267,6 +313,7 @@ fn resize_succeeds_against_a_real_pseudo_console() {
     let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
+    pty.watch_exit(&process);
 
     syspty::resize(
         pty.hpc,
@@ -298,6 +345,13 @@ fn dropping_an_undrained_master_does_not_deadlock() {
     let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
+    // Mirrors production for consistency, though it's not this test's
+    // own point: with the pipe never read and default buffer sizes far
+    // smaller than 20000 lines, the child is essentially certain to
+    // still be running (and the watcher thread still blocked waiting for
+    // it) when `drop(pty)` below runs, so `Drop` wins the close race the
+    // same way it always did before this thread existed.
+    pty.watch_exit(&process);
 
     // Give the child a moment to actually produce output and fill the
     // pipe before tearing down undrained.

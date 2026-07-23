@@ -770,26 +770,38 @@ reduction. Deliberately **not** the suspended → assign → resume sequence
 `Spawner::spawn`'s `NewGroup` path uses, matching Microsoft's own sample
 (which doesn't suspend). `read`/`write` are ordinary blocking
 `ReadFile`/`WriteFile` on the two pipe handles ConPTY's master genuinely
-is — no background thread for I/O, only a bounded `PeekNamedPipe` drain
-at teardown to avoid a real `ClosePseudoConsole` deadlock (a design
-refinement made during implementation; the original design pass
-proposed a permanent thread-bridge that turned out not to be needed —
-see `docs/design-discussion-pty.md`). Three real bugs surfaced only
-through live CI runs, not local cross-compile-checking: the
-`UpdateProcThreadAttribute` value/address mixup, a `sys::pty::close`
-drain-loop deadline check that only ran in one branch, and — the one
-that took seven CI rounds to isolate, since `CREATE_SUSPENDED` removal,
-Job Object removal, test-concurrency serialization, and a
-shell-vs-no-shell diagnostic all failed to change the failure signature
-— every child's real console output was reaching the *spawning*
-process's own ambient console instead of the pseudo console's pipes,
-100% reproducibly. Root cause, confirmed against `microsoft/terminal`
-discussion #15814: when the spawning process's own stdio is itself
-redirected (exactly `cargo test`'s situation under a CI runner), the
-kernel duplicates those redirected handles into the child regardless of
+is. Four real bugs surfaced only through live CI runs, not local
+cross-compile-checking: the `UpdateProcThreadAttribute` value/address
+mixup, a `sys::pty::close` drain-loop deadline check that only ran in
+one branch, and — the one that took seven CI rounds to isolate, since
+`CREATE_SUSPENDED` removal, Job Object removal, test-concurrency
+serialization, and a shell-vs-no-shell diagnostic all failed to change
+the failure signature — every child's real console output was reaching
+the *spawning* process's own ambient console instead of the pseudo
+console's pipes, 100% reproducibly, and finally a documented-contract
+gap only the first three bugs' fix exposed. Root cause of the third,
+confirmed against `microsoft/terminal` discussion #15814: when the
+spawning process's own stdio is itself redirected (exactly `cargo
+test`'s situation under a CI runner), the kernel duplicates those
+redirected handles into the child regardless of
 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`; setting `STARTF_USESTDHANDLES`
 (with null std handles) in `STARTUPINFOEXW.dwFlags` suppresses that
-duplication and is the actual fix — see the PR history for #83. New
+duplication and is the actual fix. Once real output started reaching
+the pipes, a fourth, distinct gap surfaced: ConPTY's output pipe does
+not spontaneously EOF when the last attached process exits (unlike a
+Unix pty slave, which the kernel closes automatically) — contradicting
+`PtyMaster::read`'s own documented `Ok(0)`-on-child-exit contract.
+`sys::pty::spawn_exit_watcher` is the fix: a background thread (the
+one background thread this backend does need, despite the earlier
+"no background thread for I/O" framing) that waits on a *duplicated*
+process handle and forces the drain-then-`ClosePseudoConsole` teardown
+once the child exits, guarded by a shared `closed` compare-exchange
+against a double-close race with `WindowsPtyMaster::drop` — whichever
+of "child exits" or "caller drops the master" happens first wins, the
+other is a no-op. Accepted trade-off: that forced close's drain can
+race a caller's own concurrent `read()` for the same trailing bytes; a
+caller reading in a loop up to `Ok(0)` (the shape the contract itself
+invites) is effectively unaffected — see the PR history for #83. New
 divergence: `docs/divergences.md` #011 (single pollable fd on Linux vs
 two non-pollable handles on Windows). CI-verified only (no Windows
 execution available in the implementing session) —

@@ -39,11 +39,23 @@ and **`coreutils`**.
   guidance in discussion #15814, not a bug in this crate's spawn
   sequence — which otherwise matches Microsoft's own ConPTY sample
   byte-for-byte). `read`/`write` are ordinary blocking `ReadFile`/
-  `WriteFile` on ConPTY's two pipe handles — no background thread for
-  I/O; only `Drop` does a bounded `PeekNamedPipe` drain before
-  `ClosePseudoConsole`, avoiding a real deadlock (`ClosePseudoConsole`
-  blocks until conhost's internal writer finishes, which can block
-  against an un-drained pipe). New divergence (`docs/divergences.md`
+  `WriteFile` on ConPTY's two pipe handles. `Drop` does a bounded
+  `PeekNamedPipe` drain before `ClosePseudoConsole`, avoiding a real
+  deadlock (`ClosePseudoConsole` blocks until conhost's internal writer
+  finishes, which can block against an un-drained pipe). One background
+  thread *is* needed, though, for `PtyMaster::read`'s own portable
+  `Ok(0)`-on-child-exit contract: unlike a Unix pty slave, which the
+  kernel closes automatically once its last holder exits, ConPTY's
+  output pipe stays open until `ClosePseudoConsole` runs — confirmed
+  live (a child that had already exited still left reads blocked
+  indefinitely). `spawn_exit_watcher` waits on a duplicated process
+  handle and forces the close once the child exits, guarded by a shared
+  `closed` flag against a double-close race with `Drop` (whichever
+  happens first — the child exiting, or the caller dropping the master —
+  wins). Accepted trade-off: that forced close's own drain can race a
+  caller's own concurrent `read()` for the same trailing bytes; a caller
+  that reads in a loop up to `Ok(0)` (the shape the contract itself
+  invites) is effectively unaffected. New divergence (`docs/divergences.md`
   #011): a single pollable fd on Linux vs two non-pollable handles on
   Windows — `WindowsPtyMaster` exposes `input_handle`/`output_handle`
   rather than a single `AsHandle`/`AsRawHandle`. CI-verified only (no

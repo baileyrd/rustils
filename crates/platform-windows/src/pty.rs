@@ -12,6 +12,8 @@
 //! [`WindowsPtyMaster::output_handle`]).
 
 use std::ffi::{OsStr, OsString};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 use platform::process::{Child, Command, GroupSpec, Spawner};
@@ -52,18 +54,33 @@ impl Pty for WindowsPty {
         let (hpc, input, output) = syspty::create_pty(size)?;
         match syspty::spawn_attached(hpc, &line, &cmd.cwd, &cmd.env) {
             Ok((process, pid)) => {
-                // No Job Object yet — see `sys::pty::spawn_attached`'s
-                // own doc comment for why (a real, temporary scope
-                // reduction under active investigation, not settled).
+                // No Job Object — see `sys::pty::spawn_attached`'s own
+                // doc comment for why (a real, deliberate scope
+                // reduction, not a settled design choice).
+                let output = Arc::new(output);
+                let closed = Arc::new(AtomicBool::new(false));
+                // `Ok(0)` once the child exits is this trait's own
+                // documented contract (`platform::pty::PtyMaster::read`)
+                // — ConPTY doesn't provide that spontaneously (see
+                // `spawn_exit_watcher`'s own doc comment), so this
+                // backend has to arrange it.
+                syspty::spawn_exit_watcher(&process, hpc, Arc::clone(&output), Arc::clone(&closed));
                 let child = WindowsChild::from_parts(process, None, pid);
                 Ok((
-                    Box::new(WindowsPtyMaster { hpc, input, output }),
+                    Box::new(WindowsPtyMaster {
+                        hpc,
+                        input,
+                        output,
+                        closed,
+                    }),
                     Box::new(child),
                 ))
             }
             Err(e) => {
                 // The pseudo console outlived a failed spawn attempt —
-                // tear it down here rather than leaking it.
+                // tear it down here rather than leaking it. Nothing was
+                // ever shared with a watcher thread on this path, so a
+                // direct `close` (no compare-exchange) is correct.
                 syspty::close(hpc, &output);
                 Err(e)
             }
@@ -78,7 +95,18 @@ impl Pty for WindowsPty {
 pub struct WindowsPtyMaster {
     hpc: w::HPCON,
     input: OwnedWinHandle,
-    output: OwnedWinHandle,
+    // `Arc`, not a bare handle: a background thread
+    // (`syspty::spawn_exit_watcher`) may also hold — and need to keep
+    // alive — a reference to this same handle, closing it (via
+    // `syspty::close`) itself if the child exits before this master is
+    // dropped. See that function's own doc comment for the full reasoning
+    // and the `closed` guard below.
+    output: Arc<OwnedWinHandle>,
+    /// Shared with the background exit-watcher thread: guards
+    /// `syspty::close` (and therefore `ClosePseudoConsole`) running
+    /// exactly once, whichever of "the child exits" or "the caller drops
+    /// this master" happens first.
+    closed: Arc<AtomicBool>,
 }
 
 impl WindowsPtyMaster {
@@ -115,10 +143,21 @@ impl PtyMaster for WindowsPtyMaster {
 
 impl Drop for WindowsPtyMaster {
     fn drop(&mut self) {
-        // See `sys::pty`'s own doc comment: draining `output` before
-        // `ClosePseudoConsole` avoids a real deadlock (conhost's
-        // internal writer can block against an un-drained pipe, and
-        // `ClosePseudoConsole` blocks until that writer finishes).
-        syspty::close(self.hpc, &self.output);
+        // The background exit-watcher thread may have already won this
+        // race (the child exited first) and be running, or have already
+        // finished running, `syspty::close` itself — the compare-exchange
+        // makes the real close (drain-then-`ClosePseudoConsole`, see
+        // `sys::pty`'s own doc comment for why the drain has to happen
+        // first) run exactly once either way. If the watcher wins, this
+        // `Drop` simply drops its own `output`/`closed` `Arc` clones and
+        // returns; the watcher's own clones keep everything alive for as
+        // long as it still needs them.
+        if self
+            .closed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            syspty::close(self.hpc, &self.output);
+        }
     }
 }
