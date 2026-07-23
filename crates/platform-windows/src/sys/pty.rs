@@ -292,13 +292,58 @@ pub fn resize(hpc: w::HPCON, size: WinSize) -> Result<()> {
     Ok(())
 }
 
+/// Poll (via `PeekNamedPipe`, non-blocking) until `output` has data
+/// ready to read without blocking, the pipe reports broken (the
+/// subsequent `ReadFile` would return `Ok(0)`), or `budget` elapses.
+/// `true` in the first two cases — a following `ReadFile` on `output`
+/// is guaranteed to return promptly either way; `false` if `budget` ran
+/// out with the pipe still open and empty. Exists so a caller that
+/// wants a *bounded* read (rustils#83's own integration tests, which
+/// need one — see `platform-windows/tests/pty.rs`'s own doc comment for
+/// why) can gate a `ReadFile` call itself without this module or
+/// [`PtyMaster::read`](platform::pty::PtyMaster::read) needing to grow
+/// a timeout parameter neither's contract otherwise calls for.
+pub fn wait_readable(output: &OwnedWinHandle, budget: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        let mut available: u32 = 0;
+        // SAFETY: `output` is a valid open pipe handle; `available` is a
+        // valid out-pointer; every other out-pointer is null (not
+        // needed here).
+        let ok = unsafe {
+            w::PeekNamedPipe(
+                output.as_raw(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 || available > 0 {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Drain `output` (bounded, non-blocking via `PeekNamedPipe`) then call
 /// `ClosePseudoConsole` — see this module's doc comment for why the
-/// drain has to happen first.
+/// drain has to happen first. The overall time budget is checked on
+/// *every* iteration, not only when the pipe is momentarily empty — a
+/// child that keeps producing output fast enough to always have
+/// something available must not be able to make this loop (and
+/// therefore `Drop`) run unbounded.
 pub fn close(hpc: w::HPCON, output: &OwnedWinHandle) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let mut buf = [0u8; 4096];
     loop {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
         let mut available: u32 = 0;
         // SAFETY: `output` is a valid open pipe handle; `available` is a
         // valid out-pointer; every other out-pointer is null (not needed
@@ -319,9 +364,6 @@ pub fn close(hpc: w::HPCON, output: &OwnedWinHandle) {
             break;
         }
         if available == 0 {
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
             std::thread::sleep(std::time::Duration::from_millis(5));
             continue;
         }

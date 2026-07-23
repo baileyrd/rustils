@@ -4,39 +4,108 @@
 //! `windows-latest` leg; this crate's whole backend is developed from a
 //! Linux host against `cargo check --target x86_64-pc-windows-gnu`
 //! (`crates/platform-windows/src/lib.rs`'s own module doc), so nothing
-//! here has been run outside CI.
+//! here has run outside CI.
+//!
+//! **Every blocking call in this file is bounded.** A first version of
+//! this test used the portable `Pty`/`PtyMaster`/`Child` trait objects
+//! directly, with unbounded `master.read()`/`child.wait()` calls — and a
+//! genuine hang in that first ConPTY implementation attempt (caught
+//! *because* of this) turned a ~1-minute CI job into a 45+ minute stuck
+//! run that had to be cancelled by hand, with no diagnostic signal at
+//! all about which call was stuck. Testing at the `sys::pty` level
+//! instead (rather than through the type-erased `Box<dyn PtyMaster>`,
+//! which has no way to reach the raw handles a bounded read needs)
+//! gives every read a `wait_readable` budget and every wait a
+//! `try_wait` poll budget — a real hang now fails the specific test
+//! with a clear message inside `READ_BUDGET`/`WAIT_BUDGET`, not an
+//! opaque multi-minute CI stall.
 
 #![cfg(windows)]
 
+use std::ffi::OsStr;
 use std::time::{Duration, Instant};
 
-use platform::process::{Command, GroupSpec};
-use platform::pty::{Pty, PtyMaster};
+use platform::process::{EnvSpec, ExitStatus, GroupSpec};
+use platform::pty::Pty;
 use platform::term::WinSize;
-use platform_windows::WindowsPty;
+use platform_windows::ffi::win32_surface as w;
+use platform_windows::sys::handle::OwnedWinHandle;
+use platform_windows::sys::{fileio, proc as sysproc, pty as syspty};
+use platform_windows::{winargv, WindowsPty};
+
+const READ_BUDGET: Duration = Duration::from_secs(15);
+const WAIT_BUDGET: Duration = Duration::from_secs(15);
 
 fn size() -> WinSize {
     WinSize { rows: 24, cols: 80 }
 }
 
-/// Read from `master` in a loop until `needle` appears in the
-/// accumulated output or `attempts` reads have happened — mirrors
-/// `platform-linux/tests/pty.rs`'s `read_until`, for the same reason: a
-/// pty's echo plus a shell's own output can arrive in more than one
-/// `read()` call.
-fn read_until(master: &dyn PtyMaster, needle: &str, attempts: usize) -> String {
+fn command_line(program: &str, args: &[&str]) -> Vec<u16> {
+    let program = OsStr::new(program);
+    let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    winargv::build_command_line(program, &args).expect("build_command_line")
+}
+
+/// Owns a pseudo console + its two master pipe handles, mirroring
+/// `WindowsPtyMaster`'s own shape but at the `sys::pty` level so tests
+/// can reach the raw handles `wait_readable` needs. `Drop` calls the
+/// same `syspty::close` teardown the production type uses.
+struct TestPty {
+    hpc: w::HPCON,
+    input: OwnedWinHandle,
+    output: OwnedWinHandle,
+}
+
+impl TestPty {
+    fn create() -> Self {
+        let (hpc, input, output) = syspty::create_pty(size()).expect("create_pty");
+        Self { hpc, input, output }
+    }
+}
+
+impl Drop for TestPty {
+    fn drop(&mut self) {
+        syspty::close(self.hpc, &self.output);
+    }
+}
+
+/// Bounded, non-blocking poll instead of `sys::proc::wait`'s unbounded
+/// `WaitForSingleObject(..., INFINITE)` — see this file's own doc
+/// comment for why every wait here is bounded.
+fn wait_bounded(process: &OwnedWinHandle) -> ExitStatus {
+    let deadline = Instant::now() + WAIT_BUDGET;
+    loop {
+        if let Some(status) = sysproc::try_wait(process).expect("try_wait") {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "child did not exit within {WAIT_BUDGET:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Read from `output` in a loop until `needle` appears in the
+/// accumulated output or `attempts` reads have happened —
+/// `syspty::wait_readable` gates every `ReadFile` with `READ_BUDGET` so
+/// a stuck read fails this assertion cleanly instead of hanging (see
+/// this file's own doc comment).
+fn read_until(output: &OwnedWinHandle, needle: &str, attempts: usize) -> String {
     let mut acc = String::new();
     let mut buf = [0u8; 256];
     for _ in 0..attempts {
-        match master.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                acc.push_str(&String::from_utf8_lossy(&buf[..n]));
-                if acc.contains(needle) {
-                    return acc;
-                }
-            }
-            Err(_) => break,
+        assert!(
+            syspty::wait_readable(output, READ_BUDGET),
+            "timed out after {READ_BUDGET:?} waiting for pty output; saw so far: {acc:?}"
+        );
+        let n = fileio::read(output, &mut buf).expect("read");
+        if n == 0 {
+            break;
+        }
+        acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+        if acc.contains(needle) {
+            return acc;
         }
     }
     acc
@@ -44,65 +113,77 @@ fn read_until(master: &dyn PtyMaster, needle: &str, attempts: usize) -> String {
 
 #[test]
 fn spawn_attaches_a_real_child_to_the_pseudo_console() {
-    let pty = WindowsPty;
-    let cmd = Command::new("cmd", ".")
-        .arg("/c")
-        .arg("echo hello-from-conpty");
-    let (master, child) = pty.spawn(&cmd, size()).expect("spawn");
+    let pty = TestPty::create();
+    let line = command_line("cmd", &["/c", "echo hello-from-conpty"]);
+    let (process, _job, _pid) =
+        syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
+            .expect("spawn_attached");
 
-    let output = read_until(master.as_ref(), "hello-from-conpty", 32);
+    let output = read_until(&pty.output, "hello-from-conpty", 32);
     assert!(
         output.contains("hello-from-conpty"),
         "expected 'hello-from-conpty' in master output, saw: {output:?}"
     );
 
-    let status = child.wait().expect("wait");
+    let status = wait_bounded(&process);
     assert!(status.success());
 }
 
 #[test]
 fn master_io_round_trips_with_the_spawned_child() {
-    let pty = WindowsPty;
-    let cmd = Command::new("cmd", ".")
-        .arg("/c")
-        .arg("set /p REPLY= & echo got:%REPLY%");
-    let (master, child) = pty.spawn(&cmd, size()).expect("spawn");
+    let pty = TestPty::create();
+    let line = command_line("cmd", &["/c", "set /p REPLY= & echo got:%REPLY%"]);
+    let (process, _job, _pid) =
+        syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
+            .expect("spawn_attached");
 
-    master.write(b"hello\r\n").expect("write");
-    let output = read_until(master.as_ref(), "got:hello", 32);
+    fileio::write(&pty.input, b"hello\r\n").expect("write");
+    let output = read_until(&pty.output, "got:hello", 32);
     assert!(
         output.contains("got:hello"),
         "expected 'got:hello' in master output, saw: {output:?}"
     );
 
-    let status = child.wait().expect("wait");
+    let status = wait_bounded(&process);
     assert!(status.success());
 }
 
 #[test]
 fn eof_is_reported_as_ok_zero_after_the_child_exits() {
-    let pty = WindowsPty;
-    let cmd = Command::new("cmd", ".").arg("/c").arg("exit 0");
-    let (master, child) = pty.spawn(&cmd, size()).expect("spawn");
-    let _ = child.wait();
+    let pty = TestPty::create();
+    let line = command_line("cmd", &["/c", "exit 0"]);
+    let (process, _job, _pid) =
+        syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
+            .expect("spawn_attached");
+    wait_bounded(&process);
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut buf = [0u8; 64];
+    let deadline = Instant::now() + READ_BUDGET;
     loop {
-        match master.read(&mut buf) {
-            Ok(0) => break,
-            Ok(_) => {
-                assert!(Instant::now() < deadline, "never reached EOF within 10s");
-            }
-            Err(e) => panic!("read must translate ERROR_BROKEN_PIPE to Ok(0), got Err: {e:?}"),
+        assert!(
+            syspty::wait_readable(&pty.output, READ_BUDGET),
+            "timed out after {READ_BUDGET:?} waiting for EOF"
+        );
+        let mut buf = [0u8; 64];
+        let n = fileio::read(&pty.output, &mut buf)
+            .expect("read must translate ERROR_BROKEN_PIPE to Ok(0)");
+        if n == 0 {
+            break;
         }
+        assert!(
+            Instant::now() < deadline,
+            "never reached EOF within {READ_BUDGET:?}"
+        );
     }
 }
 
 #[test]
 fn join_group_is_rejected() {
+    // The one test that stays at the portable-trait level: it returns
+    // before any OS call happens at all (no spawn, no read, no wait —
+    // nothing that could hang), so the type-erased `Box<dyn PtyMaster>`
+    // this returns is never touched.
     let pty = WindowsPty;
-    let cmd = Command::new("cmd", ".").group(GroupSpec::JoinGroup(1));
+    let cmd = platform::process::Command::new("cmd", ".").group(GroupSpec::JoinGroup(1));
     let err = pty
         .spawn(&cmd, size())
         .err()
@@ -112,40 +193,49 @@ fn join_group_is_rejected() {
 
 #[test]
 fn resize_succeeds_against_a_real_pseudo_console() {
-    let pty = WindowsPty;
-    let cmd = Command::new("cmd", ".").arg("/c").arg("exit 0");
-    let (master, child) = pty.spawn(&cmd, size()).expect("spawn");
+    let pty = TestPty::create();
+    let line = command_line("cmd", &["/c", "exit 0"]);
+    let (process, _job, _pid) =
+        syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
+            .expect("spawn_attached");
 
-    master
-        .resize(WinSize {
+    syspty::resize(
+        pty.hpc,
+        WinSize {
             rows: 40,
             cols: 120,
-        })
-        .expect("resize");
+        },
+    )
+    .expect("resize");
 
-    let _ = child.wait();
+    wait_bounded(&process);
 }
 
 /// The load-bearing test for the teardown ordering
 /// (`docs/design-discussion-pty.md`'s EOF-vs-exit lesson,
 /// `sys::pty::close`'s drain-before-`ClosePseudoConsole` fix): spawn a
-/// child that writes far more output than a pipe's default buffer holds,
-/// then drop the master **without ever reading any of it**. Without the
-/// drain, `ClosePseudoConsole` can block forever waiting for conhost's
-/// writer to finish flushing into a pipe nobody is draining — this test
-/// hanging (rather than failing cleanly) is itself the failure signal if
-/// the fix regresses.
+/// child that writes far more output than a pipe's default buffer
+/// holds, then drop the `TestPty` (calling `syspty::close`, exactly what
+/// `WindowsPtyMaster::drop` does) **without ever reading any of it**.
+/// This call itself is what needs to be bounded — `close`'s own internal
+/// drain has a fixed budget (`docs/design-discussion-pty.md`), so unlike
+/// every other test here this one needs no extra timeout wrapper; a
+/// regression in that internal budget is what this test exists to catch.
 #[test]
 fn dropping_an_undrained_master_does_not_deadlock() {
-    let pty = WindowsPty;
-    let cmd = Command::new("cmd", ".")
-        .arg("/c")
-        .arg("for /L %i in (1,1,20000) do @echo line %i");
-    let (master, child) = pty.spawn(&cmd, size()).expect("spawn");
+    let pty = TestPty::create();
+    let line = command_line("cmd", &["/c", "for /L %i in (1,1,20000) do @echo line %i"]);
+    let (process, _job, _pid) =
+        syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
+            .expect("spawn_attached");
 
     // Give the child a moment to actually produce output and fill the
     // pipe before tearing down undrained.
     std::thread::sleep(Duration::from_millis(200));
-    drop(master);
-    let _ = child.wait();
+    drop(pty);
+
+    // The child itself may still be mid-write when its pseudo console
+    // tears down; reap it with the same bounded poll every other test
+    // uses rather than assuming it has already exited.
+    wait_bounded(&process);
 }
