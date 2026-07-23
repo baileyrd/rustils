@@ -72,18 +72,21 @@ fn command_line(program: &str, args: &[&str]) -> Vec<u16> {
 
 /// Owns a pseudo console + its two master pipe handles, mirroring
 /// `WindowsPtyMaster`'s own shape but at the `sys::pty` level so tests
-/// can reach the raw handles `wait_readable` needs. `output`/`closed`
-/// are `Arc`s (not bare values) for the same reason `WindowsPtyMaster`
-/// uses them: [`TestPty::watch_exit`] installs the same background
-/// exit-watcher `WindowsPty::spawn` always installs in production
+/// can reach the raw handles `wait_readable` needs. `closed` is an `Arc`
+/// (not a bare value) for the same reason `WindowsPtyMaster` uses one:
+/// [`TestPty::watch_exit`] installs the same background exit-watcher
+/// `WindowsPty::spawn` always installs in production
 /// (`syspty::spawn_exit_watcher` — see its own doc comment), so this
 /// helper stays a faithful mirror rather than silently not exercising
-/// that fix. `Drop` races the same `closed` compare-exchange the watcher
-/// thread does, calling `syspty::close` at most once either way.
+/// that fix. `output` stays a bare handle — the watcher never touches it
+/// (deliberately, to avoid racing a caller's own concurrent reads; see
+/// `spawn_exit_watcher`'s own doc comment), so there's nothing to share.
+/// `Drop` races the same `closed` compare-exchange the watcher thread
+/// does, calling `syspty::close` at most once either way.
 struct TestPty {
     hpc: w::HPCON,
     input: OwnedWinHandle,
-    output: Arc<OwnedWinHandle>,
+    output: OwnedWinHandle,
     closed: Arc<AtomicBool>,
 }
 
@@ -93,7 +96,7 @@ impl TestPty {
         Self {
             hpc,
             input,
-            output: Arc::new(output),
+            output,
             closed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -102,12 +105,7 @@ impl TestPty {
     /// call once, right after `syspty::spawn_attached` returns a process
     /// handle, in every test that actually spawns a child.
     fn watch_exit(&self, process: &OwnedWinHandle) {
-        syspty::spawn_exit_watcher(
-            process,
-            self.hpc,
-            Arc::clone(&self.output),
-            Arc::clone(&self.closed),
-        );
+        syspty::spawn_exit_watcher(process, self.hpc, Arc::clone(&self.closed));
     }
 }
 

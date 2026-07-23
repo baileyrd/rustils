@@ -49,13 +49,22 @@ and **`coreutils`**.
   output pipe stays open until `ClosePseudoConsole` runs — confirmed
   live (a child that had already exited still left reads blocked
   indefinitely). `spawn_exit_watcher` waits on a duplicated process
-  handle and forces the close once the child exits, guarded by a shared
-  `closed` flag against a double-close race with `Drop` (whichever
-  happens first — the child exiting, or the caller dropping the master —
-  wins). Accepted trade-off: that forced close's own drain can race a
-  caller's own concurrent `read()` for the same trailing bytes; a caller
-  that reads in a loop up to `Ok(0)` (the shape the contract itself
-  invites) is effectively unaffected. New divergence (`docs/divergences.md`
+  handle and calls bare `ClosePseudoConsole` once the child exits,
+  guarded by a shared `closed` flag against a double-close race with
+  `Drop` (whichever happens first — the child exiting, or the caller
+  dropping the master — wins). Deliberately does *not* drain the output
+  pipe first the way `Drop`'s own close does: an earlier version did,
+  and live CI caught the real problem with that — the watcher's own
+  drain raced (and consistently won against) a caller's concurrent
+  `read()` on the same handle, three previously-passing tests losing
+  real output to it. Calling bare `ClosePseudoConsole` has no such race
+  (this thread never touches the output pipe at all — any pending
+  `ReadFile` unblocks naturally once conhost's write-side duplicate
+  closes), at the cost of moving, not removing, the drain's original
+  purpose: `ClosePseudoConsole` can itself block if conhost's writer is
+  stuck behind a full unread pipe, which now stalls this background
+  thread instead — acceptable since it's detached and never joined.
+  New divergence (`docs/divergences.md`
   #011): a single pollable fd on Linux vs two non-pollable handles on
   Windows — `WindowsPtyMaster` exposes `input_handle`/`output_handle`
   rather than a single `AsHandle`/`AsRawHandle`. CI-verified only (no

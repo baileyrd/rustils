@@ -770,7 +770,7 @@ reduction. Deliberately **not** the suspended → assign → resume sequence
 `Spawner::spawn`'s `NewGroup` path uses, matching Microsoft's own sample
 (which doesn't suspend). `read`/`write` are ordinary blocking
 `ReadFile`/`WriteFile` on the two pipe handles ConPTY's master genuinely
-is. Four real bugs surfaced only through live CI runs, not local
+is. Five real bugs surfaced only through live CI runs, not local
 cross-compile-checking: the `UpdateProcThreadAttribute` value/address
 mixup, a `sys::pty::close` drain-loop deadline check that only ran in
 one branch, and — the one that took seven CI rounds to isolate, since
@@ -794,14 +794,22 @@ Unix pty slave, which the kernel closes automatically) — contradicting
 `sys::pty::spawn_exit_watcher` is the fix: a background thread (the
 one background thread this backend does need, despite the earlier
 "no background thread for I/O" framing) that waits on a *duplicated*
-process handle and forces the drain-then-`ClosePseudoConsole` teardown
-once the child exits, guarded by a shared `closed` compare-exchange
-against a double-close race with `WindowsPtyMaster::drop` — whichever
-of "child exits" or "caller drops the master" happens first wins, the
-other is a no-op. Accepted trade-off: that forced close's drain can
-race a caller's own concurrent `read()` for the same trailing bytes; a
-caller reading in a loop up to `Ok(0)` (the shape the contract itself
-invites) is effectively unaffected — see the PR history for #83. New
+process handle and calls bare `ClosePseudoConsole` once the child
+exits, guarded by a shared `closed` compare-exchange against a
+double-close race with `WindowsPtyMaster::drop` — whichever of "child
+exits" or "caller drops the master" happens first wins, the other is a
+no-op. A fifth bug, caught the same way as the rest — live CI, not
+local checking — came from this fix's own first attempt: having the
+watcher *drain* the output pipe before closing (matching `Drop`'s own
+close path) raced a caller's concurrent `read()` for the same bytes on
+the same handle, and wasn't a rare fluke — it consistently broke three
+previously-passing tests down to only conhost's VT-negotiation bytes.
+Calling bare `ClosePseudoConsole` instead (the watcher never touches
+the output pipe at all) has no such race, at the cost of moving rather
+than removing the original deadlock concern: `ClosePseudoConsole` can
+itself block behind a full, undrained pipe, which can now stall the
+watcher thread instead — accepted, since it's detached and never
+joined — see the PR history for #83. New
 divergence: `docs/divergences.md` #011 (single pollable fd on Linux vs
 two non-pollable handles on Windows). CI-verified only (no Windows
 execution available in the implementing session) —

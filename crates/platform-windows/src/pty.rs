@@ -57,14 +57,15 @@ impl Pty for WindowsPty {
                 // No Job Object — see `sys::pty::spawn_attached`'s own
                 // doc comment for why (a real, deliberate scope
                 // reduction, not a settled design choice).
-                let output = Arc::new(output);
                 let closed = Arc::new(AtomicBool::new(false));
                 // `Ok(0)` once the child exits is this trait's own
                 // documented contract (`platform::pty::PtyMaster::read`)
                 // — ConPTY doesn't provide that spontaneously (see
                 // `spawn_exit_watcher`'s own doc comment), so this
-                // backend has to arrange it.
-                syspty::spawn_exit_watcher(&process, hpc, Arc::clone(&output), Arc::clone(&closed));
+                // backend has to arrange it. The watcher never touches
+                // `output` itself (see its own doc comment for why), so
+                // only `closed` needs to be shared with it.
+                syspty::spawn_exit_watcher(&process, hpc, Arc::clone(&closed));
                 let child = WindowsChild::from_parts(process, None, pid);
                 Ok((
                     Box::new(WindowsPtyMaster {
@@ -95,17 +96,13 @@ impl Pty for WindowsPty {
 pub struct WindowsPtyMaster {
     hpc: w::HPCON,
     input: OwnedWinHandle,
-    // `Arc`, not a bare handle: a background thread
-    // (`syspty::spawn_exit_watcher`) may also hold — and need to keep
-    // alive — a reference to this same handle, closing it (via
-    // `syspty::close`) itself if the child exits before this master is
-    // dropped. See that function's own doc comment for the full reasoning
-    // and the `closed` guard below.
-    output: Arc<OwnedWinHandle>,
-    /// Shared with the background exit-watcher thread: guards
-    /// `syspty::close` (and therefore `ClosePseudoConsole`) running
-    /// exactly once, whichever of "the child exits" or "the caller drops
-    /// this master" happens first.
+    output: OwnedWinHandle,
+    /// Shared with the background exit-watcher thread
+    /// (`syspty::spawn_exit_watcher`): guards `ClosePseudoConsole`
+    /// running exactly once, whichever of "the child exits" or "the
+    /// caller drops this master" happens first. The watcher never
+    /// touches `output` (see its own doc comment for why), so this is
+    /// the only field that needs to be shared with it.
     closed: Arc<AtomicBool>,
 }
 
@@ -144,14 +141,17 @@ impl PtyMaster for WindowsPtyMaster {
 impl Drop for WindowsPtyMaster {
     fn drop(&mut self) {
         // The background exit-watcher thread may have already won this
-        // race (the child exited first) and be running, or have already
-        // finished running, `syspty::close` itself — the compare-exchange
-        // makes the real close (drain-then-`ClosePseudoConsole`, see
-        // `sys::pty`'s own doc comment for why the drain has to happen
-        // first) run exactly once either way. If the watcher wins, this
-        // `Drop` simply drops its own `output`/`closed` `Arc` clones and
-        // returns; the watcher's own clones keep everything alive for as
-        // long as it still needs them.
+        // race (the child exited first) and already called bare
+        // `ClosePseudoConsole` itself (`syspty::spawn_exit_watcher`'s own
+        // doc comment) — the compare-exchange makes the real close run
+        // exactly once either way. If this `Drop` wins instead (the
+        // caller is giving up before the child exits), it uses the
+        // draining `syspty::close`, not the watcher's bare call: this is
+        // the one path where a concurrent reader can't exist to race
+        // (the caller just gave up its only handle to read with), so
+        // draining first — avoiding a `ClosePseudoConsole` deadlock
+        // against an un-drained pipe — is both safe and necessary here
+        // (`dropping_an_undrained_master_does_not_deadlock`).
         if self
             .closed
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)

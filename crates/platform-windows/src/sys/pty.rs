@@ -31,11 +31,13 @@
 //! a Unix pty slave, which the kernel closes automatically once its
 //! last holder exits. [`spawn_exit_watcher`] is the one place this
 //! module does need a background thread: it watches the child and
-//! forces [`close`] once it exits, so `PtyMaster::read`'s own documented
-//! `Ok(0)`-on-child-exit contract holds on Windows too, not just Unix.
-//! See that function's own doc comment for the shared-close guard
-//! (`WindowsPtyMaster::drop` may also reach [`close`] first) and the
-//! accepted trade-off it makes.
+//! forces `ClosePseudoConsole` once it exits, so `PtyMaster::read`'s own
+//! documented `Ok(0)`-on-child-exit contract holds on Windows too, not
+//! just Unix. Unlike [`close`], it does *not* drain the output pipe
+//! first — see its own doc comment for why draining there raced (and
+//! lost real output to) a caller's own concurrent reads, and the
+//! shared-close guard against `WindowsPtyMaster::drop` also reaching
+//! `ClosePseudoConsole`.
 
 #![allow(unsafe_code)]
 
@@ -385,42 +387,52 @@ pub fn wait_readable(output: &OwnedWinHandle, budget: std::time::Duration) -> bo
     }
 }
 
-/// Wait for `process` to exit, then run [`close`] — the fix for a real
-/// gap between ConPTY and this crate's own portable contract
-/// (`platform::pty::PtyMaster::read`'s doc: `Ok(0)` once the child has
-/// exited, "Windows's broken-pipe-on-child-exit" collapsing to it just
-/// like Unix's `EIO`-on-slave-close). Unlike a Unix pty slave, which the
-/// kernel closes automatically once its last holder (the child) exits,
-/// ConPTY's output pipe stays open — conhost keeps it alive until
-/// `ClosePseudoConsole` is explicitly called, confirmed live: a child
-/// that has already exited (`WaitForSingleObject` on its process handle
-/// already returned) still leaves reads blocked indefinitely with no
-/// spontaneous EOF. Microsoft's own `EchoCon` sample has the identical
-/// shape for the identical reason: a dedicated thread watches the child
-/// and calls `ClosePseudoConsole` itself once it exits, rather than
-/// relying on the pipe to self-report.
+/// Wait for `process` to exit, then call bare `ClosePseudoConsole` — the
+/// fix for a real gap between ConPTY and this crate's own portable
+/// contract (`platform::pty::PtyMaster::read`'s doc: `Ok(0)` once the
+/// child has exited, "Windows's broken-pipe-on-child-exit" collapsing to
+/// it just like Unix's `EIO`-on-slave-close). Unlike a Unix pty slave,
+/// which the kernel closes automatically once its last holder (the
+/// child) exits, ConPTY's output pipe stays open — conhost keeps it
+/// alive until `ClosePseudoConsole` is explicitly called, confirmed
+/// live: a child that has already exited (`WaitForSingleObject` on its
+/// process handle already returned) still leaves reads blocked
+/// indefinitely with no spontaneous EOF. Microsoft's own `EchoCon`
+/// sample has the identical shape for the identical reason: a dedicated
+/// thread watches the child and calls `ClosePseudoConsole` itself once
+/// it exits, rather than relying on the pipe to self-report.
+///
+/// **Deliberately does not drain `output` first**, unlike [`close`] —
+/// an earlier version of this function called [`close`] (drain, then
+/// `ClosePseudoConsole`) here, and live CI showed exactly the failure
+/// mode that invites: this thread's own drain competing with the
+/// caller's concurrent `PtyMaster::read` for the *same* bytes on the
+/// *same* handle, non-deterministically stealing real output out from
+/// under tests that were reading it themselves (three previously-passing
+/// live tests started seeing only conhost's VT-negotiation bytes,
+/// exactly the "eaten by the wrong reader" shape, not a timing fluke).
+/// Calling bare `ClosePseudoConsole` here instead has no such race
+/// because this thread never touches `output` at all: a `ReadFile` the
+/// caller has in flight (or issues next) unblocks naturally once
+/// `ClosePseudoConsole` finishes closing conhost's own write-side
+/// duplicate — the same broken-pipe signal `output`'s reader always
+/// relies on, just triggered here instead of by `Drop`. The trade-off
+/// moves, it doesn't vanish: `ClosePseudoConsole` can itself block
+/// (documented — [`close`]'s own doc comment) if conhost's writer is
+/// stuck behind a full, unread pipe, so this thread can stall in that
+/// case until the caller's own reads relieve the backpressure. That's
+/// an acceptable place for a stall: this is a detached, never-joined
+/// background thread — Rust doesn't wait for it before the process
+/// exits, and it isn't on any path a test or a caller's own `read`
+/// blocks behind.
 ///
 /// `closed` is a shared "the real close already ran" guard — this
 /// function and [`WindowsPtyMaster::drop`](crate::pty::WindowsPtyMaster)
-/// both may reach [`close`] (whichever of "the child exits" or "the
-/// caller drops the master first" happens first), and it must run
-/// exactly once: a second `ClosePseudoConsole` on an already-closed
-/// `HPCON` is not something to risk. Whichever side loses the
-/// compare-exchange does nothing further — no double-close, and (since
-/// `output` is an `Arc`) no use-after-free either: if this thread wins,
-/// `Drop`'s own `output` clone may already be gone, but this thread's
-/// clone keeps the handle alive for exactly as long as it needs it.
-///
-/// This *is* a real, accepted trade-off, not a free lunch: once the
-/// child has exited, this function's own drain (inside [`close`]) races
-/// any concurrent `PtyMaster::read` call on the same handle for
-/// whatever output is still buffered-but-unread. A caller that trusts
-/// this crate's own EOF-on-exit contract is already reading in a loop
-/// right up to that point (exactly how every live test in
-/// `platform-windows/tests/pty.rs` is written) — for that realistic
-/// usage shape the race is close to academic, and the alternative
-/// (skip it, contract is silently unmet on Windows) is strictly worse:
-/// a caller that follows the documented contract hangs forever instead.
+/// both may reach `ClosePseudoConsole` (whichever of "the child exits"
+/// or "the caller drops the master first" happens first), and it must
+/// run exactly once: a second call on an already-closed `HPCON` is not
+/// something to risk. Whichever side loses the compare-exchange does
+/// nothing further.
 ///
 /// `process` is duplicated internally (`sys::handle::duplicate`) rather
 /// than requiring the caller to hand over a handle this thread would
@@ -431,12 +443,7 @@ pub fn wait_readable(output: &OwnedWinHandle, budget: std::time::Duration) -> bo
 /// then only surfaces once the caller drops the master, the pre-fix
 /// behavior), rather than failing the whole spawn over a best-effort
 /// convenience.
-pub fn spawn_exit_watcher(
-    process: &OwnedWinHandle,
-    hpc: w::HPCON,
-    output: Arc<OwnedWinHandle>,
-    closed: Arc<AtomicBool>,
-) {
+pub fn spawn_exit_watcher(process: &OwnedWinHandle, hpc: w::HPCON, closed: Arc<AtomicBool>) {
     let Ok(dup) = handle::duplicate(process, false) else {
         return;
     };
@@ -450,7 +457,13 @@ pub fn spawn_exit_watcher(
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            close(hpc, &output);
+            // SAFETY: `hpc` is a valid, live pseudo console handle;
+            // `closed`'s compare-exchange above guarantees this runs at
+            // most once across both this thread and `WindowsPtyMaster`'s
+            // own `Drop`.
+            unsafe {
+                w::ClosePseudoConsole(hpc);
+            }
         }
     });
 }
@@ -461,10 +474,17 @@ pub fn spawn_exit_watcher(
 /// *every* iteration, not only when the pipe is momentarily empty — a
 /// child that keeps producing output fast enough to always have
 /// something available must not be able to make this loop (and
-/// therefore `Drop`) run unbounded. Called at most once per pseudo
-/// console — by whichever of [`spawn_exit_watcher`] or
-/// `WindowsPtyMaster::drop` wins their shared `closed` compare-exchange
-/// — never directly.
+/// therefore `Drop`) run unbounded.
+///
+/// This is `WindowsPtyMaster::drop`'s own close path, not
+/// [`spawn_exit_watcher`]'s — the watcher deliberately calls bare
+/// `ClosePseudoConsole` instead (see its own doc comment for why
+/// draining there raced a caller's own concurrent reads). `Drop`'s case
+/// is different: the caller has already decided to stop reading
+/// (dropping the master), so there's no concurrent reader left to race,
+/// and draining first is what keeps this `ClosePseudoConsole` call from
+/// deadlocking against conhost's writer if the caller never emptied the
+/// pipe (`dropping_an_undrained_master_does_not_deadlock`).
 pub fn close(hpc: w::HPCON, output: &OwnedWinHandle) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let mut buf = [0u8; 4096];

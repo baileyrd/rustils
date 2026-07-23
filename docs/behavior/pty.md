@@ -134,19 +134,25 @@ just by inspection.
   genuinely already exited. `WindowsPty::spawn` installs
   `sys::pty::spawn_exit_watcher`, which waits on a *duplicated* process
   handle (independent of `WindowsChild`'s own, so the two owners don't
-  fight over one handle's lifecycle) and forces the same bounded-drain-
-  then-`ClosePseudoConsole` teardown once the child exits. A shared
+  fight over one handle's lifecycle) and calls bare `ClosePseudoConsole`
+  once the child exits — deliberately *not* the draining close `Drop`
+  itself uses (below): an earlier version had the watcher drain first
+  too, and live CI caught the real cost of that — the watcher's own
+  drain raced a caller's concurrent `read()` on the same handle for the
+  same bytes, and *won* often enough to break three previously-passing
+  tests down to only conhost's VT-negotiation bytes. Calling bare
+  `ClosePseudoConsole` has no such race (the watcher never touches the
+  output pipe at all — a pending or future `ReadFile` unblocks
+  naturally once conhost's own write-side duplicate closes). A shared
   `closed` flag (compare-exchange) guards against a double-close race
   with `WindowsPtyMaster::drop` — whichever of "the child exits" or
   "the caller drops the master" happens first performs the real close;
-  the loser is a no-op. Accepted trade-off, not a free lunch: that
-  forced close's own drain can race a caller's own concurrent `read()`
-  for the same trailing bytes on the same handle — a caller that reads
-  in a loop up to `Ok(0)` (exactly the shape the contract itself
-  invites, and how every live test in `platform-windows/tests/pty.rs`
-  is written) is effectively unaffected; the alternative (skip the
-  watcher) is strictly worse, since it leaves the documented contract
-  silently unmet on Windows (reads hang forever instead).
+  the loser is a no-op. The trade-off moves rather than disappears:
+  `ClosePseudoConsole` can itself block if conhost's writer is stuck
+  behind a full, unread pipe, so the watcher thread can stall in that
+  case until the caller's own reads relieve the backpressure —
+  acceptable since it's a detached, never-joined thread nothing else
+  waits on.
 
   Dropping a `WindowsPtyMaster` drains its output pipe (a bounded,
   non-blocking `PeekNamedPipe` loop) before calling
