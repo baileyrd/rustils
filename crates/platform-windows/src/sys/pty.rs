@@ -103,17 +103,20 @@ pub fn create_pty(size: WinSize) -> Result<(w::HPCON, OwnedWinHandle, OwnedWinHa
 
 /// Spawn `command_line` (winargv-built, not yet NUL-terminated) attached
 /// to `hpc` as its console, with working directory `cwd`. Always grouped
-/// (a fresh kill-on-close Job Object, suspended → assign → resume, the
-/// same race-free sequence `sys::proc::spawn`'s `new_group` path uses) —
-/// a pty-hosted child is unconditionally its own session on Linux (#82),
-/// and giving it `kill_tree` semantics unconditionally here mirrors that.
-/// Returns `(process, job, pid)`.
+/// **No Job Object grouping here for now** — see the long comment
+/// inside this function's body for why: it's under active investigation
+/// as the suspected cause of a real, still-open bug (child console I/O
+/// not reaching the pseudo console's pipes) rather than a settled design
+/// choice. `kill_tree` on a pty-hosted `Child` is `Unsupported` on
+/// Windows until this is resolved one way or the other — a real,
+/// temporary scope reduction from `platform::pty::Pty::spawn`'s stated
+/// contract, not silently missing. Returns `(process, pid)`.
 pub fn spawn_attached(
     hpc: w::HPCON,
     command_line: &[u16],
     cwd: &OsStr,
     env: &EnvSpec,
-) -> Result<(OwnedWinHandle, OwnedWinHandle, u32)> {
+) -> Result<(OwnedWinHandle, u32)> {
     let mut line: Vec<u16> = command_line.to_vec();
     line.push(0);
     let cwd_w = to_wide_nul(cwd);
@@ -151,7 +154,7 @@ pub fn spawn_attached(
     // `DeleteProcThreadAttributeList` must run on every exit path from
     // here on — computed as a value first, cleaned up once after,
     // rather than duplicating the call at every early return.
-    let result = (|| -> Result<(OwnedWinHandle, OwnedWinHandle, u32)> {
+    let result = (|| -> Result<(OwnedWinHandle, u32)> {
         // `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`'s `lpValue` is the raw
         // `HPCON` value itself, reinterpreted as the pointer-sized
         // argument — not a pointer *to* a variable holding it. This
@@ -197,31 +200,25 @@ pub fn spawn_attached(
         siex.StartupInfo.cb = std::mem::size_of::<w::STARTUPINFOEXW>() as u32;
         siex.lpAttributeList = attr_list;
 
-        // Deliberately **not** `CREATE_SUSPENDED` — unlike
-        // `sys::proc::spawn`'s `NewGroup` path, which suspends
-        // specifically to make Job Object membership race-free before
-        // the child's first instruction. Microsoft's own ConPTY sample
-        // creates the process running, with no suspend step at all, and
-        // this issue's own history is exactly why that's not a detail
-        // to improvise past: the first attempt at this function passed
-        // `&hpc` instead of `hpc` to `UpdateProcThreadAttribute` (fixed
-        // above) and *separately*, an earlier version of this function
-        // added `CREATE_SUSPENDED` to get the same race-free job
-        // sequencing `sys::proc::spawn` uses — with that flag set, the
-        // spawned child's console output never reached the pseudo
-        // console's pipes at all (it leaked to the *calling* process's
-        // own ambient console instead), even with the
-        // `UpdateProcThreadAttribute` fix already in place. Live CI
-        // testing is the only reason either bug surfaced; matching the
-        // proven sample's creation flags exactly, rather than layering
-        // this crate's own `NewGroup` convention on top, is the safer
-        // call for an API this easy to get subtly wrong. The narrower
-        // consequence: `AssignProcessToJobObject` below runs
-        // immediately after `CreateProcessW` rather than before the
-        // child's first instruction, so a child that spawns its own
-        // children in that brief window could have a grandchild escape
-        // the job — an accepted, narrower guarantee than
-        // `Spawner::spawn`'s `NewGroup` path gives, for this one path.
+        // Deliberately **not** `CREATE_SUSPENDED`, matching Microsoft's
+        // own ConPTY sample (which creates the process running, no
+        // suspend step). This crate's own `sys::proc::spawn` suspends
+        // specifically to make `NewGroup`'s Job Object membership
+        // race-free before the child's first instruction — an earlier
+        // version of this function layered that same convention on top
+        // here too, hypothesizing it as the cause of a real, still-open
+        // bug (child console I/O not reaching the pseudo console's
+        // pipes, timing out with only conhost's own initial VT-mode
+        // negotiation ever received). Removing `CREATE_SUSPENDED` alone
+        // turned out **not** to fix it — live CI re-verified this,
+        // byte-for-byte the same failure with or without the flag — so
+        // that specific hypothesis is now considered disproven, not
+        // confirmed; the flag stays removed only because it still
+        // matches the reference sample more closely, not because it was
+        // shown to matter. See the removed Job Object step below (this
+        // function no longer creates or assigns one, for the same
+        // still-open-investigation reason) for where this trail picks
+        // back up.
         let mut flags = w::EXTENDED_STARTUPINFO_PRESENT;
         if block.is_some() {
             flags |= w::CREATE_UNICODE_ENVIRONMENT;
@@ -272,27 +269,17 @@ pub fn spawn_attached(
         // non-grouped path.
         drop(OwnedWinHandle::from_raw(pi.hThread));
 
-        match proc::create_kill_on_close_job().and_then(|job| {
-            // SAFETY: both handles are valid and open.
-            let ok = unsafe { w::AssignProcessToJobObject(job.as_raw(), process.as_raw()) };
-            if ok == 0 {
-                return Err(errmap::last_win32_err(
-                    "AssignProcessToJobObject",
-                    OsStr::new(""),
-                ));
-            }
-            Ok(job)
-        }) {
-            Ok(job) => Ok((process, job, pi.dwProcessId)),
-            Err(e) => {
-                // SAFETY: `process` is the valid handle of the child
-                // this call just created; terminated exactly once here.
-                unsafe {
-                    w::TerminateProcess(process.as_raw(), 1);
-                }
-                Err(e)
-            }
-        }
+        // No Job Object creation/assignment here — see this function's
+        // own doc comment and the `CREATE_SUSPENDED` comment above: this
+        // step is the last structural difference between this spawn and
+        // Microsoft's own ConPTY sample, and is under direct test as the
+        // suspected cause of the still-open console-I/O-doesn't-reach-
+        // the-pipes bug (two other hypotheses were tested and disproven
+        // first). If removing it fixes the bug, `kill_tree` on a
+        // pty-hosted child stays `Unsupported` on Windows as a real,
+        // documented scope reduction; if not, this comes back and the
+        // investigation continues elsewhere.
+        Ok((process, pi.dwProcessId))
     })();
 
     // SAFETY: `attr_list` was successfully initialized above and is

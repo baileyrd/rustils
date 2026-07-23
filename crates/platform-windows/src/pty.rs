@@ -51,8 +51,11 @@ impl Pty for WindowsPty {
 
         let (hpc, input, output) = syspty::create_pty(size)?;
         match syspty::spawn_attached(hpc, &line, &cmd.cwd, &cmd.env) {
-            Ok((process, job, pid)) => {
-                let child = WindowsChild::from_parts(process, job, pid);
+            Ok((process, pid)) => {
+                // No Job Object yet — see `sys::pty::spawn_attached`'s
+                // own doc comment for why (a real, temporary scope
+                // reduction under active investigation, not settled).
+                let child = WindowsChild::from_parts(process, None, pid);
                 Ok((
                     Box::new(WindowsPtyMaster { hpc, input, output }),
                     Box::new(child),

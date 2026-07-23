@@ -32,16 +32,25 @@ pub struct WindowsChild {
 }
 
 impl WindowsChild {
-    /// Construct directly from a process/job pair and pid — `pub(crate)`
-    /// for `crate::pty`'s `Pty::spawn` (rustils#83), which spawns
-    /// through `sys::pty::spawn_attached` rather than `sys::proc::spawn`,
-    /// so has no [`proc::ParentPipes`] of its own (a pty-hosted child's
-    /// stdio is the pseudo console, never a `Stdio::Pipe`) and no
-    /// [`Spawner::spawn`] call site to construct one from.
-    pub(crate) fn from_parts(process: OwnedWinHandle, job: OwnedWinHandle, pid: u32) -> Self {
+    /// Construct directly from a process handle, optional job, and pid —
+    /// `pub(crate)` for `crate::pty`'s `Pty::spawn` (rustils#83), which
+    /// spawns through `sys::pty::spawn_attached` rather than
+    /// `sys::proc::spawn`, so has no [`proc::ParentPipes`] of its own (a
+    /// pty-hosted child's stdio is the pseudo console, never a
+    /// `Stdio::Pipe`) and no [`Spawner::spawn`] call site to construct
+    /// one from. `job` is currently always `None` — `sys::pty` doesn't
+    /// create one yet (see that module's own doc comment) — but the
+    /// parameter stays `Option` rather than being dropped entirely so
+    /// restoring job-based grouping later doesn't need this constructor
+    /// touched again.
+    pub(crate) fn from_parts(
+        process: OwnedWinHandle,
+        job: Option<OwnedWinHandle>,
+        pid: u32,
+    ) -> Self {
         Self {
             process,
-            job: Some(job),
+            job,
             pid,
             reaped: None,
             pipes: [None, None, None],

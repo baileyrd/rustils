@@ -138,7 +138,7 @@ fn spawn_attaches_a_real_child_to_the_pseudo_console() {
     let _guard = lock_pty_tests();
     let pty = TestPty::create();
     let line = command_line("cmd", &["/c", "echo hello-from-conpty"]);
-    let (process, _job, _pid) =
+    let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
 
@@ -157,7 +157,7 @@ fn master_io_round_trips_with_the_spawned_child() {
     let _guard = lock_pty_tests();
     let pty = TestPty::create();
     let line = command_line("cmd", &["/c", "set /p REPLY= & echo got:%REPLY%"]);
-    let (process, _job, _pid) =
+    let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
 
@@ -177,7 +177,7 @@ fn eof_is_reported_as_ok_zero_after_the_child_exits() {
     let _guard = lock_pty_tests();
     let pty = TestPty::create();
     let line = command_line("cmd", &["/c", "exit 0"]);
-    let (process, _job, _pid) =
+    let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
     wait_bounded(&process);
@@ -221,7 +221,7 @@ fn resize_succeeds_against_a_real_pseudo_console() {
     let _guard = lock_pty_tests();
     let pty = TestPty::create();
     let line = command_line("cmd", &["/c", "exit 0"]);
-    let (process, _job, _pid) =
+    let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
 
@@ -252,7 +252,7 @@ fn dropping_an_undrained_master_does_not_deadlock() {
     let _guard = lock_pty_tests();
     let pty = TestPty::create();
     let line = command_line("cmd", &["/c", "for /L %i in (1,1,20000) do @echo line %i"]);
-    let (process, _job, _pid) =
+    let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
 
