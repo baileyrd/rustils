@@ -19,6 +19,28 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.14.0
+
+- Added `Dir::set_unix_mode` and a new `Mode` struct
+  (`setuid`/`setgid`/`sticky`/`permissions`, no `uid`/`gid` — that's
+  `chown`'s job) — coreutils gap backlog #64, `unix_mode`'s write-side
+  companion (`fchmodat`-equivalent). Linux: `fchmodat(dirfd, rel, mode,
+  0)`, following a terminal symlink (the kernel has no symlink-mode
+  concept to target, matching `chmod(1)`'s own behavior). Windows:
+  `Err(Unsupported)` (`docs/divergences.md` #009) — never a silent
+  no-op, since the caller's entire ask was to change permissions.
+  `platform-mock`: accepts the call (`NotFound` still enforced on a
+  missing entry) without persisting anything, matching `unix_mode`'s
+  own fixed-default stance. Track P: also `Unsupported` for now —
+  `rusty_libc` has no `chmod`/`fchmodat` primitive at the pinned rev.
+  Landed ahead of a named `coreutils` consumer (no `rchmod` exists) —
+  see `docs/coreutils-gap-backlog.md`'s Gap 3 resolution note.
+  **Breaking**: new required trait method — breaking for any external
+  `Dir` implementer (none outside this repo's own three backends
+  exist yet). Live-verified on Linux against a raw `libc::stat` call.
+  See `docs/behavior/fs.md` and the convergence roadmap for the full
+  contract.
+
 ### 0.13.0
 
 - Added `Metadata::nlink: u64`/`modified: SystemTime` and
@@ -26,8 +48,8 @@ and **`coreutils`**.
   forced by this repo's own `coreutils::ls -l` reference consumer, the
   `ls -l` donor material. `nlink`/`modified` are portable (both
   backends genuinely have a link count and mtime, no `Option` needed);
-  `permissions` is the standard `rwxrwxrwx` bits, read-only — a
-  `chmod`-equivalent write path remains unbuilt (#64, no consumer).
+  `permissions` is the standard `rwxrwxrwx` bits, read-only at the time
+  — the `chmod`-equivalent write path landed separately in 0.14.0.
   **Breaking**: both are new required fields on existing public
   structs — breaking for any external construction of `Metadata`/
   `UnixMode` (none outside this repo's own three backends and

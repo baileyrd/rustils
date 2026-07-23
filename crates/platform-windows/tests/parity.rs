@@ -16,7 +16,7 @@
 use std::ffi::OsStr;
 
 use platform::error::ErrorKind;
-use platform::fs::{AccessMode, Dir, FileType, OpenOptions};
+use platform::fs::{AccessMode, Dir, FileType, Mode, OpenOptions};
 
 /// The shared assertions. Grows with `docs/behavior/fs.md`.
 fn assert_fs_behavior(root: &dyn Dir) {
@@ -395,6 +395,24 @@ fn windows_unix_mode_is_always_none() {
     root.open(OsStr::new("f"), &OpenOptions::create_truncate())
         .expect("create f");
     assert_eq!(root.unix_mode(OsStr::new("f")).unwrap(), None);
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// `set_unix_mode` (coreutils gap backlog #64) has the same "no analog"
+/// gap as `unix_mode` above, but on the write side (divergence 009): a
+/// silent no-op would misrepresent success, so this is `Unsupported`,
+/// not `Ok(())`.
+#[test]
+fn windows_set_unix_mode_is_unsupported() {
+    let tmp = std::env::temp_dir().join(format!("rustils-setunixmode-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mk tempdir");
+    let root = platform_windows::WindowsDir::open_ambient(&tmp).expect("open ambient");
+    root.open(OsStr::new("f"), &OpenOptions::create_truncate())
+        .expect("create f");
+    let e = root
+        .set_unix_mode(OsStr::new("f"), Mode::default())
+        .expect_err("no POSIX mode-bit concept on Windows");
+    assert_eq!(e.kind, ErrorKind::Unsupported);
     std::fs::remove_dir_all(&tmp).ok();
 }
 

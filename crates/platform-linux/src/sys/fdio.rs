@@ -388,6 +388,45 @@ pub fn unix_mode(dirfd: RawFd, rel: &OsStr) -> Result<UnixMode> {
     })
 }
 
+/// `fchmodat(dirfd, rel, mode, 0)` — `chmod`'s write-side counterpart to
+/// `unix_mode` (coreutils gap backlog #64). No `AT_SYMLINK_NOFOLLOW`:
+/// Linux's kernel does not implement changing a symlink's own
+/// permissions (fails `ENOTSUP` on every real filesystem — symlink mode
+/// bits are unused and ignored), so this follows the terminal symlink
+/// like `chmod(1)` does.
+#[cfg(not(feature = "track-p"))]
+pub fn set_unix_mode(dirfd: RawFd, rel: &OsStr, mode: platform::fs::Mode) -> Result<()> {
+    let c_rel = to_cstring(rel, "fchmodat")?;
+    let raw_mode: u32 = (if mode.setuid { c::S_ISUID } else { 0 }
+        | if mode.setgid { c::S_ISGID } else { 0 }
+        | if mode.sticky { c::S_ISVTX } else { 0 })
+        | (u32::from(mode.permissions) & 0o777);
+    // SAFETY: `c_rel` is a valid NUL-terminated string outliving the
+    // call; valid dirfd; fchmodat has no other pointer parameters.
+    let r = unsafe { c::fchmodat(dirfd, c_rel.as_ptr(), raw_mode, 0) };
+    if r < 0 {
+        return Err(os_err("fchmodat", rel));
+    }
+    Ok(())
+}
+
+/// Track P: `rusty_libc`'s `fs` module has no `chmod`/`fchmodat` binding
+/// yet at the pinned rev (unlike `statx`/`faccessat`/`renameat2`, which
+/// it does have) — rather than silently falling back to libc's own
+/// `fchmodat` (defeating the entire point of `track-p`: zero libc
+/// *function* calls on the hot path), this arm is `Unsupported` until
+/// rusty_libc grows the primitive and this gets its own call-by-call
+/// replacement, per RFC v2 §2's Track P plan.
+#[cfg(feature = "track-p")]
+pub fn set_unix_mode(_dirfd: RawFd, rel: &OsStr, _mode: platform::fs::Mode) -> Result<()> {
+    Err(PlatformError::new(
+        ErrorKind::Unsupported,
+        OsCode::None,
+        "fchmodat (rusty_libc has no chmod primitive yet)",
+    )
+    .with_path(rel))
+}
+
 /// `(dev, ino)` from `fstatat` — `test -ef`'s donor material (D11),
 /// wrapped into the opaque `platform::fs::FileId` by the `Dir` impl.
 /// `AT_SYMLINK_NOFOLLOW`, matching `statat`.

@@ -368,6 +368,93 @@ fn linux_metadata_reports_a_real_nlink_mtime_and_permissions() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
+/// `Dir::set_unix_mode` (coreutils gap backlog #64, `unix_mode`'s
+/// write-side companion), checked against a raw `libc::stat` call issued
+/// directly by the test, same discipline as
+/// `linux_metadata_reports_a_real_nlink_mtime_and_permissions`. Not part
+/// of the shared `assert_fs_behavior`: this is a real backend divergence
+/// (Windows is `Unsupported`; `platform-mock` is a documented no-op), the
+/// same situation `linux_access_denies_execute_on_a_plain_file` /
+/// `windows_access_grants_execute_unconditionally` are in.
+#[cfg(all(target_os = "linux", not(feature = "track-p")))]
+#[test]
+fn linux_chmod_sets_real_permission_and_special_bits() {
+    use platform::fs::Mode;
+    use std::os::unix::ffi::OsStrExt;
+
+    let tmp = std::env::temp_dir().join(format!("rustils-chmod-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mk tempdir");
+    let root = platform_linux::LinuxDir::open_ambient(&tmp).expect("open ambient");
+    root.open(OsStr::new("f"), &OpenOptions::create_truncate())
+        .expect("create f");
+
+    root.set_unix_mode(
+        OsStr::new("f"),
+        Mode {
+            setuid: true,
+            setgid: false,
+            sticky: true,
+            permissions: 0o640,
+        },
+    )
+    .expect("chmod must succeed");
+
+    let path = tmp.join("f");
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("no interior NUL");
+    // SAFETY: see `linux_metadata_reports_a_real_nlink_mtime_and_permissions`.
+    #[allow(unsafe_code)]
+    let st: libc::stat = unsafe {
+        let mut st = std::mem::zeroed();
+        let rc = libc::stat(c_path.as_ptr(), &mut st);
+        assert_eq!(rc, 0, "raw stat must succeed");
+        st
+    };
+    assert_ne!(st.st_mode & libc::S_ISUID, 0, "setuid must be set");
+    assert_eq!(st.st_mode & libc::S_ISGID, 0, "setgid must be clear");
+    assert_ne!(st.st_mode & libc::S_ISVTX, 0, "sticky must be set");
+    assert_eq!(
+        (st.st_mode & 0o777) as u16,
+        0o640,
+        "permission bits must match a raw stat"
+    );
+
+    // Confirmed via `Dir::unix_mode` too, not just the raw stat above.
+    let unix_mode = root
+        .unix_mode(OsStr::new("f"))
+        .expect("unix_mode")
+        .expect("Linux always answers Some");
+    assert!(unix_mode.setuid);
+    assert!(!unix_mode.setgid);
+    assert!(unix_mode.sticky);
+    assert_eq!(unix_mode.permissions, 0o640);
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+/// Track P (RFC v2 §2): `rusty_libc` has no `chmod`/`fchmodat` binding
+/// yet at the pinned rev — `Dir::set_unix_mode` is `Unsupported` under
+/// this feature rather than silently falling back to libc, pinned here
+/// so the track-p CI leg has real coverage of this arm instead of
+/// silently skipping it (`sys/fdio.rs::set_unix_mode`'s track-p arm).
+#[cfg(all(target_os = "linux", feature = "track-p"))]
+#[test]
+fn linux_chmod_is_unsupported_under_track_p() {
+    use platform::fs::Mode;
+
+    let tmp = std::env::temp_dir().join(format!("rustils-chmod-trackp-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("mk tempdir");
+    let root = platform_linux::LinuxDir::open_ambient(&tmp).expect("open ambient");
+    root.open(OsStr::new("f"), &OpenOptions::create_truncate())
+        .expect("create f");
+
+    let e = root
+        .set_unix_mode(OsStr::new("f"), Mode::default())
+        .expect_err("rusty_libc has no chmod primitive yet");
+    assert_eq!(e.kind, ErrorKind::Unsupported);
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
 /// Process behavior (docs/behavior/process.md) against the native
 /// backend. Fixtures are OS-specific (`sh`); the assertions mirror the
 /// Windows leg's.

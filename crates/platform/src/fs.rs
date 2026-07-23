@@ -118,6 +118,21 @@ pub struct UnixMode {
     pub permissions: u16,
 }
 
+/// The `chmod`-settable subset of [`UnixMode`]: the standard `rwx`
+/// permission bits and the `setuid`/`setgid`/`sticky` special bits
+/// (coreutils gap backlog #64 — [`Dir::unix_mode`]'s write-side
+/// companion). Deliberately excludes `uid`/`gid`: those are `chown`'s
+/// job, a distinct syscall class this method does not touch, and
+/// reusing [`UnixMode`] itself here would let a caller populate
+/// `uid`/`gid` and have them silently ignored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Mode {
+    pub setuid: bool,
+    pub setgid: bool,
+    pub sticky: bool,
+    pub permissions: u16,
+}
+
 /// An opaque per-OS file identity, equality-comparable only (`test -ef`'s
 /// donor material, D11) — POSIX's `(dev, ino)` pair on Linux, `(volume
 /// serial, file index)` on Windows via `GetFileInformationByHandle`. Two
@@ -232,6 +247,27 @@ pub trait Dir {
     /// [`Dir::metadata`]'s lstat-style contract — the same object, not
     /// its target.
     fn unix_mode(&self, rel: &OsStr) -> Result<Option<UnixMode>>;
+
+    /// Set the `setuid`/`setgid`/`sticky` special bits and the standard
+    /// `rwx` permission bits at `rel` (POSIX `fchmodat(2)` — `chmod`'s
+    /// write-side counterpart to [`Dir::unix_mode`]'s read side;
+    /// coreutils gap backlog #64). Owning `uid`/`gid` is `chown`'s job,
+    /// a distinct syscall class not covered here.
+    ///
+    /// Follows a terminal symlink — unlike [`Dir::unix_mode`]/
+    /// [`Dir::metadata`]: Linux's kernel does not implement changing a
+    /// symlink's own permissions at all (`fchmodat(...,
+    /// AT_SYMLINK_NOFOLLOW)` fails `ENOTSUP` on every real filesystem,
+    /// since symlink permission bits are unused and ignored) — this
+    /// method changes the **target**'s mode, matching `chmod(1)`'s own
+    /// behavior when pointed at a symlink.
+    ///
+    /// `Err` with `ErrorKind::Unsupported` on a backend with no POSIX
+    /// mode-bit concept (Windows — `docs/divergences.md` #009) — never
+    /// a silent no-op: unlike a best-effort hardening step, a caller
+    /// here explicitly asked to change permissions, so pretending
+    /// success would misrepresent what happened.
+    fn set_unix_mode(&self, rel: &OsStr, mode: Mode) -> Result<()>;
 
     /// [`FileId`] for `rel` — same-file identity, `test -ef`'s donor
     /// material. Does not follow a terminal symlink, matching

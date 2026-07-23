@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 use platform::fs::{
-    AccessMode, Dir, DirEntry, File, FileId, FileType, Metadata, OpenOptions, UnixMode,
+    AccessMode, Dir, DirEntry, File, FileId, FileType, Metadata, Mode, OpenOptions, UnixMode,
 };
 
 #[derive(Debug, Default)]
@@ -272,6 +272,17 @@ impl Dir for MockDir {
         // answer, not `None`: `None` means "this OS has no such
         // concept" (Windows's contract), not "not modeled here."
         Ok(Some(UnixMode::default()))
+    }
+
+    fn set_unix_mode(&self, rel: &OsStr, _mode: Mode) -> Result<()> {
+        // Same "no real permission model" stance as `unix_mode` above:
+        // existence is checked and enforced (matching both real
+        // backends' `NotFound` contract), but the requested bits are
+        // not stored anywhere — `unix_mode` already answers a fixed
+        // default regardless of any prior `set_unix_mode` call, so
+        // persisting state here would create a round-trip this mock
+        // can't actually honor on the read side.
+        self.child(rel, "set_unix_mode").map(drop)
     }
 
     fn file_id(&self, rel: &OsStr) -> Result<FileId> {
@@ -591,6 +602,31 @@ mod tests {
         );
         assert_eq!(
             root.unix_mode(OsStr::new("missing")).unwrap_err().kind,
+            ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn set_unix_mode_succeeds_but_does_not_change_the_deterministic_default() {
+        let root = MockDir::root().with_file("f.txt", "hi");
+        let requested = Mode {
+            setuid: true,
+            permissions: 0o700,
+            ..Mode::default()
+        };
+        root.set_unix_mode(OsStr::new("f.txt"), requested)
+            .expect("no real permission model to reject this on");
+        // `unix_mode` still answers its fixed default — `set_unix_mode`
+        // has nothing to persist into, same as `unix_mode`'s own
+        // doc comment already states.
+        assert_eq!(
+            root.unix_mode(OsStr::new("f.txt")).unwrap(),
+            Some(UnixMode::default())
+        );
+        assert_eq!(
+            root.set_unix_mode(OsStr::new("missing"), Mode::default())
+                .unwrap_err()
+                .kind,
             ErrorKind::NotFound
         );
     }

@@ -8,7 +8,7 @@ use std::path::Path;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
 use platform::fs::{
-    AccessMode, Dir, DirEntry, File, FileId, FileType, Metadata, OpenOptions, UnixMode,
+    AccessMode, Dir, DirEntry, File, FileId, FileType, Metadata, Mode, OpenOptions, UnixMode,
 };
 
 use crate::ffi::nt_surface as nt;
@@ -245,6 +245,22 @@ impl Dir for WindowsDir {
         // wholly different model) — `None` is the honest answer, not a
         // zeroed-out fabrication.
         Ok(None)
+    }
+
+    fn set_unix_mode(&self, _rel: &OsStr, _mode: Mode) -> Result<()> {
+        // Same gap as `unix_mode` (divergence 006), on the write side
+        // (divergence 009): no POSIX mode-bit model to set at all. A
+        // silent `Ok(())` would misrepresent success — the caller asked
+        // to change permissions and nothing changed — so this is a real
+        // `Err`, matching the `Signal`/`GroupSpec::JoinGroup` precedent
+        // in `process.rs` (divergence 008) rather than `unix_mode`'s own
+        // `Ok(None)` shape, which is right only for a *query* with no
+        // concept to answer.
+        Err(PlatformError::new(
+            ErrorKind::Unsupported,
+            OsCode::None,
+            "set_unix_mode",
+        ))
     }
 
     fn file_id(&self, rel: &OsStr) -> Result<FileId> {

@@ -202,3 +202,46 @@ implementation convenience.
 - **Accepted**: 2026-07-21, with the `kill_cmd`/`fg_cmd`/`bg_cmd`
   forcing-consumer slice (rustils#44/#46 — `nexus-rush/src/job.rs` via
   `baileyrd/nexus#454`).
+
+## 009 — no `chmod`-equivalent write path on Windows
+
+- **Linux**: `Dir::set_unix_mode` sets the `setuid`/`setgid`/`sticky`
+  special bits and the standard `rwx` permission bits at `rel` via
+  `fchmodat(dirfd, rel, mode, 0)` — the write-side counterpart to
+  `unix_mode` (#006). Follows a terminal symlink (no
+  `AT_SYMLINK_NOFOLLOW`): the kernel does not implement changing a
+  symlink's own permissions at all, so this changes the target's mode,
+  matching `chmod(1)`.
+- **Windows**: `Dir::set_unix_mode` is `Err(ErrorKind::Unsupported)`,
+  unconditionally — never a silent `Ok(())`. Unlike #007's
+  best-effort `unix_listen` mode-narrowing step (where the overall
+  operation still succeeds without it), a `set_unix_mode` call is the
+  caller's entire, explicit ask; silently doing nothing would
+  misrepresent success — the same reasoning behind #008's
+  `Signal`/`GroupSpec::JoinGroup` refusals.
+- **OS limitation**: identical to #006's — no POSIX mode-bit model in
+  an NTFS ACL, and no lossless mapping for `setuid`/`setgid`/sticky
+  either direction. Same underlying gap as #006, applied to the write
+  side instead of the read side.
+- **Pinning tests**: `windows_set_unix_mode_is_unsupported` in
+  `platform-windows/tests/parity.rs`; the Linux-side positive behavior
+  is pinned by `linux_chmod_sets_real_permission_and_special_bits` in
+  `platform-linux/tests/parity.rs`, checked against a raw `libc::stat`
+  call issued directly by the test (same discipline as #006's sibling
+  `Metadata`/`UnixMode` pinning test). `platform-mock`'s own
+  `set_unix_mode_succeeds_but_does_not_change_the_deterministic_default`
+  (`platform-mock/src/fs.rs`) pins the mock's own no-op-success choice,
+  which is *not* this divergence (mock still has no permission model at
+  all, per #006 — it isn't claiming "no OS concept" the way Windows is).
+- **Not a divergence, but a related gap**: under the `track-p` feature,
+  `Dir::set_unix_mode` is also `Unsupported` on Linux — `rusty_libc` has
+  no `chmod`/`fchmodat` binding yet at the pinned rev. This is a
+  temporary Track-P completeness gap, not an OS limitation (`chmod(2)`
+  exists and works fine on Linux under Track P's own target kernel), so
+  per this document's own rule ("cites only an OS limitation, never
+  implementation convenience") it does not get a numbered entry here —
+  see `docs/behavior/fs.md` and `sys/fdio.rs::set_unix_mode`'s track-p
+  comment instead. Pinned by
+  `linux_chmod_is_unsupported_under_track_p`.
+- **Accepted**: 2026-07-23, with coreutils gap backlog #64's write-side
+  half (`unix_mode`'s read side landed 2026-07-21 as part of #63/#65).

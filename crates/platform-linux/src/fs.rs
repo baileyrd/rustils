@@ -5,7 +5,9 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::fs::{AccessMode, Dir, DirEntry, File, FileId, Metadata, OpenOptions, UnixMode};
+use platform::fs::{
+    AccessMode, Dir, DirEntry, File, FileId, Metadata, Mode, OpenOptions, UnixMode,
+};
 
 use crate::ffi::libc_surface as c;
 use crate::sys::fdio;
@@ -196,6 +198,10 @@ impl Dir for LinuxDir {
 
     fn unix_mode(&self, rel: &OsStr) -> Result<Option<UnixMode>> {
         fdio::unix_mode(self.fd.as_raw_fd(), rel).map(Some)
+    }
+
+    fn set_unix_mode(&self, rel: &OsStr, mode: Mode) -> Result<()> {
+        fdio::set_unix_mode(self.fd.as_raw_fd(), rel, mode)
     }
 
     fn file_id(&self, rel: &OsStr) -> Result<FileId> {
