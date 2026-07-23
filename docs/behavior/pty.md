@@ -97,10 +97,20 @@ just by inspection.
   `CreateProcessW` via `STARTUPINFOEXW`/`EXTENDED_STARTUPINFO_PRESENT`
   — the only way to wire a pseudo console to a child at all, since there
   is no Win32 call to attach one after the fact. Always grouped (a
-  fresh kill-on-close Job Object, suspended → assign → resume, the same
-  race-free sequence `Spawner::spawn`'s `GroupSpec::NewGroup` path
-  uses) — a pty-hosted child is unconditionally its own session on
-  Linux, and this mirrors that with `kill_tree` semantics. `resize`
+  fresh kill-on-close Job Object, assigned immediately after
+  `CreateProcessW`) — a pty-hosted child is unconditionally its own
+  session on Linux, and this mirrors that with `kill_tree` semantics.
+  Deliberately **not** the suspended → assign → resume sequence
+  `Spawner::spawn`'s `GroupSpec::NewGroup` path uses for race-free job
+  membership: live CI testing found that adding `CREATE_SUSPENDED` to
+  this specific spawn caused the child's console output to never reach
+  the pseudo console's pipes at all (it leaked to the calling process's
+  own ambient console instead) — matching Microsoft's own ConPTY sample,
+  which creates the process running with no suspend step, took priority
+  over this crate's own convention. Narrower consequence: a child that
+  spawns its own children in the brief window before
+  `AssignProcessToJobObject` runs could have a grandchild escape the
+  job — accepted, not closed. `resize`
   calls `ResizePseudoConsole`. `WindowsPtyMaster::read`/`write` are
   ordinary blocking `ReadFile`/`WriteFile` on the two pipe handles
   ConPTY's master side actually is (see divergence 011) — no background

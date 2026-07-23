@@ -26,9 +26,14 @@ and **`coreutils`**.
   backend for `platform::pty` (part 1/2, `0.19.0`). `CreatePseudoConsole`
   wired to the child at `CreateProcessW` time via
   `STARTUPINFOEXW`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` — the only way
-  to attach a pseudo console at all. Always grouped via the same
-  suspended → assign → resume Job Object sequence `Spawner::spawn`'s
-  `NewGroup` path already uses. `read`/`write` are ordinary blocking
+  to attach a pseudo console at all. Always grouped (a fresh
+  kill-on-close Job Object, assigned immediately after `CreateProcessW`
+  — deliberately *not* the suspended → assign → resume sequence
+  `Spawner::spawn`'s `NewGroup` path uses: live CI testing found
+  `CREATE_SUSPENDED` on this specific spawn kept the child's console
+  output from ever reaching the pseudo console's pipes, so matching
+  Microsoft's own sample, which doesn't suspend, took priority over a
+  narrower job-membership guarantee). `read`/`write` are ordinary blocking
   `ReadFile`/`WriteFile` on ConPTY's two pipe handles — no background
   thread for I/O; only `Drop` does a bounded `PeekNamedPipe` drain
   before `ClosePseudoConsole`, avoiding a real deadlock

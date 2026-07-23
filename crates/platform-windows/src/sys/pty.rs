@@ -197,7 +197,32 @@ pub fn spawn_attached(
         siex.StartupInfo.cb = std::mem::size_of::<w::STARTUPINFOEXW>() as u32;
         siex.lpAttributeList = attr_list;
 
-        let mut flags = w::EXTENDED_STARTUPINFO_PRESENT | w::CREATE_SUSPENDED;
+        // Deliberately **not** `CREATE_SUSPENDED` — unlike
+        // `sys::proc::spawn`'s `NewGroup` path, which suspends
+        // specifically to make Job Object membership race-free before
+        // the child's first instruction. Microsoft's own ConPTY sample
+        // creates the process running, with no suspend step at all, and
+        // this issue's own history is exactly why that's not a detail
+        // to improvise past: the first attempt at this function passed
+        // `&hpc` instead of `hpc` to `UpdateProcThreadAttribute` (fixed
+        // above) and *separately*, an earlier version of this function
+        // added `CREATE_SUSPENDED` to get the same race-free job
+        // sequencing `sys::proc::spawn` uses — with that flag set, the
+        // spawned child's console output never reached the pseudo
+        // console's pipes at all (it leaked to the *calling* process's
+        // own ambient console instead), even with the
+        // `UpdateProcThreadAttribute` fix already in place. Live CI
+        // testing is the only reason either bug surfaced; matching the
+        // proven sample's creation flags exactly, rather than layering
+        // this crate's own `NewGroup` convention on top, is the safer
+        // call for an API this easy to get subtly wrong. The narrower
+        // consequence: `AssignProcessToJobObject` below runs
+        // immediately after `CreateProcessW` rather than before the
+        // child's first instruction, so a child that spawns its own
+        // children in that brief window could have a grandchild escape
+        // the job — an accepted, narrower guarantee than
+        // `Spawner::spawn`'s `NewGroup` path gives, for this one path.
+        let mut flags = w::EXTENDED_STARTUPINFO_PRESENT;
         if block.is_some() {
             flags |= w::CREATE_UNICODE_ENVIRONMENT;
         }
@@ -242,13 +267,13 @@ pub fn spawn_attached(
 
         let process = OwnedWinHandle::from_raw(pi.hProcess)
             .ok_or_else(|| PlatformError::new(ErrorKind::Other, OsCode::None, "CreateProcessW"))?;
-        let thread = OwnedWinHandle::from_raw(pi.hThread);
+        // The main thread runs immediately (not suspended, see above) —
+        // its handle is not retained, mirroring `sys::proc::spawn`'s own
+        // non-grouped path.
+        drop(OwnedWinHandle::from_raw(pi.hThread));
 
-        let sequence = (|| -> Result<OwnedWinHandle> {
-            let job = proc::create_kill_on_close_job()?;
-            // SAFETY: both handles are valid and open; the process is
-            // suspended, so job membership precedes its first
-            // instruction.
+        match proc::create_kill_on_close_job().and_then(|job| {
+            // SAFETY: both handles are valid and open.
             let ok = unsafe { w::AssignProcessToJobObject(job.as_raw(), process.as_raw()) };
             if ok == 0 {
                 return Err(errmap::last_win32_err(
@@ -256,24 +281,12 @@ pub fn spawn_attached(
                     OsStr::new(""),
                 ));
             }
-            let thread = thread.as_ref().ok_or_else(|| {
-                PlatformError::new(ErrorKind::Other, OsCode::None, "CreateProcessW thread")
-            })?;
-            // SAFETY: `thread` is the valid, suspended main-thread
-            // handle.
-            let prev = unsafe { w::ResumeThread(thread.as_raw()) };
-            if prev == u32::MAX {
-                return Err(errmap::last_win32_err("ResumeThread", OsStr::new("")));
-            }
             Ok(job)
-        })();
-
-        match sequence {
+        }) {
             Ok(job) => Ok((process, job, pi.dwProcessId)),
             Err(e) => {
-                // SAFETY: `process` is the valid handle of the
-                // still-suspended (or at worst just-assigned) child this
-                // call created; terminated exactly once here.
+                // SAFETY: `process` is the valid handle of the child
+                // this call just created; terminated exactly once here.
                 unsafe {
                     w::TerminateProcess(process.as_raw(), 1);
                 }
