@@ -370,8 +370,15 @@ owner's explicit call, still no confirmed consumer (rustils#82); see
 `docs/design-discussion-pty.md` and `docs/convergence-roadmap.md`'s
 Phase 7 entry for the full reasoning, including why the Linux backend
 does *not* port shh's `fork`+`TIOCSCTTY` mechanism as-is (raw `fork`
-stays parked behind its own separate roadmap decision). Windows ConPTY
-(rustils#83) not yet landed.
+stays parked behind its own separate roadmap decision).
+
+**Landed (part 2/2: Windows ConPTY backend), 2026-07-23** — rustils#83,
+`platform_windows::{WindowsPty, WindowsPtyMaster}`. Both PTY divergences
+D13 anticipated (ConPTY vs openpty; pollable master fd vs blocking-thread
+bridge) are now registered as `docs/divergences.md` #011, plus the
+`posix_spawn`-vs-`fork` substitution #82 needed. CI-verified only — see
+`docs/behavior/pty.md` and the roadmap's Phase 7 entry for the full
+contract.
 
 ### D14 — Tun/virtual-link surface (rusty_tail)
 

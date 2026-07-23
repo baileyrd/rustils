@@ -286,3 +286,43 @@ implementation convenience.
   limitation to model" stance `MockChild::kill_single` already takes
   for every `Signal`.
 - **Accepted**: 2026-07-23, with rustils#47.
+
+## 011 — pty master handle shape: one pollable fd on Linux, two non-pollable handles on Windows
+
+- **Linux**: `LinuxPtyMaster` wraps a single fd (from `posix_openpt`) that
+  is both read- and write-capable and genuinely pollable — the same
+  fd handles input and output, and it supports the ordinary readiness
+  mechanisms (`poll`/`epoll`) any other fd does. `AsFd`/`AsRawFd` on the
+  concrete type expose it directly (rustils#41/#42's Net/Tun precedent).
+- **Windows**: ConPTY's master side is a *pair* of anonymous pipes — a
+  write-only input pipe and a read-only output pipe, never one
+  descriptor. `WindowsPtyMaster` holds both and exposes them as two
+  named accessors (`input_handle`/`output_handle`) rather than a single
+  `AsHandle`/`AsRawHandle` impl, since there is no single handle to
+  offer honestly. Neither handle is pollable the way a socket handle is
+  — anonymous pipes created by `CreatePipe` don't support
+  `WaitForMultipleObjects`-style readiness signaling or overlapped I/O;
+  a consumer wanting non-blocking behavior would need to bridge onto its
+  own reactor with a dedicated thread, not something this trait attempts
+  on a consumer's behalf.
+- **OS limitation**: Unix's pty abstraction (`/dev/ptmx` + devpts) is
+  built on top of ordinary, pollable fds by construction — a pty master
+  fd is not a special case for readiness purposes. ConPTY, by contrast,
+  is implemented as a pair of anonymous pipes wired to an internal
+  conhost process; anonymous pipes on Windows have never supported
+  asynchronous/overlapped I/O (unlike named pipes), so there is no
+  Windows equivalent of "the master fd is pollable" to offer, regardless
+  of how this crate's own trait is shaped.
+- **Related, not itself a divergence**: `ClosePseudoConsole` blocking
+  until conhost's internal writer thread finishes (which can deadlock
+  against an un-drained output pipe) has no Linux analog to diverge
+  from — closing a Linux pty master fd is an ordinary `close(2)`, no
+  blocking wait involved. `sys::pty::close`'s bounded `PeekNamedPipe`
+  drain before `ClosePseudoConsole` is a Windows-only teardown detail,
+  not a portable-contract difference a consumer needs to know about.
+- **Pinning tests**: `crates/platform-windows/tests/pty.rs`'s
+  `dropping_an_undrained_master_does_not_deadlock` — CI-only (this
+  crate's whole backend is cross-compile-checked from a Linux host, per
+  `platform-windows/src/lib.rs`'s own module doc; nothing here executes
+  outside CI's `windows-latest` leg).
+- **Accepted**: 2026-07-23, with rustils#83.

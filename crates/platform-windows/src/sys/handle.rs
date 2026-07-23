@@ -19,6 +19,26 @@ use crate::sys::errmap;
 #[derive(Debug)]
 pub struct OwnedWinHandle(w::HANDLE);
 
+// SAFETY: a Win32 HANDLE is an opaque, thread-affinity-free value — the
+// underlying OS object doesn't care which thread issues calls against
+// it, and concurrent use of the *same* open handle from multiple
+// threads (e.g. one thread's `ReadFile` racing another's, or a
+// background watcher thread waiting on a handle another thread also
+// holds — `sys::pty::spawn_exit_watcher`'s own reason for needing this)
+// is a documented-safe, common Windows pattern. `w::HANDLE` is a raw
+// pointer type, which is `!Send`/`!Sync` by default only because the
+// compiler can't know that about an arbitrary pointer — this type's own
+// single-owner, close-once-on-drop contract (this module's own doc
+// comment) isn't weakened by letting that owner live on a different
+// thread than the one that created it, or by sharing `&OwnedWinHandle`
+// across threads (no interior mutability here for a second thread to
+// observe torn).
+unsafe impl Send for OwnedWinHandle {}
+// SAFETY: same reasoning as the `Send` impl above — `&OwnedWinHandle`
+// only ever exposes `as_raw()` (a `Copy` read of the handle value), so
+// sharing that immutable view across threads has nothing to race.
+unsafe impl Sync for OwnedWinHandle {}
+
 impl OwnedWinHandle {
     /// Take ownership of `handle`.
     ///

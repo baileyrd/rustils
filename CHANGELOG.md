@@ -19,6 +19,66 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.20.0
+
+- Added `platform_windows::{WindowsPty, WindowsPtyMaster}` (rustils#83),
+  part 2/2 of the PTY surface (Phase 7, D13) — the Windows ConPTY
+  backend for `platform::pty` (part 1/2, `0.19.0`). `CreatePseudoConsole`
+  wired to the child at `CreateProcessW` time via
+  `STARTUPINFOEXW`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` — the only way
+  to attach a pseudo console at all. Not grouped (no Job Object) —
+  `kill_tree` on a pty-hosted `Child` is `Unsupported` on Windows, a
+  deliberate scope reduction rather than a settled design choice.
+  `STARTUPINFOEXW.dwFlags` also sets `STARTF_USESTDHANDLES` (with null
+  std handles): live CI testing found that without it, a *spawning*
+  process whose own stdio is itself redirected — exactly `cargo test`
+  under any CI runner — has the kernel duplicate its redirected handles
+  into the child regardless of `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`,
+  bypassing the pseudo console entirely (a documented Windows
+  console-handle-inheritance gap, per `microsoft/terminal` maintainer
+  guidance in discussion #15814, not a bug in this crate's spawn
+  sequence — which otherwise matches Microsoft's own ConPTY sample
+  byte-for-byte). `read`/`write` are ordinary blocking `ReadFile`/
+  `WriteFile` on ConPTY's two pipe handles. `Drop` does a bounded
+  `PeekNamedPipe` drain before `ClosePseudoConsole`, avoiding a real
+  deadlock (`ClosePseudoConsole` blocks until conhost's internal writer
+  finishes, which can block against an un-drained pipe). One background
+  thread *is* needed, though, for `PtyMaster::read`'s own portable
+  `Ok(0)`-on-child-exit contract: unlike a Unix pty slave, which the
+  kernel closes automatically once its last holder exits, ConPTY's
+  output pipe stays open until `ClosePseudoConsole` runs — confirmed
+  live (a child that had already exited still left reads blocked
+  indefinitely). `spawn_exit_watcher` waits on a duplicated process
+  handle and calls bare `ClosePseudoConsole` once the child exits,
+  guarded by a shared `closed` flag against a double-close race with
+  `Drop` (whichever happens first — the child exiting, or the caller
+  dropping the master — wins). Deliberately does *not* drain the output
+  pipe first the way `Drop`'s own close does: an earlier version did,
+  and live CI caught the real problem with that — the watcher's own
+  drain raced (and consistently won against) a caller's concurrent
+  `read()` on the same handle, three previously-passing tests losing
+  real output to it. Calling bare `ClosePseudoConsole` has no such race
+  (this thread never touches the output pipe at all — any pending
+  `ReadFile` unblocks naturally once conhost's write-side duplicate
+  closes), at the cost of moving, not removing, the drain's original
+  purpose: `ClosePseudoConsole` can itself block if conhost's writer is
+  stuck behind a full unread pipe, which now stalls this background
+  thread instead — acceptable since it's detached and never joined.
+  New divergence (`docs/divergences.md`
+  #011): a single pollable fd on Linux vs two non-pollable handles on
+  Windows — `WindowsPtyMaster` exposes `input_handle`/`output_handle`
+  rather than a single `AsHandle`/`AsRawHandle`. CI-verified only (no
+  Windows execution available in the implementing session) —
+  `platform-windows/tests/pty.rs`, including a dedicated test that drops
+  an undrained master against a child producing far more output than a
+  pipe's default buffer holds, to actually exercise the teardown fix
+  rather than trust it by inspection. See `docs/behavior/pty.md` and
+  `docs/design-discussion-pty.md` for the full contract and reasoning.
+  **Breaking**: none — an entirely new backend for an already-landed
+  trait; nothing existing changed shape. Bumps `y` per
+  `docs/versioning.md` §2's "additive counts too" rule (new `pub`
+  items).
+
 ### 0.19.0
 
 - Added `platform::pty::{Pty, PtyMaster}` (rustils#82), part 1/2 of the

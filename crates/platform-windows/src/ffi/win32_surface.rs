@@ -157,3 +157,41 @@ pub use windows_sys::Win32::Security::Credentials::{
 // code — distinct from `ERROR_FILE_NOT_FOUND` (already admitted above
 // for the Fs surface), Credential Manager's own not-found signal.
 pub use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+
+// PTY surface, Windows ConPTY backend (RFC v2 R5+, D13, convergence
+// roadmap Phase 7, rustils#83 — part 2/2, following #82's Linux
+// backend). `CreatePseudoConsole`/`ClosePseudoConsole`/
+// `ResizePseudoConsole`/`HPCON`/`COORD` are the pseudo-console API
+// itself. `InitializeProcThreadAttributeList`/`UpdateProcThreadAttribute`/
+// `DeleteProcThreadAttributeList`/`LPPROC_THREAD_ATTRIBUTE_LIST`/
+// `STARTUPINFOEXW`/`EXTENDED_STARTUPINFO_PRESENT`/
+// `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` are what wires the pseudo console
+// to a child at `CreateProcessW` time — the only way to attach one on
+// Windows (`docs/design-discussion-pty.md`'s "shape question" section:
+// there is no Win32 call to attach a pseudo console after the fact, the
+// reason `platform::pty::Pty::spawn` is one atomic operation rather than
+// separable open/attach steps). `PeekNamedPipe` lets the teardown
+// sequence drain the master's output pipe without blocking before
+// calling `ClosePseudoConsole` — `ClosePseudoConsole` itself blocks
+// until conhost's internal writer has finished, which can deadlock
+// against an un-drained pipe (`docs/design-discussion-pty.md`'s
+// EOF-vs-exit teardown lesson). `ReadFile`/`WriteFile` for the master's
+// own I/O are already admitted above (Fs surface) — a ConPTY pipe handle
+// takes them identically to any other pipe handle, `ERROR_BROKEN_PIPE`
+// included (`sys::fileio::read`'s existing EOF translation applies
+// unchanged).
+pub use windows_sys::Win32::System::Console::{
+    ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
+};
+pub use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+pub use windows_sys::Win32::System::Threading::{
+    DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
+    EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW,
+};
+// `ERROR_INSUFFICIENT_BUFFER`: `InitializeProcThreadAttributeList`'s
+// documented "this was only a size query" failure on its first,
+// size-discovering call — expected, not a real error (checked
+// specifically so a genuinely different failure there isn't silently
+// papered over).
+pub use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;

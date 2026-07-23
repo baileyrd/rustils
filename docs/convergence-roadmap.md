@@ -759,6 +759,67 @@ not just a successful `posix_spawn` return — see
 `docs/behavior/pty.md` for the full contract. Windows (issue #83) not
 yet landed.
 
+**Landed (part 2/2: Windows ConPTY backend), 2026-07-23** —
+`platform_windows::{WindowsPty, WindowsPtyMaster}` (rustils#83).
+`CreatePseudoConsole` wired to the child at `CreateProcessW` time via
+`STARTUPINFOEXW`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` — the only way to
+attach one at all, unlike Unix's separable-in-theory (though not taken)
+open/attach steps. Not grouped — no Job Object, so `kill_tree` on a
+pty-hosted `Child` is `Unsupported` on Windows, a deliberate scope
+reduction. Deliberately **not** the suspended → assign → resume sequence
+`Spawner::spawn`'s `NewGroup` path uses, matching Microsoft's own sample
+(which doesn't suspend). `read`/`write` are ordinary blocking
+`ReadFile`/`WriteFile` on the two pipe handles ConPTY's master genuinely
+is. Five real bugs surfaced only through live CI runs, not local
+cross-compile-checking: the `UpdateProcThreadAttribute` value/address
+mixup, a `sys::pty::close` drain-loop deadline check that only ran in
+one branch, and — the one that took seven CI rounds to isolate, since
+`CREATE_SUSPENDED` removal, Job Object removal, test-concurrency
+serialization, and a shell-vs-no-shell diagnostic all failed to change
+the failure signature — every child's real console output was reaching
+the *spawning* process's own ambient console instead of the pseudo
+console's pipes, 100% reproducibly, and finally a documented-contract
+gap only the first three bugs' fix exposed. Root cause of the third,
+confirmed against `microsoft/terminal` discussion #15814: when the
+spawning process's own stdio is itself redirected (exactly `cargo
+test`'s situation under a CI runner), the kernel duplicates those
+redirected handles into the child regardless of
+`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`; setting `STARTF_USESTDHANDLES`
+(with null std handles) in `STARTUPINFOEXW.dwFlags` suppresses that
+duplication and is the actual fix. Once real output started reaching
+the pipes, a fourth, distinct gap surfaced: ConPTY's output pipe does
+not spontaneously EOF when the last attached process exits (unlike a
+Unix pty slave, which the kernel closes automatically) — contradicting
+`PtyMaster::read`'s own documented `Ok(0)`-on-child-exit contract.
+`sys::pty::spawn_exit_watcher` is the fix: a background thread (the
+one background thread this backend does need, despite the earlier
+"no background thread for I/O" framing) that waits on a *duplicated*
+process handle and calls bare `ClosePseudoConsole` once the child
+exits, guarded by a shared `closed` compare-exchange against a
+double-close race with `WindowsPtyMaster::drop` — whichever of "child
+exits" or "caller drops the master" happens first wins, the other is a
+no-op. A fifth bug, caught the same way as the rest — live CI, not
+local checking — came from this fix's own first attempt: having the
+watcher *drain* the output pipe before closing (matching `Drop`'s own
+close path) raced a caller's concurrent `read()` for the same bytes on
+the same handle, and wasn't a rare fluke — it consistently broke three
+previously-passing tests down to only conhost's VT-negotiation bytes.
+Calling bare `ClosePseudoConsole` instead (the watcher never touches
+the output pipe at all) has no such race, at the cost of moving rather
+than removing the original deadlock concern: `ClosePseudoConsole` can
+itself block behind a full, undrained pipe, which can now stall the
+watcher thread instead — accepted, since it's detached and never
+joined — see the PR history for #83. New
+divergence: `docs/divergences.md` #011 (single pollable fd on Linux vs
+two non-pollable handles on Windows). CI-verified only (no Windows
+execution available in the implementing session) —
+`platform-windows/tests/pty.rs`, including a dedicated test that drops
+an undrained master against a child producing far more output than a
+pipe's default buffer holds, to actually exercise the teardown fix.
+Both halves of the PTY surface (#82 Linux, #83 Windows) are now landed;
+only macOS (no donor evidence) remains unaddressed within this phase's
+scope. See `docs/behavior/pty.md` for the full contract.
+
 ## Phase 8 — Tun / virtual-link surface (D14)
 
 **Lands here**, single named consumer (rusty_tail) — sufficient per the

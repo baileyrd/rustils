@@ -40,6 +40,8 @@ mod net;
 #[cfg(windows)]
 mod process;
 #[cfg(windows)]
+mod pty;
+#[cfg(windows)]
 mod security;
 #[cfg(windows)]
 mod signals;
@@ -62,6 +64,8 @@ pub use net::{
 };
 #[cfg(windows)]
 pub use process::{WindowsChild, WindowsSpawner};
+#[cfg(windows)]
+pub use pty::{WindowsPty, WindowsPtyMaster};
 #[cfg(windows)]
 pub use security::{WindowsCredentialStore, WindowsCsprng, WindowsSandbox};
 #[cfg(windows)]
