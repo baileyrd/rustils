@@ -862,6 +862,34 @@ fn linux_process_group_join() {
     assert_eq!(leader.wait().expect("wait"), ExitStatus::Signaled(9));
 }
 
+/// `Spawner::adopt` (rustils#47): POSIX `setpgid(pid, pgid)` can only
+/// retarget a process that is both the caller's own child and has not
+/// yet exec'd — by the time any caller has a pid to adopt, that's never
+/// true, so this is `Unsupported` on Unix (divergence 010), never
+/// attempted speculatively. Uses a real spawned child's pid so the
+/// refusal is provably about the operation, not a bogus pid.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_adopt_is_unsupported() {
+    use platform::process::{Command, Signal, Spawner};
+
+    let tmp = std::env::temp_dir();
+    let s = platform_linux::LinuxSpawner;
+    let child = s
+        .spawn(&Command::new("sh", tmp).arg("-c").arg("sleep 30"))
+        .expect("spawn");
+    let pid = child.id();
+
+    let e = s
+        .adopt(pid)
+        .err()
+        .expect("setpgid cannot retarget a foreign pid on Unix");
+    assert_eq!(e.kind, ErrorKind::Unsupported);
+
+    child.kill_single(Signal::Kill).expect("cleanup kill");
+    child.wait().expect("cleanup wait");
+}
+
 /// `Child::wait_job`/`try_wait_job` (rustils#45, D10): the
 /// `WUNTRACED`/`WCONTINUED` half of wait — a child observed stopping,
 /// then continuing, then finally exiting, none of which the plain

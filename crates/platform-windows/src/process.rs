@@ -7,7 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, GroupSpec, Signal, Spawner};
+use platform::process::{Child, Command, ExitStatus, GroupHandle, GroupSpec, Signal, Spawner};
 
 use crate::sys::handle::OwnedWinHandle;
 use crate::sys::proc;
@@ -123,6 +123,41 @@ impl Child for WindowsChild {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+/// A kill-scoped handle over an adopted, externally-spawned pid
+/// (`Spawner::adopt`, rustils#47). Always holds a job — unlike
+/// `WindowsChild`, where `job` is `Option` for an ungrouped spawn,
+/// `adopt` always creates one: giving kill-tree semantics to a pid this
+/// backend didn't spawn is the entire point of adopting it.
+pub struct WindowsGroupHandle {
+    process: OwnedWinHandle,
+    job: OwnedWinHandle,
+}
+
+impl GroupHandle for WindowsGroupHandle {
+    fn kill_tree(&self, sig: Signal) -> Result<()> {
+        if sig != Signal::Kill {
+            // Same divergence-008 limitation as `WindowsChild::kill_tree`.
+            return Err(PlatformError::new(
+                ErrorKind::Unsupported,
+                OsCode::None,
+                "kill_tree",
+            ));
+        }
+        proc::terminate_job(&self.job)
+    }
+
+    fn kill_single(&self, sig: Signal) -> Result<()> {
+        if sig != Signal::Kill {
+            return Err(PlatformError::new(
+                ErrorKind::Unsupported,
+                OsCode::None,
+                "kill_single",
+            ));
+        }
+        proc::terminate_process(&self.process)
     }
 }
 
@@ -289,5 +324,10 @@ impl Spawner for WindowsSpawner {
             }
             None => Ok(None),
         }
+    }
+
+    fn adopt(&self, pid: u32) -> Result<Box<dyn GroupHandle>> {
+        let (process, job) = proc::adopt(pid)?;
+        Ok(Box::new(WindowsGroupHandle { process, job }))
     }
 }

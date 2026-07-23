@@ -310,6 +310,24 @@ pub trait Child {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
+/// A kill-scoped handle over a process a [`Spawner`] did not itself spawn —
+/// e.g. one created by a third-party library ([`Spawner::adopt`], rustils#47:
+/// `portable-pty::Child::process_id()` is the forcing case, for a PTY
+/// session `nexus-terminal` spawns through `portable-pty` rather than
+/// through this crate). Deliberately narrower than [`Child`]: an adopted
+/// pid was never spawned through this crate, so `wait`/stdio have no
+/// meaning here — the caller already owns whatever wait/stdio mechanism
+/// the third-party spawn gave them. Object-safe.
+pub trait GroupHandle {
+    /// Same contract as [`Child::kill_tree`], targeting the adopted pid's
+    /// own tree.
+    fn kill_tree(&self, sig: Signal) -> Result<()>;
+
+    /// Same contract as [`Child::kill_single`], targeting the adopted pid
+    /// itself.
+    fn kill_single(&self, sig: Signal) -> Result<()>;
+}
+
 /// Block until *some* child in `children` terminates, for up to `timeout`
 /// (`None` = wait forever). Returns `Some(index)` of a terminated child —
 /// retrieve the status via that child's [`Child::try_wait`]/[`Child::wait`]
@@ -376,6 +394,23 @@ pub trait Spawner {
     ) -> Result<Option<usize>> {
         wait_any(children, timeout)
     }
+
+    /// Adopt an already-running process this `Spawner` did not itself
+    /// spawn into a fresh kill-on-close group, giving it
+    /// [`GroupHandle::kill_tree`]/[`GroupHandle::kill_single`] semantics
+    /// after the fact (rustils#47). Windows: `OpenProcess` + a fresh
+    /// kill-on-close Job Object (`AssignProcessToJobObject`) — the same
+    /// mechanism [`GroupSpec::NewGroup`] uses at spawn time, applied after
+    /// the fact to a pid this backend didn't create. Unix: `Unsupported` —
+    /// POSIX's `setpgid(pid, pgid)` can only retarget a process that is
+    /// both the caller's own child *and* has not yet exec'd; by the time a
+    /// caller has a pid to adopt (e.g. from
+    /// `portable-pty::Child::process_id()`), the target has already
+    /// exec'd, so there is no sound way to honor this on Unix — divergence
+    /// **010**. Never attempted speculatively: a `setpgid` that
+    /// sometimes works depending on timing would be worse than an honest
+    /// refusal.
+    fn adopt(&self, pid: u32) -> Result<Box<dyn GroupHandle>>;
 }
 
 #[cfg(test)]

@@ -63,6 +63,17 @@ pub use windows_sys::Win32::System::Threading::{
     WaitForMultipleObjects, WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     INFINITE, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
 };
+// `Spawner::adopt` (rustils#47): opening a process this backend did not
+// itself spawn, by pid — `OpenProcess` is the one Win32 call that does
+// that at all (`CreateProcessW` always creates a fresh process; nothing
+// else in this file's existing admissions can turn a bare `u32` into a
+// HANDLE). `PROCESS_SET_QUOTA | PROCESS_TERMINATE` is exactly what
+// `AssignProcessToJobObject` (already admitted below) and
+// `TerminateProcess` (already admitted above) each require — no broader
+// access than the two calls this handle is actually used for.
+pub use windows_sys::Win32::System::Threading::{
+    OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+};
 pub use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 // Oracle for the winargv tests only: parse a command line the way MSVCRT
 // argv splitting does, to round-trip what `winargv` builds. Not used by

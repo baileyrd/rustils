@@ -245,3 +245,44 @@ implementation convenience.
   `linux_chmod_is_unsupported_under_track_p`.
 - **Accepted**: 2026-07-23, with coreutils gap backlog #64's write-side
   half (`unix_mode`'s read side landed 2026-07-21 as part of #63/#65).
+
+## 010 — no adopting an externally-spawned pid on Unix
+
+- **Windows**: `Spawner::adopt(pid)` opens an already-running process by
+  pid (`OpenProcess`) and places it into a fresh kill-on-close Job
+  Object (`AssignProcessToJobObject`) — the same mechanism
+  `GroupSpec::NewGroup` uses at spawn time, applied after the fact to a
+  pid this backend didn't create (e.g.
+  `portable-pty::Child::process_id()`, rustils#47's forcing case:
+  `nexus-terminal`'s PTY sessions are spawned by `portable-pty`, not
+  through this crate). Returns a `GroupHandle`
+  (`kill_tree`/`kill_single`).
+- **Unix**: `Spawner::adopt` is `Err(ErrorKind::Unsupported)`,
+  unconditionally.
+- **OS limitation**: POSIX `setpgid(pid, pgid)` can retarget a process's
+  group only when the target is both the calling process's own child
+  *and* has not yet called `execve` (`EACCES` if it's a child that
+  already exec'd; `EPERM` if it isn't the caller's child at all). By the
+  time any caller has a pid to adopt — obtained from a third-party
+  library after that library's own spawn call has already returned —
+  the target has, in every realistic case, already exec'd. There is no
+  POSIX primitive that places an arbitrary already-running, already-
+  exec'd process into a new or existing process group the way Windows's
+  handle-based `AssignProcessToJobObject` can; unlike #008's `JoinGroup`
+  gap (a *spawn-time* placement Windows lacks a numeric-pgid analog
+  for), this is the mirror-image limitation — a capability Unix lacks
+  that Windows has, not attempted speculatively (a `setpgid` that
+  sometimes works depending on exec timing would be worse than an
+  honest refusal).
+- **Pinning tests**: `windows_adopt_places_a_real_pid_into_a_new_job` /
+  `windows_adopt_of_a_dead_pid_fails` in
+  `platform-windows/tests/parity.rs`; `linux_adopt_is_unsupported` in
+  `platform-linux/tests/parity.rs` (spawns a real child and adopts its
+  real pid, so the refusal is provably about the operation, not a bogus
+  pid). `platform-mock`'s own `adopt_succeeds_and_logs_the_pid`
+  (`platform-mock/src/process.rs`) pins the mock's unconditional-success
+  choice, which is *not* this divergence — the mock has no OS process
+  behind an adopted pid to fail against at all, the same "no OS
+  limitation to model" stance `MockChild::kill_single` already takes
+  for every `Signal`.
+- **Accepted**: 2026-07-23, with rustils#47.

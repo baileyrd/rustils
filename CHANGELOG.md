@@ -19,6 +19,31 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.15.0
+
+- Added `Spawner::adopt(pid) -> Result<Box<dyn GroupHandle>>` and a new
+  `GroupHandle` trait (`kill_tree`/`kill_single` only — no `wait`/stdio,
+  since an adopted pid was never spawned through this crate) — rustils#47,
+  the "attach a Job Object to an externally-spawned pid" gap
+  (`nexus-terminal`'s `JobObject::assign_pid`, for PTY sessions
+  `portable-pty` spawns rather than this crate). Windows: `OpenProcess`
+  + a fresh kill-on-close Job Object (`AssignProcessToJobObject`) — the
+  same mechanism `GroupSpec::NewGroup` uses at spawn time, applied after
+  the fact. Unix: always `Unsupported` (`docs/divergences.md` #010) —
+  POSIX `setpgid(pid, pgid)` can only retarget the caller's own
+  not-yet-exec'd child, never true by the time a caller has a pid to
+  adopt, so this is a genuine one-directional OS capability gap, not
+  attempted speculatively. `platform-mock`: succeeds unconditionally
+  (no OS process to fail against), logging calls to the new
+  `MockSpawner::adopted` field.
+  **Breaking**: new required `Spawner` method — breaking for any
+  external `Spawner` implementer (none outside this repo's own three
+  backends exist yet). Live-verified on Windows: `kill_tree` on the
+  *adopted* handle reaches the *original* spawned child, proving
+  `AssignProcessToJobObject` landed on the real process. See
+  `docs/behavior/process.md` and `docs/extraction-map.md`'s D2 landed
+  note for the full contract.
+
 ### 0.14.0
 
 - Added `Dir::set_unix_mode` and a new `Mode` struct

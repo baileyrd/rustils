@@ -64,6 +64,19 @@ group-join half, shared with D2 below), `Signal` +
   decide deliberately, with rush's comments as the record of why the swap
   model works and where it is fragile.
 
+**Landed (adopt-by-pid slice) 2026-07-23** — rustils#47:
+`nexus-terminal/src/job_object.rs`'s `JobObject::assign_pid(pid)`
+attaches a Job Object to a pid `nexus` didn't spawn (obtained from
+`portable-pty::Child::process_id()`) — a shape D2's own donor material
+doesn't cover, since `winjob.rs` always creates its job as part of its
+own suspended-spawn. `Spawner::adopt(pid) -> Result<Box<dyn
+GroupHandle>>` closes that gap: `OpenProcess` + the same
+`create_kill_on_close_job`/`AssignProcessToJobObject` sequence D2's
+suspended-spawn already uses, applied to a pid obtained after the fact
+rather than one this backend just created suspended. Unix has no sound
+equivalent — `docs/divergences.md` #010 — so this landed as a
+Windows-real / Unix-`Unsupported` pair, not a symmetric capability.
+
 ### D3 — `winjob.rs::build_command_line`/`quote_arg`: the winargv seed
 
 A tested reimplementation of the std library's MSVCRT quoting algorithm

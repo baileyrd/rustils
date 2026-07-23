@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use platform::error::{ErrorKind, OsCode, PlatformError, Result};
-use platform::process::{Child, Command, ExitStatus, GroupSpec, Signal, Spawner};
+use platform::process::{Child, Command, ExitStatus, GroupHandle, GroupSpec, Signal, Spawner};
 
 use crate::ffi::libc_surface as c;
 use crate::sys::spawn;
@@ -231,5 +231,21 @@ impl Spawner for LinuxSpawner {
             }
             Err(e) => Err(e),
         }
+    }
+
+    fn adopt(&self, _pid: u32) -> Result<Box<dyn GroupHandle>> {
+        // POSIX `setpgid(pid, pgid)` can only retarget a process that is
+        // both the caller's own child *and* has not yet exec'd — by the
+        // time any caller has a pid to adopt (e.g. from
+        // `portable-pty::Child::process_id()`), the target has already
+        // exec'd, so there is no sound way to honor this on Unix
+        // (divergence 010). Never attempted speculatively: a `setpgid`
+        // that sometimes works depending on timing would be worse than
+        // an honest refusal.
+        Err(PlatformError::new(
+            ErrorKind::Unsupported,
+            OsCode::None,
+            "adopt",
+        ))
     }
 }
