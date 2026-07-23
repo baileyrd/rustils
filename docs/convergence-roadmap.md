@@ -219,9 +219,8 @@ RFC v2 §3 requires a named consumer, not an *external* one).
 `Metadata` gains `nlink: u64`/`modified: SystemTime` (portable —
 both backends genuinely have a link count and mtime, no `Option`
 needed, unlike `UnixMode`); `UnixMode` gains `permissions: u16` (the
-standard `rwxrwxrwx` bits, read-only — `Dir::unix_mode`'s write-side
-companion, a `chmod`-equivalent, is issue #64's remaining open half,
-still unbuilt with no consumer). Linux: `statat`/`unix_mode` extended
+standard `rwxrwxrwx` bits — `Dir::unix_mode`'s write-side companion,
+a `chmod`-equivalent, landed 2026-07-23, see below). Linux: `statat`/`unix_mode` extended
 in place (`fstatat`'s `st_nlink`/`st_mtime`/`st_mode & 0o777`, and the
 Track P `statx` arm's equivalent fields) rather than adding a second
 syscall. Windows: `FILE_BASIC_INFO::LastWriteTime` (already fetched
@@ -235,6 +234,30 @@ independent source — Linux via a raw `libc::stat` call, Windows via
 `std` accessor exists for Windows link count —
 `MetadataExt::number_of_links` is nightly-only). See
 `docs/behavior/fs.md` for the full contract.
+
+**Landed (`Dir::set_unix_mode`, `unix_mode`'s write-side companion)
+2026-07-23** — coreutils gap backlog #64's remaining half, closing it
+out. A new `Mode` struct (`setuid`/`setgid`/`sticky`/`permissions`,
+deliberately no `uid`/`gid` — `chown`'s job, not this method's) is the
+input; Linux implements it via `fchmodat(dirfd, rel, mode, 0)` (no
+`AT_SYMLINK_NOFOLLOW` — the kernel has no symlink-permission concept to
+target, so this follows the terminal symlink like `chmod(1)` does,
+unlike `unix_mode`/`metadata`'s lstat-style contract); Windows is
+`Err(Unsupported)` (`docs/divergences.md` #009, the write-side sibling
+of #006), never a silent no-op, since the caller's entire ask was to
+change permissions. `platform-mock` accepts the call (still enforcing
+`NotFound` on a missing entry) without persisting anything, matching
+`unix_mode`'s own fixed-default stance there. Landed ahead of a named
+`coreutils` consumer (no `rchmod` exists) — the read side already
+forced `UnixMode`'s shape onto every backend, and a permission-bit
+field with no way to set it back was an increasingly conspicuous
+half-finished capability in its own right. Track P: `rusty_libc` has
+no `chmod`/`fchmodat` primitive at the pinned rev yet, so the
+`track-p` feature also answers `Unsupported` for now — a Track-P
+completeness gap, not an OS limitation, pending its own call-by-call
+replacement per RFC v2 §2. See `docs/behavior/fs.md` and
+`docs/coreutils-gap-backlog.md`'s Gap 3 resolution note for the full
+contract.
 
 Also added, deliberately **outside** `platform::fs` (uid/gid → display
 name is a directory-service lookup, not filesystem metadata):

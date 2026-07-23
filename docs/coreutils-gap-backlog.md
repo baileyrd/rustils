@@ -94,7 +94,7 @@ was the most conspicuous absence found reading the trait, not because
 anything is blocked on it. Per RFC v2 §3, do not build ahead of a
 named need.
 
-## Gap 3 — no `chmod`-equivalent (write path for permissions) (#64)
+## Gap 3 — no `chmod`-equivalent (write path for permissions) (#64, closed)
 
 **File:** `crates/platform/src/fs.rs:180-260` (the `Dir` trait)
 
@@ -106,6 +106,18 @@ bits `chmod`/`install`/a real `ls -l` would need). Entirely
 speculative right now — no binary in `coreutils` needs it (there is no
 `rchmod`), and per RFC v2 §3 this stays unbuilt until one does.
 Recorded for completeness, lowest priority in this document.
+
+**Resolved 2026-07-23**: `Dir::set_unix_mode` landed (a new `Mode`
+struct: `setuid`/`setgid`/`sticky`/`permissions`, no `uid`/`gid` —
+that's `chown`'s job) — `fchmodat` on Linux, `Err(Unsupported)` on
+Windows (`docs/divergences.md` #009) and under the `track-p` feature
+(`rusty_libc` has no `chmod` binding yet), a documented no-op on
+`platform-mock`. Landed ahead of a named `coreutils` consumer (no
+`rchmod` binary exists yet) — the read side (#63/#65) already forced
+`UnixMode`'s shape, and `unix_mode` without its write-side counterpart
+was an increasingly conspicuous half-finished capability on its own
+terms, independent of `rchmod` specifically. See `docs/behavior/fs.md`
+for the full contract.
 
 ## Gap 4 — `coreutils::ls` doesn't use the `Metadata`/`unix_mode` it already has (#65)
 
@@ -171,7 +183,7 @@ Recorded so a future read of this backlog doesn't re-flag it.
 |---|------|------|--------|-------|
 | 1 | `rtee`'s `std::fs::File::create` bypass | Consumer bug + ergonomics gap | Fix `rtee`; consider `open_ambient_file` helper | #62 |
 | 2 | No timestamps in `Metadata` | Real `platform` capability gap | Hold — no forcing consumer | #63 |
-| 3 | No `chmod`-equivalent write path | Real `platform` capability gap | Hold — no forcing consumer | #64 |
+| 3 | No `chmod`-equivalent write path | Real `platform` capability gap | Landed: `Dir::set_unix_mode` | #64 (closed) |
 | 4 | `ls` doesn't use `metadata`/`unix_mode`/`read_link` it already has | `coreutils` feature backlog | Hold — cosmetic, no urgency | #65 |
 | 5 | Triplicated `std::env::current_dir()` | By design, not a gap | No `platform` change; optional `coreutils` helper | #66 (closed) |
 | 6 | Direct `std::io::stdout()` writes | Reviewed, not a gap | None | #67 (closed) |

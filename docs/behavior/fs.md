@@ -107,9 +107,33 @@ convenience.
   (`windows_metadata_reports_a_real_nlink_and_mtime`).
 - `UnixMode::permissions` (coreutils gap backlog #65, `ls -l`'s donor
   material): the standard `rwxrwxrwx` bits (`mode & 0o777`), alongside
-  the special bits this field already had. Read-only — there is still
-  no `chmod`-equivalent write path (coreutils gap backlog #64), only a
-  forcing consumer for reading the bits back, not for setting them.
+  the special bits this field already had.
+- `Dir::set_unix_mode` (`fchmodat(2)` with no `AT_SYMLINK_NOFOLLOW`;
+  coreutils gap backlog #64 — `unix_mode`'s write-side companion):
+  takes a [`Mode`] (`setuid`/`setgid`/`sticky` + `permissions`, no
+  `uid`/`gid` — that's `chown`'s job, not covered here) and sets those
+  bits at `rel`. Unlike `unix_mode`/`metadata`, this **follows a
+  terminal symlink** rather than operating lstat-style: Linux's kernel
+  does not implement changing a symlink's own permissions at all
+  (`fchmodat(..., AT_SYMLINK_NOFOLLOW)` fails `ENOTSUP` on every real
+  filesystem — symlink mode bits are unused and ignored), so this
+  method changes the **target**'s mode, matching `chmod(1)`'s own
+  behavior when pointed at a symlink. Windows has no POSIX mode-bit
+  concept to set at all — `Err(Unsupported)`, not a silent no-op
+  (`docs/divergences.md` #009); a caller here explicitly asked to
+  change permissions, so pretending success would misrepresent what
+  happened, unlike `unix_mode`'s `Ok(None)` answer to a *query* with
+  nothing to report. `platform-mock` accepts the call (existence is
+  still checked, `NotFound` on a missing entry) but does not persist
+  the requested bits — consistent with `unix_mode`'s own fixed-default
+  answer there, which no `set_unix_mode` call changes either way (mock
+  still has no real permission model, `docs/divergences.md` #006).
+  Track P (RFC v2 §2): `rusty_libc` has no `chmod`/`fchmodat` binding
+  yet at the pinned rev, so the `track-p` feature answers
+  `Err(Unsupported)` too, pending its own call-by-call replacement —
+  not asserted in the shared parity suite (a temporary Track-P
+  completeness gap, not an OS limitation, so it gets no
+  `docs/divergences.md` entry per that document's own rule).
 - `unix_mode`/`file_id` (`test`'s `-u/-g/-k/-O/-G/-ef` donor material,
   needing the `2>&1`/`&> file` shell-redirect shape): duplicates the
   underlying OS handle (`dup(2)`/`DuplicateHandle`) into a fresh, owned

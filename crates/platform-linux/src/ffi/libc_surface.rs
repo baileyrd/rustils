@@ -5,8 +5,8 @@
 //! replacement inventory honest: this file *is* the checklist.
 
 pub use libc::{
-    c_char, c_int, close, dirent, faccessat, fdopendir, fstatat, fsync, kill, mkdirat, nfds_t,
-    openat, pid_t, pipe2, poll, pollfd, posix_spawn, posix_spawn_file_actions_addchdir_np,
+    c_char, c_int, close, dirent, faccessat, fchmodat, fdopendir, fstatat, fsync, kill, mkdirat,
+    nfds_t, openat, pid_t, pipe2, poll, pollfd, posix_spawn, posix_spawn_file_actions_addchdir_np,
     posix_spawn_file_actions_adddup2, posix_spawn_file_actions_addopen,
     posix_spawn_file_actions_destroy, posix_spawn_file_actions_init, posix_spawn_file_actions_t,
     posix_spawnattr_destroy, posix_spawnattr_init, posix_spawnattr_setflags,
@@ -51,6 +51,13 @@ pub use libc::{tcsetpgrp, SIGTTOU, SIG_DFL, SIG_IGN};
 // are `-O`/`-G`'s owner check. Used identically in both track-p
 // configurations — plain POSIX mode-bit constants, not a syscall this
 // crate's own libc-vs-raw-syscall split applies to.
+
+// `Dir::set_unix_mode` (coreutils gap backlog #64 — `unix_mode`'s
+// write-side companion): `fchmodat` is an ordinary POSIX libc wrapper,
+// admitted only for the non-track-p arm — `rusty_libc`'s `fs` module has
+// no `chmod`-family binding yet at the pinned rev, so the track-p arm is
+// `Unsupported` rather than silently falling back to this admission
+// (see `sys/fdio.rs::set_unix_mode`'s track-p comment).
 
 // D11 Fs second wave: renameat2 has no libc wrapper on the glibc x86_64
 // target at this repo's MSRV baseline (same situation as pidfd_open) —
