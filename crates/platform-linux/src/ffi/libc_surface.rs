@@ -189,3 +189,11 @@ pub use libc::F_DUPFD_CLOEXEC;
 // every caller in the process — exactly the kind of hazard this crate's
 // own `LAST_ERRNO` thread-local commentary elsewhere already flags).
 pub use libc::{getgrgid_r, getpwuid_r, group, passwd, ERANGE};
+
+// D-Bus transport (RFC v2 R5+, D15, Phase 6 item 2, rustils#77): `getuid`
+// is SASL `EXTERNAL`'s own credential — the ASCII decimal UID, hex-
+// encoded, is the entire authentication payload for a local unix-socket
+// peer (the kernel already knows who's on the other end of the socket;
+// SASL EXTERNAL just asks the peer to state it, not prove it out-of-band
+// the way a password mechanism would).
+pub use libc::getuid;
