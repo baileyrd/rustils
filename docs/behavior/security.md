@@ -1,10 +1,11 @@
-# Behavior Spec — security (Csprng, Sandbox)
+# Behavior Spec — security (Csprng, CredentialStore, Sandbox)
 
 The parity suite (`crates/platform-linux/tests/security_parity.rs` and
 `crates/platform-windows/tests/security_parity.rs`, kept in the same
 shape — mock assertion unconditional, real backend gated behind its own
-OS — the Net suite established) asserts the `Csprng` spec against every
-backend. `Sandbox`'s real Linux enforcement is exercised separately, in
+OS — the Net suite established) asserts the `Csprng`/`CredentialStore`
+spec against every backend. `Sandbox`'s real Linux enforcement is
+exercised separately, in
 `crates/platform-linux/tests/security_sandbox.rs` — see that file's own
 doc comment for why (confinement is irreversible for the calling
 thread, so it needs subprocess isolation the shared parity-suite binary
@@ -12,7 +13,7 @@ can't give it). A backend that cannot honor a line gets a numbered
 entry in `../divergences.md` citing the OS limitation — never
 implementation convenience.
 
-## Scope (first and third Security surface slices)
+## Scope (all three Security surface slices)
 
 RFC v2 R5+, decision D15.
 
@@ -29,14 +30,27 @@ Windows `BCryptGenRandom` with the system preferred RNG. Avoiding a
 file descriptor is deliberate — a caller running under `Sandbox`
 confinement might otherwise have the `open` denied.
 
+**`CredentialStore`** (second slice, Phase 6 item 2, rustils#76/#77/#78):
+also **no confirmed live consumer** — nexus's own `CredentialVault` is a
+complete, working wrapper over the third-party `keyring-rs` crate with
+no gap and no expressed desire to migrate, so this landed as the same
+kind of owner's-explicit-call the sandbox slice did, not a named-
+consumer unparking. `get`/`set`/`available` only, matching the
+roadmap's own documented scope — no `delete` (rustils#76's own scope
+note), no key derivation, no attribute schema beyond `service`/
+`account`. Split across three PRs given its size: #76 (trait, Windows
+Credential Manager, mock, the `NullCredentialStore` disabled-mode
+escape hatch), #77 (a hand-rolled D-Bus client transport for Linux — no
+existing D-Bus dependency, matching this repo's raw-bindings
+philosophy), #78 (the Secret Service protocol on top of #77, wired into
+the real Linux implementation).
+
 **`Sandbox`** (third slice, Phase 6 item 3): unlike `Csprng`, this
 slice has **no confirmed live consumer** — it mirrors nexus's
 `os_sandbox.rs` (the closest thing this repo has to a validated design
 for this capability) as the owner's explicit call, not because a named
 consumer asked for it. See `docs/design-discussion-sandbox.md` for the
-full design discussion and its open questions, and that document's
-question 5 for why `CredentialStore` (Phase 6 item 2) did *not* get the
-same treatment. `Sandbox::confine_filesystem` narrows filesystem access
+full design discussion and its open questions. `Sandbox::confine_filesystem` narrows filesystem access
 via Landlock (ABI v1, raw syscalls — no libc wrapper exists);
 `Sandbox::block_inet_sockets` denies new `AF_INET`/`AF_INET6`/
 `AF_PACKET` sockets via a hand-written seccomp-BPF filter (`x86_64`
@@ -59,6 +73,49 @@ calls shape exactly, not an invented combined API.
   bytes; the backend retries until `buf` is full).
 - `Interrupted` from the underlying syscall (`EINTR`) is retried
   internally, never surfaced to the caller.
+
+### `CredentialStore`
+
+- `available()` reports `Available` (a real, reachable backing store),
+  `Unavailable` (a real mechanism exists on this OS but isn't reachable
+  right now — no forcing case in this slice's Windows implementation,
+  since Credential Manager is a core OS service with no "not running"
+  state; Linux's Secret Service, rustils#78, is where this value has a
+  real forcing case), or `Unsupported` (no mechanism at all — every
+  backend's stub state before its real implementation lands, and
+  `NullCredentialStore`'s permanent state).
+- `get(service, account)` returns `Ok(Some(secret))` for a stored value,
+  `Ok(None)` for a clean miss — never an `Err` for "nothing stored under
+  that name." `set(service, account, secret)` stores it, replacing any
+  existing value under the exact same `(service, account)` pair;
+  different `account`s under the same `service` are independent and
+  don't collide.
+- No `delete` — not part of the roadmap's documented scope for this
+  slice; a caller that wants to remove a stored secret isn't served by
+  this trait yet.
+- `NullCredentialStore` (`platform::security`, portable, no `unsafe`):
+  the disabled-mode escape hatch — `available()` is always
+  `Unsupported`, `get` is always `Ok(None)`, `set` is accepted and
+  silently discarded. A caller opts into this explicitly by constructing
+  it; it is not itself a mechanism for auto-detecting "keyring
+  integration disabled."
+- Windows (`WindowsCredentialStore`, rustils#76): real, live-verified
+  Credential Manager (`CredWriteW`/`CredReadW`, `CRED_TYPE_GENERIC`,
+  `CRED_PERSIST_LOCAL_MACHINE`). Credential Manager's identity key for a
+  stored credential is `(TargetName, Type)` alone — `UserName` is a
+  display field, not part of it — so this backend composes `TargetName`
+  from *both* `service` and `account` (`\u{1}`-separated) rather than
+  `service` alone, so that two different `account`s under the same
+  `service` land as two distinct Credential Manager entries instead of
+  silently clobbering each other.
+- Linux stub (rustils#76, ahead of #77/#78): `Unsupported`, `Ok(None)`/
+  `Ok(())` for `get`/`set` — never an `Err`, so a caller that checks
+  `available()` first never hits a surprising failure from an operation
+  it was told not to trust yet.
+- `platform-mock`'s `MockCredentialStore`: a faithful in-memory fake
+  (unlike `MockSandbox`) — a get/set secret store genuinely can be
+  faked without lying about a security property, unlike kernel-level
+  process confinement.
 
 ### `Sandbox::confine_filesystem`
 
@@ -134,3 +191,17 @@ calls shape exactly, not an invented combined API.
   doesn't fit this trait or `platform::process`'s current shape, and
   stays entirely out of scope here (see
   `docs/design-discussion-sandbox.md`).
+- `CredentialStore` deletion, key rotation, credential attributes/labels
+  beyond `service`/`account`, and multi-collection support (Secret
+  Service's own concept, once rustils#78 lands) — none of these are part
+  of the roadmap's documented scope; a future addition if a real need
+  appears, not freelanced here.
+- Exact wire compatibility with every possible Secret Service provider
+  implementation (rustils#78) — only the `org.freedesktop.secrets`
+  interface's documented contract is targeted, not any particular
+  provider's (`gnome-keyring`, `kwallet`, etc.) implementation quirks.
+- Windows `WindowsCredentialStore`'s `TargetName` composition scheme
+  (the `\u{1}`-separated encoding) — an internal representation detail,
+  not a promised wire format; a caller that inspects Credential Manager
+  directly (e.g. via `cmdkey`) sees this encoding, but nothing in this
+  trait's contract promises it stays this exact shape.

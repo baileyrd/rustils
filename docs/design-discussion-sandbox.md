@@ -23,9 +23,16 @@ shh's privilege-separation pattern (question 3) stayed explicitly out of scope:
 it doesn't fit `platform::process`'s current shape (no raw `fork`/`setuid`/
 `prctl`/`socketpair` exposed anywhere in this crate), and question 5's own
 reasoning for splitting the two halves applied — nothing forced them to land
-together. `CredentialStore` (Phase 6 item 2) stayed held, per the same session's
-separate finding that nexus's `CredentialVault` has no live gap to converge on
-(see its own PR/commit history for that check).
+together. `CredentialStore` (Phase 6 item 2) stayed held at the time, per the
+same session's separate finding that nexus's `CredentialVault` has no live gap
+to converge on (see its own PR/commit history for that check).
+
+**Update, 2026-07-23**: `CredentialStore` has since landed too
+(rustils#76/#77/#78), the same kind of owner's-explicit-call this document's
+`Sandbox` outcome already was — still no confirmed live consumer, built anyway.
+See `docs/behavior/security.md`'s `CredentialStore` section for the full
+contract; question 5's text below is left as the historical record of the
+reasoning at the time, not amended in place.
 
 ## What the donors actually built
 

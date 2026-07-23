@@ -1,8 +1,11 @@
-//! Cryptographically secure randomness (RFC v2 R5+, decision D15), and
-//! process sandbox policy (D15, Phase 6 item 3) — the first and third
-//! Security surface slices. (`CredentialStore`, item 2, stays donor-only
-//! for now — see `docs/design-discussion-sandbox.md` for why item 3 went
-//! ahead without a confirmed live consumer while item 2 didn't.)
+//! Cryptographically secure randomness (RFC v2 R5+, decision D15), OS
+//! credential storage (D15, Phase 6 item 2), and process sandbox policy
+//! (D15, Phase 6 item 3) — the Security surface's three slices.
+//! `CredentialStore` stayed donor-only for a full session after `Sandbox`
+//! landed (see `docs/design-discussion-sandbox.md` for why item 3 went
+//! ahead without a confirmed live consumer while item 2 didn't) before
+//! landing here too, split across rustils#76/#77/#78 given its size and
+//! the real, unverified-in-CI-yet Linux implementation.
 //!
 //! `Csprng` was unparked only once a named consumer existed to define the
 //! shape (RFC v2 §3's consumer gate): rusty_rdp hand-rolls five separate
@@ -43,6 +46,77 @@ pub trait Csprng {
     /// consumer here runs early enough in the boot sequence for that to
     /// matter).
     fn fill_random(&self, buf: &mut [u8]) -> Result<()>;
+}
+
+/// How reachable a [`CredentialStore`]'s backing secret store actually is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialStoreStatus {
+    /// The backing store is reachable and ready to use.
+    Available,
+    /// This backend has a real secret-store mechanism, but it isn't
+    /// reachable right now (e.g. Linux: no D-Bus session bus, no Secret
+    /// Service provider registered on it, or the default collection
+    /// can't be unlocked non-interactively) — mirrors
+    /// [`SandboxStatus::NotEnforced`]: a real capability that didn't
+    /// take effect this time, not "no such concept."
+    Unavailable,
+    /// This backend has no secret-store mechanism at all — every
+    /// backend/platform with nothing to try, and
+    /// [`NullCredentialStore`]'s explicit opt-out.
+    Unsupported,
+}
+
+/// An OS-native (or explicitly disabled) secret store: get/set a secret
+/// by `(service, account)`, and check reachability before relying on it
+/// (RFC v2 R5+, D15, Phase 6 item 2 — modeled on nexus's `keyring`-backed
+/// `CredentialVault`, held pending a consumer decision until this
+/// landed). No `delete` — not part of the roadmap's documented scope,
+/// deliberately excluded here rather than freelanced (rustils#76); and
+/// no key derivation, rotation, or attribute schema beyond
+/// `service`/`account` — matching [`Csprng`]'s own "narrow, no more than
+/// a named need requires" discipline.
+pub trait CredentialStore {
+    /// Check whether the backing store is currently reachable, without
+    /// attempting a real operation. For the disabled-mode escape hatch,
+    /// construct [`NullCredentialStore`] directly rather than probing a
+    /// real backend's `available()` — this method tells a *real*
+    /// backend's transient reachability apart from permanent unsupport;
+    /// it is not itself the opt-out mechanism.
+    fn available(&self) -> CredentialStoreStatus;
+
+    /// The stored secret for `(service, account)`, or `None` if nothing
+    /// is stored under that name. `Err` only for a real failure (the
+    /// store became unreachable mid-call, a malformed stored value,
+    /// etc.) — a clean "nothing stored here" is `Ok(None)`, never an
+    /// error a caller has to specifically match on.
+    fn get(&self, service: &str, account: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Store `secret` under `(service, account)`, replacing any existing
+    /// value stored under that same name.
+    fn set(&self, service: &str, account: &str, secret: &[u8]) -> Result<()>;
+}
+
+/// The disabled-mode escape hatch (Phase 6 item 2): a caller that wants
+/// to opt out of OS keyring integration entirely constructs this instead
+/// of a real backend, rather than every consumer re-deriving its own
+/// "credentials disabled" branch. `available()` is always `Unsupported`;
+/// `get` is always `Ok(None)`; `set` is accepted and silently discarded —
+/// an explicit, honest no-op the caller chose, not a hidden failure.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NullCredentialStore;
+
+impl CredentialStore for NullCredentialStore {
+    fn available(&self) -> CredentialStoreStatus {
+        CredentialStoreStatus::Unsupported
+    }
+
+    fn get(&self, _service: &str, _account: &str) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    fn set(&self, _service: &str, _account: &str, _secret: &[u8]) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// How thoroughly a [`Sandbox`] call actually took effect.
@@ -93,4 +167,19 @@ pub trait Sandbox {
     /// untouched, mirroring nexus's own narrow scope (this is "no new
     /// internet sockets," not a general syscall allowlist).
     fn block_inet_sockets(&self) -> Result<SandboxStatus>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_credential_store_is_an_honest_no_op() {
+        let store = NullCredentialStore;
+        assert_eq!(store.available(), CredentialStoreStatus::Unsupported);
+        assert_eq!(store.get("svc", "acct").unwrap(), None);
+        store.set("svc", "acct", b"secret").unwrap();
+        // Still nothing stored — `set` discarded it, as documented.
+        assert_eq!(store.get("svc", "acct").unwrap(), None);
+    }
 }

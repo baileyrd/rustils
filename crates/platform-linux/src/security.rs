@@ -1,9 +1,10 @@
-//! `Csprng`/`Sandbox` trait impls over the sys layer. No `unsafe` here.
+//! `Csprng`/`CredentialStore`/`Sandbox` trait impls over the sys layer.
+//! No `unsafe` here.
 
 use std::path::Path;
 
 use platform::error::Result;
-use platform::security::{Csprng, Sandbox, SandboxStatus};
+use platform::security::{CredentialStore, CredentialStoreStatus, Csprng, Sandbox, SandboxStatus};
 
 use crate::sys::security as syssec;
 
@@ -14,6 +15,32 @@ pub struct LinuxCsprng;
 impl Csprng for LinuxCsprng {
     fn fill_random(&self, buf: &mut [u8]) -> Result<()> {
         syssec::fill_random(buf)
+    }
+}
+
+/// The Linux backend's [`CredentialStore`] capability (rustils#76): a
+/// stub reporting [`CredentialStoreStatus::Unsupported`] and a clean
+/// `Ok(None)`/`Ok(())` for `get`/`set` — the real Secret Service
+/// (`org.freedesktop.secrets`) implementation is rustils#77/#78's own
+/// slice, not part of this one. `get`/`set` are `Ok`, not `Err`: a
+/// caller that only ever checks `available()` before deciding whether to
+/// rely on stored secrets (the documented contract) never hits an
+/// `Err` here it wasn't expecting — matching how a real backend that's
+/// merely `Unavailable` right now would also prefer a clean miss over a
+/// surprising failure on an operation the caller was told not to trust.
+pub struct LinuxCredentialStore;
+
+impl CredentialStore for LinuxCredentialStore {
+    fn available(&self) -> CredentialStoreStatus {
+        CredentialStoreStatus::Unsupported
+    }
+
+    fn get(&self, _service: &str, _account: &str) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    fn set(&self, _service: &str, _account: &str, _secret: &[u8]) -> Result<()> {
+        Ok(())
     }
 }
 

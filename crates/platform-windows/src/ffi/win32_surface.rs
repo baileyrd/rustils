@@ -137,3 +137,23 @@ pub use windows_sys::Win32::Networking::WinSock::{ioctlsocket, FIONBIO};
 pub use windows_sys::Win32::Security::Cryptography::{
     BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
 };
+
+// Security surface, CredentialStore slice (RFC v2 R5+, D15, Phase 6 item
+// 2 — rustils#76): Windows' native secret store, Credential Manager.
+// `CredWriteW`/`CredReadW`/`CredFree` are the write/read/free triad;
+// `CRED_TYPE_GENERIC` is the generic (non-domain-password) credential
+// type every non-Windows-logon consumer uses; `CRED_PERSIST_LOCAL_MACHINE`
+// persists beyond the current logon session, the durability a "store
+// this secret" caller expects (matching how browsers/git-credential-
+// manager persist saved credentials). No `CredDeleteW` admitted — this
+// slice has no `delete` operation (rustils#76's own scope note), and
+// `CredWriteW` already replaces an existing credential of the same
+// `TargetName`/`Type` in place, which is all `CredentialStore::set`'s
+// "replace" contract needs.
+pub use windows_sys::Win32::Security::Credentials::{
+    CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+};
+// `ERROR_NOT_FOUND`: `CredReadW`'s "no credential under this TargetName"
+// code — distinct from `ERROR_FILE_NOT_FOUND` (already admitted above
+// for the Fs surface), Credential Manager's own not-found signal.
+pub use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;

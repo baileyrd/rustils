@@ -620,6 +620,21 @@ until a consumer forces them (RFC v2 §3), same as every other surface.
    exactly the speculative build RFC v2 §3's consumer gate exists to
    prevent. Revisit if/when nexus (or another repo) actually needs it.
 
+   **Landed anyway, 2026-07-23** — the owner's explicit call, same
+   posture as item 3's `Sandbox` (built without a confirmed consumer,
+   deliberately). Split across three PRs given its size: rustils#76
+   (`platform::security::CredentialStore` trait, real Windows
+   Credential Manager backend, faithful mock, and the
+   `NullCredentialStore` disabled-mode escape hatch the roadmap item
+   names), rustils#77 (a hand-rolled D-Bus client transport for
+   Linux — no existing D-Bus dependency, matching this repo's
+   raw-bindings philosophy over pulling in `keyring-rs` the way the
+   donor does), rustils#78 (the Secret Service protocol on top of
+   #77, wired into the real Linux implementation). `get`/`set`/
+   `available` only, exactly the roadmap's documented shape — no
+   `delete`, not freelanced beyond what was asked. See
+   `docs/behavior/security.md` for the full contract.
+
 3. Sandbox policy (Landlock + seccomp on Linux, `Unsupported` stubs
    elsewhere initially) — modeled on nexus's `os_sandbox.rs` and shh's
    `privsep.rs` (fork-before-runtime, `NO_NEW_PRIVS`, rlimit,
