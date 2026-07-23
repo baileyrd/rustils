@@ -19,6 +19,32 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.17.0
+
+- Added `platform_linux::sys::dbus` (rustils#77) — a hand-rolled D-Bus
+  client transport, part 2/3 of `CredentialStore` (Phase 6 item 2): no
+  existing D-Bus dependency, matching this repo's raw-bindings
+  philosophy over the donor's `keyring-rs` wrapper. Little-endian
+  message marshaling/unmarshaling for the type-system subset Secret
+  Service needs (basic types, array, struct, variant, dict-entry),
+  `AF_UNIX` session-bus connect (both real-path and Linux
+  abstract-namespace addressing), the SASL `EXTERNAL` handshake, and
+  the mandatory post-auth `Hello` registration call (missed on the
+  first pass — every other call came back `AccessDenied` until this
+  was added, caught by the live integration test, not a round-trip
+  unit test). Internal to `platform-linux` only — no `platform::*`
+  trait surface change, no `CredentialStore` behavior wired up yet
+  (that's rustils#78, built on top of this).
+  **Breaking**: none — `sys` is additive-only here, nothing existing
+  changed shape (still bumps `y` per `docs/versioning.md` §2's
+  "additive counts too" rule, since `pub mod sys` is real public
+  surface even though no portable trait uses it yet). Live-verified
+  against a real `dbus-daemon --session` spawned as a CI test fixture
+  (new CI step: install `dbus` on the `ubuntu-latest` legs), not just
+  unit tests — every wire-format alignment/padding rule is also
+  asserted byte-for-byte in `wire.rs`'s own tests, not merely
+  round-tripped.
+
 ### 0.16.0
 
 - Added `platform::security::CredentialStore` (`get`/`set`/`available`)

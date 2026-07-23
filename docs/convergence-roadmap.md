@@ -626,13 +626,21 @@ until a consumer forces them (RFC v2 §3), same as every other surface.
    (`platform::security::CredentialStore` trait, real Windows
    Credential Manager backend, faithful mock, and the
    `NullCredentialStore` disabled-mode escape hatch the roadmap item
-   names), rustils#77 (a hand-rolled D-Bus client transport for
-   Linux — no existing D-Bus dependency, matching this repo's
-   raw-bindings philosophy over pulling in `keyring-rs` the way the
-   donor does), rustils#78 (the Secret Service protocol on top of
-   #77, wired into the real Linux implementation). `get`/`set`/
-   `available` only, exactly the roadmap's documented shape — no
-   `delete`, not freelanced beyond what was asked. See
+   names — **landed**), rustils#77 (a hand-rolled D-Bus client
+   transport for Linux — no existing D-Bus dependency, matching this
+   repo's raw-bindings philosophy over pulling in `keyring-rs` the
+   way the donor does — **landed**: `platform_linux::sys::dbus`,
+   little-endian message marshaling/unmarshaling for the type-system
+   subset Secret Service needs, `AF_UNIX` connect [both real-path and
+   Linux abstract-namespace addressing], the SASL `EXTERNAL`
+   handshake, and the mandatory post-auth `Hello` registration call a
+   first implementation attempt initially missed — live-verified
+   against a real `dbus-daemon --session` spawned as a CI test
+   fixture, not just round-trip unit tests), rustils#78 (the Secret
+   Service protocol on top of #77, wired into the real Linux
+   implementation — not yet landed). `get`/`set`/`available` only,
+   exactly the roadmap's documented shape — no `delete`, not
+   freelanced beyond what was asked. See
    `docs/behavior/security.md` for the full contract.
 
 3. Sandbox policy (Landlock + seccomp on Linux, `Unsupported` stubs

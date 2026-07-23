@@ -18,6 +18,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # D-Bus transport (rustils#77): `dbus_transport.rs`'s live tests
+      # spawn a real `dbus-daemon --session` as a test fixture — ensure
+      # the binary is present rather than relying on it happening to
+      # already be in the runner image. Idempotent if it already is.
+      - name: install dbus-daemon (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y dbus
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}

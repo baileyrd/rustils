@@ -40,9 +40,12 @@ roadmap's own documented scope — no `delete` (rustils#76's own scope
 note), no key derivation, no attribute schema beyond `service`/
 `account`. Split across three PRs given its size: #76 (trait, Windows
 Credential Manager, mock, the `NullCredentialStore` disabled-mode
-escape hatch), #77 (a hand-rolled D-Bus client transport for Linux — no
-existing D-Bus dependency, matching this repo's raw-bindings
-philosophy), #78 (the Secret Service protocol on top of #77, wired into
+escape hatch — landed), #77 (a hand-rolled D-Bus client transport for
+Linux — no existing D-Bus dependency, matching this repo's raw-bindings
+philosophy — landed as `platform_linux::sys::dbus`, an internal
+prerequisite with no `CredentialStore` behavior wired up yet; see that
+module's own doc comment for the transport contract), #78 (the Secret
+Service protocol on top of #77, wired into
 the real Linux implementation).
 
 **`Sandbox`** (third slice, Phase 6 item 3): unlike `Csprng`, this
