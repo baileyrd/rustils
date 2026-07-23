@@ -7,11 +7,12 @@
 //! varying bytes via a small xorshift64* stream, seeded identically every
 //! run for reproducibility across test invocations.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::Path;
 
 use platform::error::Result;
-use platform::security::{Csprng, Sandbox, SandboxStatus};
+use platform::security::{CredentialStore, CredentialStoreStatus, Csprng, Sandbox, SandboxStatus};
 
 /// The mock backend's [`Csprng`] capability. Not thread-safe (`Cell`,
 /// like [`crate::net::MockTcpStream`]'s `read_timeout`) — this crate's
@@ -54,6 +55,40 @@ impl Csprng for MockCsprng {
     }
 }
 
+/// The mock backend's [`CredentialStore`] capability (rustils#76): a
+/// faithful in-memory fake, like [`MockCsprng`] and unlike
+/// [`MockSandbox`] below — unlike kernel-level process confinement, a
+/// get/set secret store genuinely *can* be faked without lying about a
+/// security property, so this actually stores what's set and returns it
+/// on `get`, rather than perpetually reporting `Unsupported`.
+#[derive(Default)]
+pub struct MockCredentialStore {
+    store: RefCell<HashMap<(String, String), Vec<u8>>>,
+}
+
+impl MockCredentialStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl CredentialStore for MockCredentialStore {
+    fn available(&self) -> CredentialStoreStatus {
+        CredentialStoreStatus::Available
+    }
+
+    fn get(&self, service: &str, account: &str) -> Result<Option<Vec<u8>>> {
+        let key = (service.to_string(), account.to_string());
+        Ok(self.store.borrow().get(&key).cloned())
+    }
+
+    fn set(&self, service: &str, account: &str, secret: &[u8]) -> Result<()> {
+        let key = (service.to_string(), account.to_string());
+        self.store.borrow_mut().insert(key, secret.to_vec());
+        Ok(())
+    }
+}
+
 /// The mock backend's [`Sandbox`] capability. There is no in-memory
 /// equivalent of kernel-level process confinement to fake the way
 /// `MockNet`/`MockDir` fake a socket or filesystem — a mock that claimed
@@ -75,5 +110,35 @@ impl Sandbox for MockSandbox {
 
     fn block_inet_sockets(&self) -> Result<SandboxStatus> {
         Ok(SandboxStatus::Unsupported)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_store_round_trips_and_distinguishes_accounts() {
+        let store = MockCredentialStore::new();
+        assert_eq!(store.available(), CredentialStoreStatus::Available);
+        assert_eq!(store.get("svc", "alice").unwrap(), None);
+
+        store.set("svc", "alice", b"alice-secret").unwrap();
+        store.set("svc", "bob", b"bob-secret").unwrap();
+        assert_eq!(
+            store.get("svc", "alice").unwrap(),
+            Some(b"alice-secret".to_vec())
+        );
+        assert_eq!(
+            store.get("svc", "bob").unwrap(),
+            Some(b"bob-secret".to_vec())
+        );
+
+        // Overwrite: `set` replaces, doesn't accumulate.
+        store.set("svc", "alice", b"new-secret").unwrap();
+        assert_eq!(
+            store.get("svc", "alice").unwrap(),
+            Some(b"new-secret".to_vec())
+        );
     }
 }

@@ -19,6 +19,28 @@ and **`coreutils`**.
 
 ## PAL group (`platform` / `platform-linux` / `platform-windows` / `platform-mock` / `platform-macos`)
 
+### 0.16.0
+
+- Added `platform::security::CredentialStore` (`get`/`set`/`available`)
+  and `NullCredentialStore`, the Security surface's second slice (RFC
+  v2 R5+, D15, Phase 6 item 2, rustils#76) — built without a confirmed
+  live consumer, the owner's explicit call (same posture as `Sandbox`).
+  Windows: real Credential Manager (`CredWriteW`/`CredReadW`,
+  `CRED_TYPE_GENERIC`, `CRED_PERSIST_LOCAL_MACHINE`) — needed the new
+  `Win32_Security_Credentials` `windows-sys` feature. `TargetName` is
+  composed from both `service` and `account` (Credential Manager's
+  identity key is `TargetName`+`Type` alone, not `UserName`, so two
+  accounts under one service would otherwise clobber each other).
+  Linux: an `Unsupported` stub for now — the real Secret Service
+  implementation (`org.freedesktop.secrets` over a hand-rolled D-Bus
+  client, no new dependency) is rustils#77/#78, tracked separately
+  given the size. `platform-mock`: a faithful in-memory fake. No
+  `delete` — not part of the roadmap's documented scope for this slice.
+  **Breaking**: none — a wholly new trait, nothing existing changed
+  shape (still bumps `y` per `docs/versioning.md` §2's "additive counts
+  too" rule). Live-verified on Windows against real Credential Manager
+  state. See `docs/behavior/security.md` for the full contract.
+
 ### 0.15.0
 
 - Added `Spawner::adopt(pid) -> Result<Box<dyn GroupHandle>>` and a new

@@ -30,7 +30,7 @@ pub use net::{
     LinuxNet, LinuxTcpListener, LinuxTcpStream, LinuxUdpSocket, LinuxUnixListener, LinuxUnixStream,
 };
 pub use process::{LinuxChild, LinuxSpawner};
-pub use security::{LinuxCsprng, LinuxSandbox};
+pub use security::{LinuxCredentialStore, LinuxCsprng, LinuxSandbox};
 pub use signals::LinuxSignalSource;
 pub use sys::identity::{group_name, user_name};
 pub use term::LinuxTerminal;

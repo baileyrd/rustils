@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use platform::security::{Csprng, Sandbox, SandboxStatus};
+use platform::security::{CredentialStore, CredentialStoreStatus, Csprng, Sandbox, SandboxStatus};
 
 /// `fill_random` fills the whole buffer, and two consecutive calls don't
 /// return the same bytes (the one property every named consumer — a
@@ -62,4 +62,53 @@ fn mock_sandbox_reports_unsupported() {
         sandbox.block_inet_sockets().unwrap(),
         SandboxStatus::Unsupported
     );
+}
+
+/// A faithful `CredentialStore` fake (mock, or a real-and-reachable
+/// native backend): round-trips a stored secret, distinguishes accounts
+/// under the same service, and reports a clean miss for nothing stored.
+fn assert_credential_store_behavior(store: &dyn CredentialStore) {
+    assert_eq!(store.available(), CredentialStoreStatus::Available);
+    assert_eq!(store.get("rustils-test-svc", "alice").unwrap(), None);
+
+    store
+        .set("rustils-test-svc", "alice", b"alice-secret")
+        .unwrap();
+    store.set("rustils-test-svc", "bob", b"bob-secret").unwrap();
+    assert_eq!(
+        store.get("rustils-test-svc", "alice").unwrap(),
+        Some(b"alice-secret".to_vec())
+    );
+    assert_eq!(
+        store.get("rustils-test-svc", "bob").unwrap(),
+        Some(b"bob-secret".to_vec())
+    );
+
+    store
+        .set("rustils-test-svc", "alice", b"new-secret")
+        .unwrap();
+    assert_eq!(
+        store.get("rustils-test-svc", "alice").unwrap(),
+        Some(b"new-secret".to_vec())
+    );
+}
+
+#[test]
+fn mock_credential_store_conforms() {
+    assert_credential_store_behavior(&platform_mock::MockCredentialStore::new());
+}
+
+/// rustils#76's Linux stub: the real Secret Service implementation is
+/// #77/#78's own slice, not this one. Reports `Unsupported` and a clean
+/// `Ok(None)`/`Ok(())`, never an `Err`, for `get`/`set` — a caller that
+/// checks `available()` first never hits a surprising failure.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_credential_store_stub_reports_unsupported() {
+    let store = platform_linux::LinuxCredentialStore;
+    assert_eq!(store.available(), CredentialStoreStatus::Unsupported);
+    assert_eq!(store.get("svc", "acct").unwrap(), None);
+    store.set("svc", "acct", b"secret").unwrap();
+    // Still nothing stored — this stub discards `set`, as documented.
+    assert_eq!(store.get("svc", "acct").unwrap(), None);
 }

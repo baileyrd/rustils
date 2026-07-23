@@ -17,7 +17,9 @@ use crate::ffi::win32_surface as w;
 
 fn kind_of_win32(code: u32) -> ErrorKind {
     match code {
-        w::ERROR_FILE_NOT_FOUND | w::ERROR_PATH_NOT_FOUND => ErrorKind::NotFound,
+        w::ERROR_FILE_NOT_FOUND | w::ERROR_PATH_NOT_FOUND | w::ERROR_NOT_FOUND => {
+            ErrorKind::NotFound
+        }
         w::ERROR_ACCESS_DENIED | w::ERROR_SHARING_VIOLATION => ErrorKind::PermissionDenied,
         w::ERROR_FILE_EXISTS | w::ERROR_ALREADY_EXISTS => ErrorKind::AlreadyExists,
         w::ERROR_DIR_NOT_EMPTY => ErrorKind::DirectoryNotEmpty,

@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use platform::security::{Csprng, Sandbox, SandboxStatus};
+use platform::security::{CredentialStore, CredentialStoreStatus, Csprng, Sandbox, SandboxStatus};
 
 /// `fill_random` fills the whole buffer, and two consecutive calls don't
 /// return the same bytes (the one property every named consumer — a
@@ -58,4 +58,47 @@ fn mock_sandbox_reports_unsupported() {
         sandbox.block_inet_sockets().unwrap(),
         SandboxStatus::Unsupported
     );
+}
+
+/// See the Linux copy of this test for the full contract. No cleanup
+/// step: there is no `delete` in this slice's scope (rustils#76), and a
+/// fresh CI runner's Credential Manager store doesn't persist between
+/// runs anyway — a distinctive test-only service name is enough to avoid
+/// colliding with anything real.
+fn assert_credential_store_behavior(store: &dyn CredentialStore) {
+    assert_eq!(store.available(), CredentialStoreStatus::Available);
+    assert_eq!(store.get("rustils-test-svc", "alice").unwrap(), None);
+
+    store
+        .set("rustils-test-svc", "alice", b"alice-secret")
+        .unwrap();
+    store.set("rustils-test-svc", "bob", b"bob-secret").unwrap();
+    assert_eq!(
+        store.get("rustils-test-svc", "alice").unwrap(),
+        Some(b"alice-secret".to_vec())
+    );
+    assert_eq!(
+        store.get("rustils-test-svc", "bob").unwrap(),
+        Some(b"bob-secret".to_vec())
+    );
+
+    store
+        .set("rustils-test-svc", "alice", b"new-secret")
+        .unwrap();
+    assert_eq!(
+        store.get("rustils-test-svc", "alice").unwrap(),
+        Some(b"new-secret".to_vec())
+    );
+}
+
+#[test]
+fn mock_credential_store_conforms() {
+    assert_credential_store_behavior(&platform_mock::MockCredentialStore::new());
+}
+
+/// Live-verified against the real Credential Manager (`CredWriteW`/
+/// `CredReadW`) — not a mock, actual OS state on the CI runner.
+#[test]
+fn windows_credential_store_conforms() {
+    assert_credential_store_behavior(&platform_windows::WindowsCredentialStore);
 }
