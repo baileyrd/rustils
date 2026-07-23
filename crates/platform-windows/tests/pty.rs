@@ -187,7 +187,19 @@ fn spawn_a_plain_executable_with_no_shell_in_the_tree() {
 fn master_io_round_trips_with_the_spawned_child() {
     let _guard = lock_pty_tests();
     let pty = TestPty::create();
-    let line = command_line("cmd", &["/c", "set /p REPLY= & echo got:%REPLY%"]);
+    // `/v:on` (delayed expansion, `!REPLY!` not `%REPLY%`) is required
+    // here, not a ConPTY concern: cmd.exe expands `%VAR%` tokens once at
+    // *parse* time for the whole `&`-joined command line, before `set
+    // /p` has run — so `%REPLY%` would always read back whatever REPLY
+    // held *before* this line started, empty here, regardless of
+    // platform or pty correctness. This surfaced as this test's own
+    // failure once the real bug (see `sys::pty::spawn_attached`'s
+    // `STARTF_USESTDHANDLES` comment) was fixed and real child output
+    // started reaching the pipe: the master output showed "hello" (our
+    // written input, echoed) genuinely being received, immediately
+    // followed by the literal, unexpanded "got:%REPLY%" — confirming
+    // this was always a test-command bug, not a spawn/attach bug.
+    let line = command_line("cmd", &["/v:on", "/c", "set /p REPLY= & echo got:!REPLY!"]);
     let (process, _pid) =
         syspty::spawn_attached(pty.hpc, &line, OsStr::new("."), &EnvSpec::Inherit)
             .expect("spawn_attached");
