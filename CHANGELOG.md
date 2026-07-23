@@ -26,29 +26,33 @@ and **`coreutils`**.
   backend for `platform::pty` (part 1/2, `0.19.0`). `CreatePseudoConsole`
   wired to the child at `CreateProcessW` time via
   `STARTUPINFOEXW`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` — the only way
-  to attach a pseudo console at all. Always grouped (a fresh
-  kill-on-close Job Object, assigned immediately after `CreateProcessW`
-  — deliberately *not* the suspended → assign → resume sequence
-  `Spawner::spawn`'s `NewGroup` path uses: live CI testing found
-  `CREATE_SUSPENDED` on this specific spawn kept the child's console
-  output from ever reaching the pseudo console's pipes, so matching
-  Microsoft's own sample, which doesn't suspend, took priority over a
-  narrower job-membership guarantee). `read`/`write` are ordinary blocking
-  `ReadFile`/`WriteFile` on ConPTY's two pipe handles — no background
-  thread for I/O; only `Drop` does a bounded `PeekNamedPipe` drain
-  before `ClosePseudoConsole`, avoiding a real deadlock
-  (`ClosePseudoConsole` blocks until conhost's internal writer finishes,
-  which can block against an un-drained pipe). New divergence
-  (`docs/divergences.md` #011): a single pollable fd on Linux vs two
-  non-pollable handles on Windows — `WindowsPtyMaster` exposes
-  `input_handle`/`output_handle` rather than a single `AsHandle`/
-  `AsRawHandle`. CI-verified only (no Windows execution available in the
-  implementing session) — `platform-windows/tests/pty.rs`, including a
-  dedicated test that drops an undrained master against a child
-  producing far more output than a pipe's default buffer holds, to
-  actually exercise the teardown fix rather than trust it by inspection.
-  See `docs/behavior/pty.md` and `docs/design-discussion-pty.md` for the
-  full contract and reasoning.
+  to attach a pseudo console at all. Not grouped (no Job Object) —
+  `kill_tree` on a pty-hosted `Child` is `Unsupported` on Windows, a
+  deliberate scope reduction rather than a settled design choice.
+  `STARTUPINFOEXW.dwFlags` also sets `STARTF_USESTDHANDLES` (with null
+  std handles): live CI testing found that without it, a *spawning*
+  process whose own stdio is itself redirected — exactly `cargo test`
+  under any CI runner — has the kernel duplicate its redirected handles
+  into the child regardless of `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`,
+  bypassing the pseudo console entirely (a documented Windows
+  console-handle-inheritance gap, per `microsoft/terminal` maintainer
+  guidance in discussion #15814, not a bug in this crate's spawn
+  sequence — which otherwise matches Microsoft's own ConPTY sample
+  byte-for-byte). `read`/`write` are ordinary blocking `ReadFile`/
+  `WriteFile` on ConPTY's two pipe handles — no background thread for
+  I/O; only `Drop` does a bounded `PeekNamedPipe` drain before
+  `ClosePseudoConsole`, avoiding a real deadlock (`ClosePseudoConsole`
+  blocks until conhost's internal writer finishes, which can block
+  against an un-drained pipe). New divergence (`docs/divergences.md`
+  #011): a single pollable fd on Linux vs two non-pollable handles on
+  Windows — `WindowsPtyMaster` exposes `input_handle`/`output_handle`
+  rather than a single `AsHandle`/`AsRawHandle`. CI-verified only (no
+  Windows execution available in the implementing session) —
+  `platform-windows/tests/pty.rs`, including a dedicated test that drops
+  an undrained master against a child producing far more output than a
+  pipe's default buffer holds, to actually exercise the teardown fix
+  rather than trust it by inspection. See `docs/behavior/pty.md` and
+  `docs/design-discussion-pty.md` for the full contract and reasoning.
   **Breaking**: none — an entirely new backend for an already-landed
   trait; nothing existing changed shape. Bumps `y` per
   `docs/versioning.md` §2's "additive counts too" rule (new `pub`

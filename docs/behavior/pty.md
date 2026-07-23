@@ -96,22 +96,27 @@ just by inspection.
   carrying `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`, passed to
   `CreateProcessW` via `STARTUPINFOEXW`/`EXTENDED_STARTUPINFO_PRESENT`
   — the only way to wire a pseudo console to a child at all, since there
-  is no Win32 call to attach one after the fact. Always grouped (a
-  fresh kill-on-close Job Object, assigned immediately after
-  `CreateProcessW`) — a pty-hosted child is unconditionally its own
-  session on Linux, and this mirrors that with `kill_tree` semantics.
-  Deliberately **not** the suspended → assign → resume sequence
-  `Spawner::spawn`'s `GroupSpec::NewGroup` path uses for race-free job
-  membership: live CI testing found that adding `CREATE_SUSPENDED` to
-  this specific spawn caused the child's console output to never reach
-  the pseudo console's pipes at all (it leaked to the calling process's
-  own ambient console instead) — matching Microsoft's own ConPTY sample,
-  which creates the process running with no suspend step, took priority
-  over this crate's own convention. Narrower consequence: a child that
-  spawns its own children in the brief window before
-  `AssignProcessToJobObject` runs could have a grandchild escape the
-  job — accepted, not closed. `resize`
-  calls `ResizePseudoConsole`. `WindowsPtyMaster::read`/`write` are
+  is no Win32 call to attach one after the fact. Not grouped: no Job
+  Object is created or assigned, so `kill_tree` on a pty-hosted `Child`
+  is `Unsupported` on Windows — a deliberate scope reduction (a pty
+  session is unconditionally its own session on Linux; this backend
+  does not yet mirror that with `kill_tree` semantics). Deliberately
+  **not** the suspended → assign → resume sequence `Spawner::spawn`'s
+  `GroupSpec::NewGroup` path uses, matching Microsoft's own ConPTY
+  sample, which creates the process running with no suspend step.
+  `STARTUPINFOEXW.dwFlags` also sets `STARTF_USESTDHANDLES` (with null
+  std handles): live CI testing found that without it, every child's
+  real console output reached the *calling* process's own ambient
+  console instead of the pseudo console's pipes — not a timing race,
+  but 100% reproducible regardless of shell-vs-no-shell, Job Object
+  presence, or `CREATE_SUSPENDED`. The actual cause (confirmed against
+  `microsoft/terminal` discussion #15814): when the spawning process's
+  own stdio is itself redirected — exactly `cargo test`'s situation
+  under a CI runner — the kernel duplicates those redirected handles
+  into the child by default even with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`
+  set; `STARTF_USESTDHANDLES` with null std handles suppresses that
+  duplication. `resize` calls `ResizePseudoConsole`.
+  `WindowsPtyMaster::read`/`write` are
   ordinary blocking `ReadFile`/`WriteFile` on the two pipe handles
   ConPTY's master side actually is (see divergence 011) — no background
   thread for I/O itself, since the trait's own contract is already

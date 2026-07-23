@@ -102,15 +102,22 @@ pub fn create_pty(size: WinSize) -> Result<(w::HPCON, OwnedWinHandle, OwnedWinHa
 }
 
 /// Spawn `command_line` (winargv-built, not yet NUL-terminated) attached
-/// to `hpc` as its console, with working directory `cwd`. Always grouped
-/// **No Job Object grouping here for now** — see the long comment
-/// inside this function's body for why: it's under active investigation
-/// as the suspected cause of a real, still-open bug (child console I/O
-/// not reaching the pseudo console's pipes) rather than a settled design
-/// choice. `kill_tree` on a pty-hosted `Child` is `Unsupported` on
-/// Windows until this is resolved one way or the other — a real,
-/// temporary scope reduction from `platform::pty::Pty::spawn`'s stated
-/// contract, not silently missing. Returns `(process, pid)`.
+/// to `hpc` as its console, with working directory `cwd`.
+///
+/// **No Job Object grouping here.** An earlier version of this function
+/// suspected Job Object assignment as the cause of a real, then-open bug
+/// (child console I/O never reaching the pseudo console's pipes,
+/// leaking to the spawning process's own ambient console instead) and
+/// removed it to test that hypothesis; live CI re-verification showed
+/// the identical failure with or without a Job Object, disproving it —
+/// see the `STARTF_USESTDHANDLES` comment below in this function's body
+/// for the actual root cause and fix. The removal itself has not been
+/// reverted (Job Object grouping is orthogonal to the actual bug and can
+/// come back separately if `kill_tree` support on a pty-hosted `Child`
+/// is wanted), so `kill_tree` stays `Unsupported` on Windows for pty
+/// children — a real, deliberate scope reduction from
+/// `platform::pty::Pty::spawn`'s stated contract, not silently missing.
+/// Returns `(process, pid)`.
 pub fn spawn_attached(
     hpc: w::HPCON,
     command_line: &[u16],
@@ -194,11 +201,38 @@ pub fn spawn_attached(
         }
 
         // SAFETY: STARTUPINFOEXW is plain-old-data for which all-zeroes
-        // is a valid starting value; `cb`/`lpAttributeList` are set
-        // before use.
+        // is a valid starting value; `cb`/`lpAttributeList`/`dwFlags` are
+        // set before use.
         let mut siex: w::STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         siex.StartupInfo.cb = std::mem::size_of::<w::STARTUPINFOEXW>() as u32;
         siex.lpAttributeList = attr_list;
+        // The actual root cause, found via `microsoft/terminal` discussion
+        // #15814 (maintainer DHowett) after `CREATE_SUSPENDED` removal,
+        // Job Object removal, test serialization, and a shell-vs-no-shell
+        // diagnostic all failed to change this bug's failure signature:
+        // when the *spawning* process's own standard handles are
+        // themselves redirected — exactly `cargo test`'s situation under
+        // any CI runner, whose stdout/stderr are piped/captured rather
+        // than a real interactive console — the kernel still duplicates
+        // those redirected handles into the child by default, even with
+        // `bInheritHandles = FALSE` and `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`
+        // set. That duplication is legacy console-handle-inheritance
+        // behavior the pseudo-console attribute alone does not suppress —
+        // a real Windows kernel gap, not a mistake in this function's
+        // sequence (which already matched Microsoft's own ConPTY sample
+        // byte-for-byte; live CI logs confirmed every child's real output
+        // was reaching the CI job's own ambient/redirected console
+        // instantly, never blocking on our unread pipes, while our own
+        // pipe read timed out having seen only conhost's initial VT-mode
+        // negotiation — proof the attribute was being silently ignored,
+        // not merely racing). Setting `STARTF_USESTDHANDLES` with null
+        // std handles is the documented-by-maintainer workaround: it
+        // tells `CreateProcessW` to use the (null) handles given here
+        // instead of auto-duplicating the parent's own, which is exactly
+        // what stops the leak — the child then has no legacy std handles
+        // at all, and genuinely falls through to the pseudo console
+        // wired via the attribute list instead.
+        siex.StartupInfo.dwFlags |= w::STARTF_USESTDHANDLES;
 
         // Deliberately **not** `CREATE_SUSPENDED`, matching Microsoft's
         // own ConPTY sample (which creates the process running, no
@@ -212,13 +246,11 @@ pub fn spawn_attached(
         // negotiation ever received). Removing `CREATE_SUSPENDED` alone
         // turned out **not** to fix it — live CI re-verified this,
         // byte-for-byte the same failure with or without the flag — so
-        // that specific hypothesis is now considered disproven, not
-        // confirmed; the flag stays removed only because it still
-        // matches the reference sample more closely, not because it was
-        // shown to matter. See the removed Job Object step below (this
-        // function no longer creates or assigns one, for the same
-        // still-open-investigation reason) for where this trail picks
-        // back up.
+        // that specific hypothesis was disproven, not confirmed; the
+        // flag stays removed only because it still matches the reference
+        // sample more closely, not because it was shown to matter. The
+        // real cause turned out to be upstream of this flag entirely —
+        // see the `STARTF_USESTDHANDLES` comment above.
         let mut flags = w::EXTENDED_STARTUPINFO_PRESENT;
         if block.is_some() {
             flags |= w::CREATE_UNICODE_ENVIRONMENT;

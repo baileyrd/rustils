@@ -764,33 +764,41 @@ yet landed.
 `CreatePseudoConsole` wired to the child at `CreateProcessW` time via
 `STARTUPINFOEXW`/`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` — the only way to
 attach one at all, unlike Unix's separable-in-theory (though not taken)
-open/attach steps. Always grouped (a fresh kill-on-close Job Object,
-assigned immediately after `CreateProcessW` — deliberately **not** the
-suspended → assign → resume sequence `Spawner::spawn`'s `NewGroup` path
-uses; live CI testing found `CREATE_SUSPENDED` on this specific spawn
-made the child's console output never reach the pseudo console's pipes
-at all, so matching Microsoft's own sample — which doesn't suspend —
-took priority; a narrower job-membership guarantee is the accepted
-consequence). `read`/`write` are ordinary blocking `ReadFile`/`WriteFile`
-on the two pipe handles ConPTY's master genuinely is — no background
-thread for I/O, only a bounded `PeekNamedPipe` drain at teardown to
-avoid a real `ClosePseudoConsole` deadlock (a design refinement made
-during implementation; the original design pass proposed a permanent
-thread-bridge that turned out not to be needed — see
-`docs/design-discussion-pty.md`). Two real bugs surfaced only through
-live CI runs, not local cross-compile-checking: the
-`UpdateProcThreadAttribute` value/address mixup and the
-`CREATE_SUSPENDED` interference above — see the PR history for #83.
-New divergence: `docs/divergences.md`
-#011 (single pollable fd on Linux vs two non-pollable handles on
-Windows). CI-verified only (no Windows execution available in the
-implementing session) — `platform-windows/tests/pty.rs`, including a
-dedicated test that drops an undrained master against a child producing
-far more output than a pipe's default buffer holds, to actually exercise
-the teardown fix. Both halves of the PTY surface (#82 Linux, #83
-Windows) are now landed; only macOS (no donor evidence) remains
-unaddressed within this phase's scope. See `docs/behavior/pty.md` for
-the full contract.
+open/attach steps. Not grouped — no Job Object, so `kill_tree` on a
+pty-hosted `Child` is `Unsupported` on Windows, a deliberate scope
+reduction. Deliberately **not** the suspended → assign → resume sequence
+`Spawner::spawn`'s `NewGroup` path uses, matching Microsoft's own sample
+(which doesn't suspend). `read`/`write` are ordinary blocking
+`ReadFile`/`WriteFile` on the two pipe handles ConPTY's master genuinely
+is — no background thread for I/O, only a bounded `PeekNamedPipe` drain
+at teardown to avoid a real `ClosePseudoConsole` deadlock (a design
+refinement made during implementation; the original design pass
+proposed a permanent thread-bridge that turned out not to be needed —
+see `docs/design-discussion-pty.md`). Three real bugs surfaced only
+through live CI runs, not local cross-compile-checking: the
+`UpdateProcThreadAttribute` value/address mixup, a `sys::pty::close`
+drain-loop deadline check that only ran in one branch, and — the one
+that took seven CI rounds to isolate, since `CREATE_SUSPENDED` removal,
+Job Object removal, test-concurrency serialization, and a
+shell-vs-no-shell diagnostic all failed to change the failure signature
+— every child's real console output was reaching the *spawning*
+process's own ambient console instead of the pseudo console's pipes,
+100% reproducibly. Root cause, confirmed against `microsoft/terminal`
+discussion #15814: when the spawning process's own stdio is itself
+redirected (exactly `cargo test`'s situation under a CI runner), the
+kernel duplicates those redirected handles into the child regardless of
+`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`; setting `STARTF_USESTDHANDLES`
+(with null std handles) in `STARTUPINFOEXW.dwFlags` suppresses that
+duplication and is the actual fix — see the PR history for #83. New
+divergence: `docs/divergences.md` #011 (single pollable fd on Linux vs
+two non-pollable handles on Windows). CI-verified only (no Windows
+execution available in the implementing session) —
+`platform-windows/tests/pty.rs`, including a dedicated test that drops
+an undrained master against a child producing far more output than a
+pipe's default buffer holds, to actually exercise the teardown fix.
+Both halves of the PTY surface (#82 Linux, #83 Windows) are now landed;
+only macOS (no donor evidence) remains unaddressed within this phase's
+scope. See `docs/behavior/pty.md` for the full contract.
 
 ## Phase 8 — Tun / virtual-link surface (D14)
 
