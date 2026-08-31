@@ -1,5 +1,11 @@
 # rustils
 
+> **This repository has moved.** `rustils` now lives at
+> [`crates/rustils`](https://github.com/Rusty-Mill/rusty_mill/tree/main/crates/rustils)
+> in the [`rusty_mill`](https://github.com/Rusty-Mill/rusty_mill) monorepo, with full commit
+> history preserved. This repository is kept for historical reference and is no longer
+> developed; please open issues and pull requests against `rusty_mill` instead.
+
 A hand-rolled, Rust-native platform personality layer for Windows and
 Linux: strongly-typed, capability-style APIs over the NT and Linux kernels,
 built above raw bindings (`windows-sys`, `libc`) with all `unsafe` confined
